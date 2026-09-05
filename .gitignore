@@ -1,0 +1,31 @@
+# Local reports, source traces and caches must remain on the device.
+/output/
+/previous-snapshot/
+/dashboard.html
+/usage.json
+/status.json
+/prices-used.json
+*.jsonl
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+*.db-*
+
+# Private billing and local tariff overrides. Only the empty schema is shared.
+*.csv
+!/billing-template.csv
+/prices.json
+*.local.json
+.env
+.env.*
+
+# Development artifacts.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.DS_Store
+/qa-*
+*.zip

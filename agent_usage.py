@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Local-only Codex / Claude usage. Python 3.9+, standard library, zero uploads.
+Run: python3 agent_usage.py --open
+"""
+import argparse
+import collections
+import csv
+import datetime as dt
+from decimal import Decimal, InvalidOperation
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import math
+import os
+from pathlib import Path
+import re
+import socket
+import sqlite3
+import sys
+import tempfile
+import threading
+import time
+import webbrowser
+
+VERSION = '2.0.0'
+PARSER_VERSION = 2
+PRICE_DATE = '2026-09-05'
+# USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
+# A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
+RATE_VALUES = {
+ 'gpt-6-astra': [10,1,12.5,50], 'gpt-5.6-sol': [4,.4,5,20],
+ 'gpt-5.5':[5,.5,0,30], 'gpt-5.4':[2.5,.25,0,15],
+ 'gpt-5.3-codex':[1.75,.175,0,14], 'gpt-5.4-mini':[.75,.075,0,4.5],
+ 'gpt-5.6-terra': [2,.2,2.5,12], 'gpt-5.6-luna': [.2,.02,.25,1.2],
+ 'claude-fable-5-1': [10,.25,12.5,50], 'claude-fable-5': [10,1,12.5,50],
+ 'claude-mythos-5-1': [10,.25,12.5,50], 'claude-mythos-5': [10,1,12.5,50],
+ 'claude-opus-5': [5,.5,6.25,25], 'claude-opus-4-8': [5,.5,6.25,25],
+ 'claude-opus-4-7': [5,.5,6.25,25], 'claude-opus-4-6': [5,.5,6.25,25],
+ 'claude-opus-4-5': [5,.5,6.25,25], 'claude-opus-4-1': [15,1.5,18.75,75],
+ 'claude-opus-4': [15,1.5,18.75,75], 'claude-sonnet-5': [2,.2,2.5,10],
+ 'claude-sonnet-4-6': [3,.3,3.75,15], 'claude-sonnet-4-5': [3,.3,3.75,15],
+ 'claude-sonnet-4': [3,.3,3.75,15], 'claude-haiku-4-5': [1,.1,1.25,5],
+ 'claude-haiku-3-5': [.8,.08,1,4],
+}
+PRICE_SOURCES = ['https://developers.openai.com/api/docs/pricing',
+                 'https://platform.claude.com/docs/en/about-claude/pricing']
+
+def default_prices():
+    models = {}
+    for model, values in RATE_VALUES.items():
+        rule = dict(zip(['input','cached','write_5m','output'], values))
+        rule['write_1h'] = values[0]*2
+        if model.startswith(('gpt-6-','gpt-5.6-')):
+            rule.update(long_threshold=272000,long_input_multiplier=2,long_output_multiplier=1.5,
+                        fast_multiplier=2, flex_multiplier=.5, batch_multiplier=.5)
+        elif model.startswith('gpt-'):
+            rule['no_cache_write_rate']=True
+            if model in ('gpt-5.5','gpt-5.4'):
+                rule.update(long_threshold=272000,long_input_multiplier=2,long_output_multiplier=1.5,long_scope='session',flex_multiplier=.5,batch_multiplier=.5)
+        else:
+            if model in ('claude-sonnet-4','claude-sonnet-4-5'):
+                rule.update(long_threshold=200000,long_input_multiplier=2,long_output_multiplier=1.5)
+            if model in ('claude-opus-5','claude-opus-4-8'):
+                rule['fast_multiplier']=2
+            rule['batch_multiplier']=.5
+        models[model] = rule
+    return dict(as_of=PRICE_DATE, currency='USD', sources=PRICE_SOURCES, models=models)
+
+def atom_json(path, obj):
+    atom_write(path, json.dumps(obj,ensure_ascii=False,separators=(',',':')).encode())
+
+def atom_write(path, data):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    fd, tmp=tempfile.mkstemp(prefix='.'+path.name,dir=path.parent)
+    try:
+        with os.fdopen(fd,'wb') as f: f.write(data)
+        os.replace(tmp,path)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+
+def timestamp(value):
+    try:
+        if isinstance(value,(float,int)): return float(value)/1000 if value>1e11 else float(value)
+        d=dt.datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        return (d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)).timestamp()
+    except (ValueError,TypeError,OverflowError): return None
+
+def canonical_model(model):
+    # Only known date suffix formats; arbitrary unknown aliases must remain unknown.
+    model=str(model or 'unknown').lower()
+    model=re.sub(r'-(?:20\d{2}-\d{2}-\d{2}|20\d{6})$','',model)
+    model={'claude-3-5-haiku':'claude-haiku-3-5'}.get(model,model)
+    if model.startswith('claude-'): model=model.replace('.', '-')
+    return model
+
+def project_name(value):
+    # No dependency on a particular checkout folder or username.
+    p=Path(str(value or ''))
+    if not value:return 'unknown'
+    parts=p.parts
+    if '.claude' in parts and 'worktrees' in parts:
+        return Path(*parts[:parts.index('.claude')]).name or 'home'
+    if p==Path.home():return 'home'
+    return p.name or 'home'
+
+def title_text(text):
+    text=' '.join(re.sub(r'<[^>]+>',' ',str(text or '')).split())[:100]
+    if re.search(r'(sk-[\w-]{8,}|Bearer |password=|token=|[\w.+-]+@[\w.-]+\.)',text,re.I): return '[redacted]'
+    return text
+
+def number(value):
+    if value is None:return 0
+    if isinstance(value,bool):raise ValueError('boolean token count')
+    result=int(value)
+    if result<0 or float(value)!=result:raise ValueError('invalid token count')
+    return result
+
+def normalize_usage(u,provider):
+    if not isinstance(u,dict):raise ValueError('usage not object')
+    incoming=number(u.get('input_tokens'))
+    cached=number(u.get('cache_read_input_tokens') if provider=='Claude' else u.get('cached_input_tokens'))
+    write=number(u.get('cache_creation_input_tokens') if provider=='Claude' else u.get('cache_write_input_tokens'))
+    if provider=='Claude':incoming+=cached+write
+    output=number(u.get('output_tokens'))
+    if cached+write>incoming:raise ValueError('cache exceeds input')
+    ttl=u.get('cache_creation') or {};one=number(ttl.get('ephemeral_1h_input_tokens'));five=number(ttl.get('ephemeral_5m_input_tokens'))
+    conflict=one+five>write
+    if conflict: one=min(one,write);five=min(five,write-one)
+    # Missing TTL stays unknown; pricing becomes a range rather than guessing 5m.
+    unknown=max(0,write-one-five) if provider=='Claude' else 0
+    return dict(input=incoming,cached=cached,write=write,uncached=incoming-cached-write,
+                output=output,total=incoming+output,write_1h=one,write_5m=five,
+                write_unknown=unknown,ttl_conflict=conflict)
+
+def read_jsonl(path,quality):
+    """Bound reads to the initial file size; tolerate an active/incomplete final record."""
+    try:
+        with path.open('rb') as f:
+            end=os.fstat(f.fileno()).st_size
+            while f.tell()<end:
+                line=f.readline(end-f.tell())
+                if not line.strip():continue
+                try:
+                    obj=json.loads(line)
+                    if isinstance(obj,dict):yield obj
+                except (ValueError,UnicodeError):
+                    quality['partial_tail' if f.tell()==end and not line.endswith(b'\n') else 'malformed_lines']+=1
+    except OSError:
+        quality['unreadable_files']+=1
+
+def parse_codex(path,include_titles=False):
+    q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
+    for x in read_jsonl(path,q):
+        p=x.get('payload') or {}
+        if not isinstance(p,dict):continue
+        typ=x.get('type');ts=timestamp(x.get('timestamp'))
+        if typ=='session_meta':
+            sid=str(p.get('id') or p.get('session_id') or path.stem)
+            project=project_name(p.get('cwd'));model=p.get('model') or 'unknown'
+            role='subagent' if 'subagent' in json.dumps(p.get('source',{})).lower() or p.get('agent_path','/root') not in ['/root',None,''] else 'main'
+            sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True))
+        if not sid:continue
+        if typ=='turn_context':
+            model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
+            tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
+            if p.get('cwd'):project=project_name(p['cwd'])
+        if typ=='event_msg' and p.get('type')=='task_started':turn=p.get('turn_id') or turn
+        if typ!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
+        info=p['info'];u=info.get('last_token_usage');cu=info.get('total_token_usage')
+        if not u:q['codex_missing_last_usage']+=1;continue
+        signature=json.dumps(cu,sort_keys=True) if cu else None
+        # Compare consecutive counters, not a global set: an equal value after a reset is a new request.
+        if signature and seen.get(sid)==signature:q['duplicate_usage_blocks']+=1;continue
+        if cu and sid in seen:
+            previous=json.loads(seen[sid])
+            if cu.get('total_tokens',0)<previous.get('total_tokens',0):q['counter_resets']+=1
+        if signature:seen[sid]=signature
+        try:usage=normalize_usage(u,'Codex')
+        except (ValueError,TypeError,OverflowError):q['invalid_usage']+=1;continue
+        if ts is None:q['missing_timestamps']+=1;continue
+        key=hashlib.sha256(json.dumps([sid,ts,turn,cu or u],sort_keys=True).encode()).hexdigest()
+        requests.append(dict(id='cx:'+key,session='Codex:'+sid,provider='Codex',model=model,
+                             effort=effort,tier=tier,speed='unknown',geo='unknown',project=project,
+                             role=role,ts=ts,web_searches=None,**usage))
+    return dict(sessions=list(sessions.values()),requests=requests,reports=[],quality=dict(q))
+
+def parse_claude(path,include_titles=False):
+    q=collections.Counter();requests=[];sessions={};reports=[]
+    sub='subagents' in path.parts
+    sid=(path.parent.parent.name+'/'+path.stem) if sub else path.parent.name if path.name=='audit.jsonl' else path.stem
+    skey='Claude:'+sid;project='unknown';role='subagent' if sub else 'main';title=sid[:12]
+    for x in read_jsonl(path,q):
+        ts=timestamp(x.get('timestamp'));typ=x.get('type')
+        if x.get('cwd'):project=project_name(x['cwd'])
+        if typ=='result' and isinstance(x.get('total_cost_usd'),(int,float)) and ts is not None:
+            # Keep result reports separate: SDK scopes include children and may be cumulative across turns.
+            reports.append(dict(id=str(x.get('uuid') or hashlib.sha256(json.dumps(x,sort_keys=True).encode()).hexdigest()),
+                                session=skey,ts=ts,reported_usd=x['total_cost_usd']))
+        m=x.get('message') or {}
+        if not isinstance(m,dict):continue
+        if include_titles and typ=='user' and title==sid[:12] and not x.get('isMeta'):
+            content=m.get('content','');texts=content if isinstance(content,str) else ' '.join(a.get('text','') for a in content if isinstance(a,dict))
+            if texts and not texts.startswith(('/', '<local-command','<command-name')):title=title_text(texts)
+        if typ!='assistant' or not m.get('usage') or m.get('model') in [None,'<synthetic>']:continue
+        mid=m.get('id') or x.get('message_id')
+        if not mid:q['missing_message_ids']+=1;continue
+        if ts is None:q['missing_timestamps']+=1;continue
+        u=m['usage']
+        try:usage=normalize_usage(u,'Claude')
+        except (ValueError,TypeError,OverflowError):q['invalid_usage']+=1;continue
+        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True)
+        searches=(u.get('server_tool_use') or {}).get('web_search_requests')
+        try: searches=None if searches is None else number(searches)
+        except (ValueError,TypeError): searches=None
+        requests.append(dict(id='cl:'+str(mid),session=skey,provider='Claude',model=m.get('model'),
+                             effort=x.get('effort') or 'unknown',tier=u.get('service_tier') or 'unknown',
+                             speed=u.get('speed') or 'unknown',geo=u.get('inference_geo') or 'unknown',
+                             project=project,role=role,ts=ts,web_searches=searches,**usage))
+    return dict(sessions=list(sessions.values()),requests=requests,reports=reports,quality=dict(q))
+
+def merge_requests(rows,quality):
+    merged={}
+    for r in rows:
+        old=merged.get(r['id'])
+        if old is None:merged[r['id']]=r.copy();continue
+        quality['duplicate_usage_blocks']+=1
+        if old['session']!=r['session']:quality['cross_session_copies']+=1
+        # A single coherent input snapshot, with final/max output for streaming duplicates.
+        output=max(old['output'],r['output'])
+        owner=old if old['role']=='main' else r if r['role']=='main' else old
+        chosen=max([old,r],key=lambda a:(a['output'],a['input']))
+        result=chosen.copy()
+        for k in ['session','role','project']:result[k]=owner[k]
+        result['ts']=min(old['ts'],r['ts']);result['output']=output;result['total']=result['input']+output
+        searches=[v for v in [old.get('web_searches'),r.get('web_searches')] if v is not None]
+        result['web_searches']=max(searches) if searches else None
+        merged[r['id']]=result
+    return list(merged.values())
+
+def load_prices(path=None):
+    catalog=json.loads(Path(path).read_text(encoding='utf-8')) if path else default_prices()
+    if catalog.get('currency')!='USD' or not isinstance(catalog.get('models'),dict):raise ValueError('Prices must contain currency=USD and models object')
+    for model,rules in catalog['models'].items():
+        rules=rules if isinstance(rules,list) else [rules]
+        for rule in rules:
+            for field in ['input','cached','write_5m','write_1h','output']:
+                value=Decimal(str(rule[field]))
+                if not value.is_finite() or value<0:raise ValueError('Invalid price for '+model)
+            for field in ['long_threshold','long_input_multiplier','long_output_multiplier','fast_multiplier','flex_multiplier','batch_multiplier']:
+                if field in rule:
+                    value=Decimal(str(rule[field]))
+                    if not value.is_finite() or value<=0:raise ValueError('Invalid multiplier / threshold for '+model)
+            for field in ['valid_from','valid_to']:
+                if rule.get(field):dt.date.fromisoformat(rule[field])
+    return catalog
+
+def price_request(row,catalog):
+    model=canonical_model(row['model']);rules=catalog['models'].get(model)
+    if rules is None:return dict(cost=None,cost_high=None,cost_parts=None,price_status='unknown_model',assumptions=[])
+    rules=rules if isinstance(rules,list) else [rules]
+    date=dt.datetime.fromtimestamp(row['ts'],dt.timezone.utc).date().isoformat()
+    matches=[v for v in rules if (not v.get('valid_from') or date>=v['valid_from']) and (not v.get('valid_to') or date<v['valid_to'])]
+    if len(matches)!=1:return dict(cost=None,cost_high=None,cost_parts=None,price_status='missing_or_overlapping_date_rate',assumptions=[])
+    rule=matches[0];d=lambda x:Decimal(str(x));million=Decimal(1000000)
+    ip,cp,wp,one,op=(d(rule[k]) for k in ['input','cached','write_5m','write_1h','output'])
+    assumptions=[];mult=Decimal(1)
+    if rule.get('no_cache_write_rate') and row['write']:
+        return dict(cost=None,cost_high=None,cost_parts=None,price_status='unpriced_cache_write',assumptions=[])
+    pricing_context=row.get('session_max_input',row['input']) if rule.get('long_scope')=='session' else row['input']
+    if pricing_context>rule.get('long_threshold',float('inf')):
+        im=d(rule['long_input_multiplier']);om=d(rule['long_output_multiplier'])
+        ip*=im;cp*=im;wp*=im;one*=im;op*=om
+    tier=row.get('tier','unknown');speed=row.get('speed','unknown')
+    if tier in ['priority','fast'] or speed=='fast':mode='fast'
+    elif tier in ['batch','flex']:mode=tier
+    elif tier in ['unknown','standard','default',None]:mode='standard'
+    else:return dict(cost=None,cost_high=None,cost_parts=None,price_status='unknown_tier',assumptions=[])
+    if mode!='standard':
+        if mode+'_multiplier' not in rule:return dict(cost=None,cost_high=None,cost_parts=None,price_status='unpriced_tier',assumptions=[])
+        mult*=d(rule[mode+'_multiplier'])
+    elif tier in ['unknown','default',None]:assumptions.append('Standard tier assumed')
+    if row.get('geo')=='us':mult*=Decimal('1.1')
+    elif row.get('geo') not in ['global']:assumptions.append('Global routing assumed')
+    if row['provider']=='Claude':
+        wlow=d(row['write_5m'])*wp+d(row['write_1h'])*one+d(row['write_unknown'])*min(wp,one)
+        whigh=d(row['write_5m'])*wp+d(row['write_1h'])*one+d(row['write_unknown'])*max(wp,one)
+        if row['write_unknown']:assumptions.append('Cache write TTL unknown: 5m–1h range')
+    else:wlow=whigh=d(row['write'])*wp
+    parts=[d(row['uncached'])*ip,d(row['cached'])*cp,wlow,d(row['output'])*op]
+    parts=[x*mult/million for x in parts]
+    # Only explicit server-side searches are priced. Missing counts stay a stated scope limit.
+    search=d(row.get('web_searches') or 0)*Decimal('.01')
+    parts.append(search)
+    cost=sum(parts);high=cost+(whigh-wlow)*mult/million
+    return dict(cost=float(cost),cost_high=float(high),cost_parts=[float(x) for x in parts],
+                price_status='range' if high!=cost else 'priced',assumptions=assumptions)
+
+def read_billing(path):
+    if not path:return []
+    result=[];seen=set()
+    with Path(path).open(newline='',encoding='utf-8-sig') as f:
+        reader=csv.DictReader(f)
+        if not {'transaction_id','date','provider','amount_usd'}<=set(reader.fieldnames or []):
+            raise ValueError('Billing CSV needs transaction_id,date,provider,amount_usd; optional model,project')
+        for line,r in enumerate(reader,2):
+            key=r['transaction_id'].strip()
+            if not key or key in seen:raise ValueError('Missing/duplicate billing transaction_id at line '+str(line))
+            seen.add(key);date=dt.date.fromisoformat(r['date']).isoformat();amount=Decimal(r['amount_usd'])
+            if not amount.is_finite():raise ValueError('Invalid billing amount at line '+str(line))
+            provider=r['provider'].strip().lower()
+            if provider not in ['claude','anthropic','codex','openai']:raise ValueError('Unknown billing provider at line '+str(line))
+            result.append(dict(date=date,provider='Claude' if provider in ['claude','anthropic'] else 'Codex',
+                               model=(r.get('model') or '').strip() or 'unallocated',project=(r.get('project') or '').strip() or 'unallocated',amount=float(amount)))
+    return result
+
+def discover(args):
+    home=Path(args.home).expanduser().resolve() if args.home else Path.home()
+    codex=Path(args.codex_dir or (os.environ.get('CODEX_HOME') if not args.home else '') or home/'.codex').expanduser().resolve()
+    claude=Path(args.claude_dir or (os.environ.get('CLAUDE_CONFIG_DIR') if not args.home else '') or home/'.claude').expanduser().resolve()
+    roots=[('Codex',codex/'sessions'),('Codex',codex/'archived_sessions'),('Claude',claude/'projects')]
+    if args.cowork:roots.append(('Claude',home/'Library/Application Support/Claude/local-agent-mode-sessions'))
+    files={}
+    for provider,root in roots:
+        if root.is_dir():
+            for p in root.rglob('*.jsonl'):
+                if p.is_file():files[str(p.resolve())]=(provider,p.resolve())
+    return codex,sorted(files.values(),key=lambda pair:('subagents' in pair[1].parts,str(pair[1]))),roots
+
+def registry(codex,include_titles,quality):
+    states=sorted(codex.glob('state_*.sqlite'),key=lambda p:int(re.search(r'_(\d+)',p.name).group(1)),reverse=True)
+    for path in states:
+        try:
+            c=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=2);c.row_factory=sqlite3.Row
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE name='threads'").fetchone():c.close();continue
+            result={}
+            for r in c.execute('SELECT * FROM threads'):
+                r=dict(r);sid='Codex:'+str(r['id']);model=r.get('model') or 'unknown'
+                role='review' if model=='codex-auto-review' else 'subagent' if 'subagent' in str(r.get('source')).lower() or r.get('agent_path','/root') not in ['/root',None,''] else 'main'
+                result[sid]=dict(id=sid,provider='Codex',role=role,project=project_name(r.get('cwd')),title=title_text(r.get('title')) if include_titles else str(r['id'])[:12],trace=False,registry_model=model)
+            c.close();return result
+        except (sqlite3.Error,OSError,KeyError):quality['registry_unreadable']+=1
+    return {}
+
+class ParseCache:
+    def __init__(self,path):
+        self.c=sqlite3.connect(path)
+        self.c.execute('CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, fingerprint TEXT, payload TEXT)')
+    def parse(self,provider,path,titles,stats):
+        st=path.stat();fp=f'{PARSER_VERSION}:{int(titles)}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}'
+        cached=self.c.execute('SELECT fingerprint,payload FROM files WHERE path=?',(str(path),)).fetchone()
+        if cached and cached[0]==fp:
+            try:result=json.loads(cached[1]);stats['cached_files']+=1;return result
+            except ValueError:pass
+        result=(parse_codex if provider=='Codex' else parse_claude)(path,titles)
+        stats['parsed_files']+=1
+        if not result['quality'].get('unreadable_files'):
+            self.c.execute('INSERT OR REPLACE INTO files VALUES (?,?,?)',(str(path),fp,json.dumps(result,separators=(',',':'))))
+        return result
+    def close(self,paths):
+        # Removed traces must disappear from subsequent snapshots and derived cache.
+        for (path,) in self.c.execute('SELECT path FROM files').fetchall():
+            if path not in paths:self.c.execute('DELETE FROM files WHERE path=?',(path,))
+        self.c.commit();self.c.close()
+
+def make_snapshot(args):
+    output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
+    catalog=load_prices(args.prices);billing=read_billing(args.billing)
+    q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
+    sessions=registry(codex,args.include_titles,q);rows=[];reports={}
+    cache=ParseCache(output/'parse-cache.sqlite')
+    try:
+        for provider,path in files:
+            try:r=cache.parse(provider,path,args.include_titles,stats)
+            except (OSError,ValueError,TypeError,AttributeError,sqlite3.Error):q['failed_files']+=1;continue
+            q.update(r['quality']);rows.extend(r['requests'])
+            for s in r['sessions']:
+                previous=sessions.get(s['id'],{})
+                # Registry title and role enrich legacy traces; model remains per-request.
+                sessions[s['id']]={**s,**previous,'trace':True}
+            for report in r['reports']:reports[report['id']]=report
+    finally:cache.close({str(p) for _,p in files})
+    rows=merge_requests(rows,q)
+    tz=None
+    if args.timezone == 'UTC':
+        tz=dt.timezone.utc
+    elif args.timezone:
+        from zoneinfo import ZoneInfo
+        tz=ZoneInfo(args.timezone)
+    session_max=collections.defaultdict(int)
+    for r in rows:session_max[(r['session'],r['model'])]=max(session_max[(r['session'],r['model'])],r['input'])
+    for r in rows:
+        r['session_max_input']=session_max[(r['session'],r['model'])]
+        s=sessions.get(r['session'])
+        if s and s.get('role') in ['subagent','review']:r['role']=s['role']
+        if r['model']=='unknown':q['unknown_request_model']+=1 # latest registry model is not safe historical attribution
+        r.update(price_request(r,catalog))
+        moment=dt.datetime.fromtimestamp(r['ts'],dt.timezone.utc).astimezone(tz)
+        r['date']=moment.date().isoformat()
+    # Dashboard rows: one date × model × session × project × role, preserving filter correctness.
+    grouped={}
+    for r in rows:
+        key=(r['date'],r['provider'],r['model'],r['session'],r['project'],r['role'])
+        if key not in grouped:grouped[key]=dict(zip(['date','provider','model','session','project','role'],key),requests=0,input=0,cached=0,write=0,output=0,total=0,cost=0.,cost_high=0.,unpriced=0,max_context=0,parts=[0.]*5,assumed=0,write_unknown=0)
+        g=grouped[key];g['requests']+=1
+        for f in ['input','cached','write','output','total','write_unknown']:g[f]+=r[f]
+        g['max_context']=max(g['max_context'],r['input'])
+        g['assumed']+=bool(r['assumptions'])
+        if r['cost'] is None:g['unpriced']+=1
+        else:
+            g['cost']+=r['cost'];g['cost_high']+=r['cost_high']
+            g['parts']=[a+b for a,b in zip(g['parts'],r['cost_parts'])]
+    measured={r['session'] for r in rows};traceids={s['id'] for s in sessions.values() if s['trace'] and s['provider']=='Codex'}
+    q['ttl_conflicts']=sum(r['ttl_conflict'] for r in rows)
+    summary=dict(requests=len(rows),sessions=len(measured),input=sum(r['input'] for r in rows),output=sum(r['output'] for r in rows),cached=sum(r['cached'] for r in rows),
+                 cost=sum(r['cost'] or 0 for r in rows),cost_high=sum(r['cost_high'] or 0 for r in rows),unpriced=sum(r['cost'] is None for r in rows),
+                 registry_codex=sum(s['provider']=='Codex' for s in sessions.values()),traces_codex=len(traceids),files=len(files))
+    assert summary['requests']==sum(g['requests'] for g in grouped.values())
+    assert summary['input']==sum(g['input'] for g in grouped.values())
+    assert math.isclose(summary['cost'],sum(g['cost'] for g in grouped.values()),abs_tol=1e-7)
+    # No source paths, transcript, hidden reasoning or arguments are embedded in the HTML.
+    snapshot=dict(version=VERSION,generated=dt.datetime.now(dt.timezone.utc).isoformat(),device=socket.gethostname(),
+                  timezone=args.timezone or 'System local timezone',price_as_of=catalog.get('as_of','custom'),price_sources=catalog.get('sources',[]),
+                  sources=[dict(provider=p,exists=root.is_dir(),path=str(root)) for p,root in roots],
+                  summary=summary,quality=dict(q),scan=dict(stats),rows=list(grouped.values()),
+                  titles={s['id']:s['title'] for s in sessions.values() if s['id'] in measured} if args.include_titles else {},
+                  billing=billing,billing_loaded=bool(args.billing),unknown_models=sorted({r['model'] for r in rows if r['cost'] is None}),
+                  reports=list(reports.values()))
+    # Private evidence stays local. Requests are normalized fields only.
+    atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
+    atom_json(output/'prices-used.json',catalog)
+    public={k:v for k,v in snapshot.items() if k!='sources'}
+    body=render_html(public)
+    atom_write(output/'dashboard.html',body.encode())
+    atom_json(output/'status.json',{'generated':snapshot['generated'],'version':VERSION})
+    return snapshot
+
+HTML = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>AISAD · Claude &amp; Codex usage</title><style>
+:root{color-scheme:light dark;--bg:#f7f8fa;--card:#fff;--ink:#17212d;--muted:#626e7b;--line:#e4e8ed;--accent:#147e78;--orange:#bf672b;--shade:#ecf6f4}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:1440px;margin:auto;padding:34px 32px 70px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}h2{font-size:17px;letter-spacing:-.2px;margin:0 0 14px}h3{margin:24px 0 8px}.muted,small{color:var(--muted)}small{font-size:12px}.badge{border:1px solid var(--line);padding:7px 11px;border-radius:30px;color:var(--accent);white-space:nowrap}.coverage{margin:22px 0 16px;border-left:3px solid var(--accent);padding:12px 16px;background:var(--shade);border-radius:4px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:9px 11px;min-height:38px}select{max-width:240px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.cards{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}.card .value{font-size:26px;font-weight:650;letter-spacing:-.8px;margin:8px 0;overflow-wrap:anywhere}.card label{display:block;font-size:12px}.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.panel{margin-bottom:0}.wide{margin-top:16px}svg{display:block;width:100%;height:auto;max-height:310px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.table-wrap{overflow:auto;max-height:630px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:12px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted)}td:first-child{max-width:330px;overflow:hidden;text-overflow:ellipsis}th button{padding:2px 0;min-height:0;border:none;font-weight:600;background:none}.barrow{display:grid;grid-template-columns:155px 1fr 100px;align-items:center;gap:12px;margin:13px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:11px;background:var(--line);border-radius:10px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:10px}.barvalue{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:15px}.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.insight{padding:16px 20px;background:var(--shade);border-radius:10px}.insight b{font-size:19px;display:block;margin-bottom:4px}details{margin-top:18px}summary{cursor:pointer;font-weight:600}details p,details li{overflow-wrap:anywhere;color:var(--muted);max-width:1080px}a{color:var(--accent)}.empty{padding:40px 10px;text-align:center;color:var(--muted)}.legend{display:flex;gap:16px;margin-top:10px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--accent)}footer{margin-top:25px;font-size:12px;color:var(--muted)}.money-note{margin:10px 0;color:var(--muted);font-size:12px}
+@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#19212a;--ink:#e5edf5;--muted:#9aaabd;--line:#303b48;--accent:#59c6b8;--orange:#eda76b;--shade:#1b302f}}
+@media(max-width:1100px){.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){main{padding:22px 14px}header{align-items:flex-start}h1{font-size:25px}.badge{font-size:11px}.grid,.grid.equal{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}.card,.panel{padding:15px}.card .value{font-size:23px}.insights{grid-template-columns:1fr}.barrow{grid-template-columns:115px 1fr 90px}.filters label{flex:1;min-width:130px}select{max-width:100%}.filters button{align-self:end}svg{min-height:190px}}
+</style></head><body><main>
+<header><div><h1>AISAD · Agent usage</h1><div class="muted" id="subtitle"></div></div><span class="badge">● This device only</span></header>
+<div class="coverage" id="coverage"></div>
+<div class="filters">
+<label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label>
+<label>Tool<select id="provider"></select></label><label>Model<select id="model"></select></label>
+<label>Project<select id="project"></select></label><label>Role<select id="role"><option value="">All roles</option><option value="main">Main thread</option><option value="subagent">Subagent</option><option value="review">Auto-review</option></select></label>
+<button id="reset">Reset</button></div>
+<div class="cards" id="cards"></div><div class="money-note" id="money-note"></div>
+<div class="grid"><section class="panel"><div class="tools"><h2>Daily usage</h2><select id="chartmetric" aria-label="Chart metric"><option value="cost">Estimated cost, USD</option><option value="total">Total tokens</option><option value="output">Output tokens</option><option value="requests">Requests</option></select></div><div id="daily"></div></section><section class="panel"><h2>Top 10 models</h2><div id="models-chart"></div></section></div>
+<div class="insights" id="insights"></div>
+<div class="grid equal"><section class="panel"><h2>Estimated cost breakdown</h2><div id="parts"></div></section><section class="panel"><h2>Top 8 projects</h2><div id="projects-chart"></div></section></div>
+<section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Click a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section>
+<section class="panel wide"><div class="tools"><h2>Sessions</h2><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"></div><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:14px"><small id="page-info"></small><div><button id="prev">←</button> <button id="next">→</button></div></div></section>
+<section class="panel wide"><h2>Actual payments · local import</h2><p class="muted" id="billing-note"></p><div class="table-wrap"><table id="billing-table"></table></div></section>
+<details class="panel wide"><summary>Methodology, pricing and coverage</summary><div id="method"></div></details>
+<footer id="footer"></footer></main>
+<script id="snapshot" type="application/json">__DATA__</script><script>
+'use strict';const D=JSON.parse(document.getElementById('snapshot').textContent);const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const compact=n=>new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n||0);const integer=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);const pct=n=>n==null?'—':(n*100).toFixed(1)+'%';
+let page=0,modelSort='cost',ascending=false;const allDates=D.rows.map(r=>r.date).concat(D.billing.map(r=>r.date)).sort();const first=allDates[0]||'',last=allDates[allDates.length-1]||'';
+for(const field of ['provider','model','project']){const values=[...new Set(D.rows.concat(D.billing).map(r=>r[field]))].sort();$(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option>'+esc(v)+'</option>').join('')}
+$('from').value=first;$('to').value=last;$('subtitle').textContent=D.device+' · '+new Date(D.generated).toLocaleString('en-US')+' · '+D.timezone;
+if(D.demo)document.querySelector('.badge').textContent='Synthetic demo';
+$('coverage').textContent=D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.';
+function chosen(r,billing=false){return (!$('from').value||r.date>=$('from').value)&&(!$('to').value||r.date<=$('to').value)&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(billing||!$('role').value||r.role===$('role').value)}
+function aggregate(rows){const a={requests:0,input:0,cached:0,write:0,output:0,total:0,cost:0,cost_high:0,unpriced:0,max_context:0,parts:[0,0,0,0,0],assumed:0,write_unknown:0,sessions:new Set()};for(const r of rows){for(const f of ['requests','input','cached','write','output','total','cost','cost_high','unpriced','assumed','write_unknown'])a[f]+=r[f]||0;a.max_context=Math.max(a.max_context,r.max_context||0);a.parts=a.parts.map((v,i)=>v+(r.parts?.[i]||0));a.sessions.add(r.session)}a.cache=a.input?a.cached/a.input:null;return a}
+function groups(rows,field){const m=new Map();for(const r of rows){if(!m.has(r[field]))m.set(r[field],[]);m.get(r[field]).push(r)}return [...m].map(([name,rs])=>({name,...aggregate(rs)}))}
+function cost(a){if(a.requests===a.unpriced)return '—';return usd(a.cost)+(a.cost_high-a.cost>.005?'–'+usd(a.cost_high):'')+(a.unpriced?' + ?':'')}
+function bars(id,items,metric='cost'){const entries=[...items].sort((a,b)=>b[metric]-a[metric]);const max=Math.max(...entries.map(x=>x[metric]),1e-9);$(id).innerHTML=entries.length?entries.map((x,i)=>`<div class="barrow"><span class="barlabel" title="${esc(x.name)}">${esc(x.name)}</span><div class="bartrack"><div class="barfill" style="width:${Math.max(0,x[metric]/max*100)}%;opacity:${Math.max(.45,1-i*.06)}"></div></div><span class="barvalue">${metric==='cost'?cost(x):compact(x[metric])}</span></div>`).join(''):'<div class="empty">No data in the selected period</div>'}
+function daily(rows,metric){const gs=groups(rows,'date').sort((a,b)=>a.name.localeCompare(b.name));if(!gs.length){$('daily').innerHTML='<div class="empty">No data</div>';return}const start=new Date(gs[0].name+'T00:00:00Z'),end=new Date(gs[gs.length-1].name+'T00:00:00Z');const observed=new Map(gs.map(x=>[x.name,x]));let points=[];for(let day=new Date(start);day<=end;day.setUTCDate(day.getUTCDate()+1)){let name=day.toISOString().slice(0,10);points.push(observed.get(name)||{name,[metric]:0,missing:true})}const w=780,h=300,L=58,R=16,T=18,B=35;const max=Math.max(...points.map(x=>x[metric]),1e-9);const bw=(w-L-R)/points.length;let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc($('chartmetric').selectedOptions[0].textContent)} by day">`;
+for(let i=0;i<4;i++){const y=T+(h-T-B)*i/3;svg+=`<line x1="${L}" x2="${w-R}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L-8}" y="${y+4}" text-anchor="end" class="chart-text">${esc(metric==='cost'?usd(max*(1-i/3)):compact(max*(1-i/3)))}</text>`}
+points.forEach((p,i)=>{const x=L+i*bw+1,hh=(h-T-B)*p[metric]/max;svg+=`<rect x="${x}" y="${h-B-hh}" width="${Math.max(1,bw-2)}" height="${hh}" rx="2" fill="var(--accent)"><title>${esc(p.name+': '+(p.missing?'no observations':metric==='cost'?cost(p):integer(p[metric])))}</title></rect>`;if(i%Math.max(1,Math.ceil(points.length/8))===0)svg+=`<text x="${x+bw/2}" y="${h-10}" text-anchor="middle" class="chart-text">${new Date(p.name+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}</text>`});$('daily').innerHTML=svg+'</svg><small>Empty days have no observations; today may be incomplete. Hover over a bar for details.</small>'}
+function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[modelSort])*(ascending?1:-1));$('models-table').innerHTML='<thead><tr><th>Model</th>'+[['requests','Requests'],['total','Tokens'],['output','Output'],['cached','Cache'],['cost','Cost, USD']].map(([f,l])=>`<th><button data-sort="${f}">${l}${modelSort===f?(ascending?' ↑':' ↓'):''}</button></th>`).join('')+'<th>Unpriced</th></tr></thead><tbody>'+gs.map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${compact(g.output)}</td><td>${pct(g.cache)}</td><td>${cost(g)}</td><td>${g.unpriced||'—'}</td></tr>`).join('')+'</tbody>';document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{ascending=modelSort===b.dataset.sort?!ascending:false;modelSort=b.dataset.sort;modelsTable(rs)})}
+function sessionsTable(rs){const search=$('search').value.toLowerCase();let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b.cost-a.cost);page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);$('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Tokens</th><th>Cache</th><th>Max context</th><th>Cost, USD</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}">${esc(D.titles[g.name]||g.name.slice(0,22))}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';$('page-info').textContent=`${gs.length? page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length}
+function render(){const rs=D.rows.filter(r=>chosen(r)),a=aggregate(rs),bill=D.billing.filter(r=>chosen(r,true)),actual=bill.reduce((s,r)=>s+r.amount,0);const values=[['API cost estimate',cost(a),'Token-based estimate, not an invoice'],['Input + output',compact(a.total),'Includes repeated cache reads'],['Requests',integer(a.requests),'Deduplicated usage records'],['Sessions',integer(a.sessions.size),'Main threads and subagents'],['Cached input',pct(a.cache),'Cache reads / total input'],['Paid · CSV',D.billing_loaded?(bill.length?usd(actual):'—'):'—',D.billing_loaded?(bill.length+' imported rows; payment date'):'No local billing imported']];$('cards').innerHTML=values.map(([l,v,n])=>`<div class="card"><label>${l}</label><div class="value">${v}</div><small>${n}</small></div>`).join('');$('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}Subscriptions are not allocated by tokens; payments and estimates are kept separate.`;
+const metric=$('chartmetric').value;daily(rs,metric);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,10),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);
+const labels=['Uncached input','Cache reads','Cache writes','Output','Web search'];bars('parts',labels.map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:1,unpriced:0})));const top=groups(rs,'session').sort((a,b)=>b.cost-a.cost).slice(0,10).reduce((s,g)=>s+g.cost,0);const sub=aggregate(rs.filter(r=>r.role==='subagent'));$('insights').innerHTML=`<div class="insight"><b>${pct(a.cost?top/a.cost:null)}</b>of estimated cost comes from the top 10 sessions</div><div class="insight"><b>${pct(a.cost?sub.cost/a.cost:null)}</b>of estimated cost comes from subagents</div><div class="insight"><b>${compact(a.requests?a.input/a.requests:0)}</b>average input tokens per request, including cache</div>`;modelsTable(rs);sessionsTable(rs);
+$('billing-note').textContent=D.billing_loaded?'Local CSV: payments and charges by accounting date. Model and project come only from the CSV; unattributed rows are not allocated automatically. The role filter does not affect payments. Reconcile the import against your statement.':'Actual charges cannot be reconstructed from subscription tokens. To display them, run with --billing billing.csv. Required fields: transaction_id,date,provider,amount_usd; optional: model,project.';
+$('billing-table').innerHTML=bill.length?'<thead><tr><th>Date</th><th>Provider</th><th>Model</th><th>Project</th><th>Paid, USD</th></tr></thead><tbody>'+bill.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.provider)}</td><td>${esc(r.model)}</td><td>${esc(r.project)}</td><td>${usd(r.amount)}</td></tr>`).join('')+'</tbody>':'';}
+for(const f of ['from','to','provider','model','project','role','chartmetric'])$(f).addEventListener('change',()=>{page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};$('reset').onclick=()=>{$('from').value=first;$('to').value=last;for(const f of ['provider','model','project','role','search'])$(f).value='';page=0;render()};
+$('method').innerHTML=`<p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Actual payments come only from an explicit local CSV. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
+$('footer').textContent=`AISAD ${D.version} · Python standard library · Offline HTML · ${D.scan.cached_files||0} files from the local cache.`;render();
+// Only the loopback watcher serves this endpoint; file:// snapshots never request a network resource.
+if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{try{const r=await fetch('/status.json',{cache:'no-store'});if(r.ok&&(await r.json()).generated!==D.generated)location.reload()}catch{}},5000);
+</script></body></html>'''
+
+def render_html(snapshot):
+    payload=json.dumps(snapshot,ensure_ascii=False,separators=(',',':')).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
+    return HTML.replace('__DATA__',payload)
+
+def serve(output,port):
+    output=Path(output).resolve()
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            route=self.path.split('?')[0]
+            name={'/':'dashboard.html','/dashboard.html':'dashboard.html','/status.json':'status.json'}.get(route)
+            if not name:self.send_error(404);return
+            try:body=(output/name).read_bytes()
+            except OSError:self.send_error(503);return
+            self.send_response(200);self.send_header('Content-Type','application/json' if name.endswith('json') else 'text/html; charset=utf-8')
+            self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)));self.end_headers()
+            try:self.wfile.write(body)
+            except (BrokenPipeError,ConnectionResetError):pass
+        def log_message(self,*args):pass
+    server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    return server
+
+def parser():
+    p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
+    p.add_argument('--output',default=str(Path(__file__).resolve().parent/'output'),help='Directory for HTML and the local cache')
+    p.add_argument('--home',help='Local profile root (for another user or tests)')
+    p.add_argument('--codex-dir',help='Codex directory; defaults to CODEX_HOME or ~/.codex')
+    p.add_argument('--claude-dir',help='Claude directory; defaults to CLAUDE_CONFIG_DIR or ~/.claude')
+    p.add_argument('--cowork',action='store_true',help='Also read local Claude Cowork audit traces on macOS')
+    p.add_argument('--timezone',help='IANA timezone, e.g. Europe/Amsterdam; defaults to the system timezone')
+    p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
+    p.add_argument('--billing',help='Local CSV of confirmed payments or charges (USD)')
+    p.add_argument('--include-titles',action='store_true',help='Include shortened session titles; IDs only by default')
+    p.add_argument('--write-prices',metavar='FILE',help='Write the built-in price catalog and exit')
+    p.add_argument('--watch',type=float,default=0,metavar='SECONDS',help='Rebuild every N seconds and serve on the loopback interface')
+    p.add_argument('--port',type=int,default=0,help='Watcher port: 0 selects an available port')
+    p.add_argument('--open',action='store_true',help='Open the HTML or local watcher in a browser')
+    p.add_argument('--version',action='version',version=VERSION)
+    return p
+
+def main(argv=None):
+    args=parser().parse_args(argv)
+    if args.watch and args.watch<5:raise SystemExit('--watch must be at least 5 seconds')
+    if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
+    output=Path(args.output).expanduser().resolve()
+    snap=make_snapshot(args)
+    def report(s):
+        t=s['summary'];print(f"{s['generated']} | {t['requests']:,} requests | {t['sessions']} sessions | API estimate ${t['cost']:.2f}–${t['cost_high']:.2f} | unpriced {t['unpriced']} | parsed {s['scan'].get('parsed_files',0)}, cached {s['scan'].get('cached_files',0)}",flush=True)
+    report(snap);print(str(output/'dashboard.html'),flush=True)
+    if not args.watch:
+        if args.open:webbrowser.open((output/'dashboard.html').as_uri())
+        return
+    server=serve(output,args.port);url=f'http://127.0.0.1:{server.server_address[1]}/';print(url+' (Ctrl+C to stop)',flush=True)
+    if args.open:webbrowser.open(url)
+    def fingerprint():
+        codex,files,_=discover(args)
+        paths=[p for _,p in files]+list(codex.glob('state_*.sqlite*'))
+        paths += [Path(p) for p in [args.prices,args.billing] if p]
+        return tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
+    previous=fingerprint()
+    try:
+        while True:
+            time.sleep(args.watch)
+            try:
+                current=fingerprint()
+                if current==previous:continue
+                report(make_snapshot(args));previous=current
+            except (OSError,ValueError,KeyError,sqlite3.Error) as e:
+                print('Refresh failed; previous HTML kept: '+str(e),file=sys.stderr,flush=True)
+    except KeyboardInterrupt:print('\nStopped.',flush=True)
+    finally:server.shutdown();server.server_close()
+
+if __name__=='__main__':
+    try:main()
+    except KeyboardInterrupt:raise SystemExit(130)
+    except (OSError,ValueError,KeyError,sqlite3.Error) as e:raise SystemExit('Error: '+str(e))
