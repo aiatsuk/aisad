@@ -23,7 +23,7 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.4.0'
+VERSION = '1.0.0'
 PARSER_VERSION = 3
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.

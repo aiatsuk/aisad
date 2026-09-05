@@ -123,6 +123,45 @@ class SkillTests(unittest.TestCase):
             skill.install_files(self.installed, *self.newer())
         self.assertEqual(extra.read_text(encoding='utf-8'), 'Keep me')
 
+    def test_explicit_downgrade_cli_preserves_data_and_local_edits(self):
+        skill.install_files(self.installed, *self.newer())
+        self.data.mkdir()
+        report = self.data / 'usage.json'
+        report.write_text('Keep local usage', encoding='utf-8')
+        command = [sys.executable, '-I', str(ROOT / 'skills/aisad/scripts/aisad.py'),
+                   'install', '--archive', str(self.archive), '--checksum-file', str(self.assets[2]),
+                   '--dest', str(self.installed.parent)]
+        blocked = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertEqual(skill.read_json(self.installed / 'manifest.json')['version'], '99.0.0')
+        reset = subprocess.run(command + ['--allow-downgrade'], capture_output=True, text=True)
+        self.assertEqual(reset.returncode, 0, reset.stderr)
+        self.assertEqual(skill.read_json(self.installed / 'manifest.json')['version'], self.version)
+        self.assertEqual(report.read_text(encoding='utf-8'), 'Keep local usage')
+        skill.install_files(self.installed, *self.newer())
+        instructions = self.installed / 'SKILL.md'
+        instructions.write_bytes(instructions.read_bytes() + b'\nLocal changes')
+        blocked = subprocess.run(command + ['--allow-downgrade'], capture_output=True, text=True)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn('Local modifications preserved', blocked.stderr)
+        self.assertTrue(instructions.read_bytes().endswith(b'Local changes'))
+
+    def test_reinstall_invalidates_previous_pending_update(self):
+        skill.install_files(self.installed, *self.newer())
+        skill.atomic_json(skill.state_path(self.installed, self.data), dict(
+            installed='99.0.0', latest='99.0.1', available=True, checked_at=skill.time.time()))
+        skill.install_files(self.installed, self.manifest, self.files, allow_downgrade=True)
+        latest = dict(version=self.version, tag='v' + self.version, archive=self.archive.name)
+        with patch.object(skill, 'release_info', return_value=latest) as metadata, \
+             patch.object(skill, 'download_release', side_effect=AssertionError('Stale update downloaded')), \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(skill.update(self.installed, self.data, automatic=True))
+        metadata.assert_called_once()
+        self.assertEqual(skill.read_json(self.installed / 'manifest.json')['version'], self.version)
+        state = skill.read_json(skill.state_path(self.installed, self.data))
+        self.assertEqual(state['installed'], self.version)
+        self.assertFalse(state['available'])
+
     def test_failed_swap_restores_installation(self):
         self.install()
         rename = Path.rename

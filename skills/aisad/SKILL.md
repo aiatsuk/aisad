@@ -112,10 +112,12 @@ The collector reads only sources on the current device and exposes its dashboard
 
 ## Installation on another device
 
+The stable baseline is 1.0.0; earlier 2.x numbers were assigned during implementation. To move an existing 2.x installation to this baseline, use the helper from an updated repository clone with `install --target codex --version 1.0.0 --allow-downgrade` (or the requested target). Old installed helpers cannot perform that transition themselves. Use the option only for an explicitly requested lower version or version reset; it never bypasses checksum verification or preservation of local edits. Normal automatic updates resume after the reinstall, using the new version sequence.
+
 Clone the repository, then run its helper:
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 2.4.0` selects an explicit published version. The repository README documents release and offline installation options.
+`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 1.0.0` selects an explicit published version. The repository README documents release and offline installation options.

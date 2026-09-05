@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 — 2026-09-05
+
+- Establish 1.0.0 as the stable version baseline, retaining the complete local dashboard, usage CLI, diagnostics and installable Codex/Claude Code skill.
+- Keep daily GitHub release checks, verified automatic updates, explicit check/update commands and offline operation.
+- Add an explicit `install --allow-downgrade` option for the one-time transition from the earlier 2.x labels. Preserve local modifications and reports; automatic updates still reject downgrades.
+- Invalidate cached update decisions after a reinstall so a pending release from the previous installation cannot undo the version reset.
+
+Earlier 2.x numbers were assigned during implementation. Their history is retained below; new releases proceed from 1.0.0.
+
 ## 2.4.0 — 2026-09-05
 
 - Rebuild the dashboard with public Uber Base Web design conventions: Overview, Recommendations, Sessions, Context & tools, and Cache health views, global filters, session timelines and a dark theme.

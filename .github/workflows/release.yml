@@ -30,4 +30,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/agent_usage.py "dist/aisad-skill-$GITHUB_REF_NAME.zip" dist/SHA256SUMS \
-            --verify-tag --title "AISAD $GITHUB_REF_NAME" --notes-file CHANGELOG.md
+            --verify-tag --latest --title "AISAD $GITHUB_REF_NAME" --notes-file CHANGELOG.md

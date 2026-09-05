@@ -35,7 +35,7 @@ class UpdateError(Exception):
 def semver(value):
     match = re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', str(value))
     if not match:
-        raise UpdateError('Expected a stable version such as 2.3.0')
+        raise UpdateError('Expected a stable version such as 1.0.0')
     return tuple(map(int, match.groups()))
 
 
@@ -239,12 +239,12 @@ def update_lock(root):
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def install_files(root, manifest, files):
+def install_files(root, manifest, files, allow_downgrade=False):
     with update_lock(root):
         verify_replaceable(root, files)
         current = read_json(root / 'manifest.json').get('version')
-        if current and semver(current) > semver(manifest['version']):
-            raise UpdateError('A newer version is installed; automatic downgrades are disabled')
+        if current and semver(current) > semver(manifest['version']) and not allow_downgrade:
+            raise UpdateError('A newer version is installed; use install --allow-downgrade for an intentional version reset')
         stage = Path(tempfile.mkdtemp(prefix='.' + root.name + '.stage-', dir=root.parent))
         backup = root.parent / ('.' + root.name + '.previous-' + uuid.uuid4().hex)
         moved = False
@@ -293,8 +293,9 @@ def check_update(root, data):
 def update(root, data, automatic=False):
     state = state_path(root, data)
     previous = read_json(state)
+    installed = read_json(root / 'manifest.json').get('version')
     age = time.time() - previous.get('checked_at', 0)
-    if automatic and 0 <= age < CHECK_INTERVAL and (root / 'runtime/agent_usage.py').is_file():
+    if automatic and previous.get('installed') == installed and 0 <= age < CHECK_INTERVAL and (root / 'runtime/agent_usage.py').is_file():
         if not previous.get('available') or previous.get('attempted_at', 0) >= previous['checked_at']:
             return False
         # An explicit check can discover an update without installing it. Apply it
@@ -305,7 +306,9 @@ def update(root, data, automatic=False):
         release = dict(version=version, tag='v' + version, archive='aisad-skill-v' + version + '.zip')
     else:
         # Throttle failed automatic checks too; explicit check/update always retries.
-        atomic_json(state, {'checked_at': time.time()})
+        # A reinstall can change the version outside this updater. Never reuse a
+        # pending release or a failed check from that previous installation.
+        atomic_json(state, {'checked_at': time.time(), 'installed': installed})
         result, release = check_update(root, data)
     print('Installed: ' + (result['installed'] or 'unbundled') + '; latest: ' + result['latest'], file=sys.stderr, flush=True)
     if result['available']:
@@ -324,7 +327,8 @@ def parser():
     install = commands.add_parser('install', help='Install a released skill', allow_abbrev=False)
     install.add_argument('--target', choices=['codex', 'claude', 'both'], default='codex')
     install.add_argument('--dest', help='Custom skills parent directory')
-    install.add_argument('--version', help='Published stable version, e.g. 2.3.0')
+    install.add_argument('--version', help='Published stable version, e.g. 1.0.0')
+    install.add_argument('--allow-downgrade', action='store_true', help='Allow an intentional reinstall to a lower version; preserves local edits and data')
     install.add_argument('--archive', help='Local release skill ZIP for offline installation')
     install.add_argument('--checksum-file', help='Local SHA256SUMS (required with --archive)')
     for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline']:
@@ -363,7 +367,7 @@ def main(argv=None):
             if args.target in ('claude', 'both'):
                 destinations.append(Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser().absolute() / 'skills/aisad')
         for destination in destinations:
-            version = install_files(destination, manifest, files)
+            version = install_files(destination, manifest, files, allow_downgrade=args.allow_downgrade)
             print('Installed AISAD ' + version + ' at ' + str(destination))
         return 0
     data = data_directory(args.data_dir)
