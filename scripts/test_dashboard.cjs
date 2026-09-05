@@ -20,13 +20,6 @@ const rows = [
   row('Codex', '2026-02-24', 'too-old', 10000, 0, 0, 99, 99),
   row('Codex', '2026-03-11', 'future', 10000, 0, 0, 99, 99),
 ];
-const payments = [
-  { date: '2026-03-05', provider: 'Codex', model: 'gpt-5.6-sol', project: 'api', amount: 20 },
-  { date: '2026-03-06', provider: 'Claude', model: 'claude-opus-5', project: 'web', amount: 10 },
-  { date: '2026-03-01', provider: 'Codex', model: 'gpt-5.6-sol', project: 'api', amount: 10 },
-  { date: '2026-03-01', provider: 'Claude', model: 'claude-opus-5', project: 'web', amount: 10 },
-];
-
 (async () => {
   const html = await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8');
   const pattern = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
@@ -38,8 +31,7 @@ const payments = [
   const delta = (page, index) => page.locator('#cards .card').nth(index).locator('.delta').textContent();
   async function check(name, overrides, run) {
     const data = { ...template, as_of_date: '2026-03-10', generated: '2026-03-11T00:30:00Z',
-      timezone: 'America/Los_Angeles', rows: structuredClone(rows), billing: structuredClone(payments),
-      billing_loaded: true, ...overrides };
+      timezone: 'America/Los_Angeles', rows: structuredClone(rows), ...overrides };
     const json = JSON.stringify(data).replace(/</g, '\\u003c');
     const page = await browser.newPage({ locale: 'en-US', timezoneId: 'Pacific/Auckland' });
     page.on('pageerror', e => errors.push(String(e)));
@@ -55,12 +47,11 @@ const payments = [
     await check('calendar week, boundaries, weighted cache and distinct sessions', {}, async page => {
       assert.equal(await page.locator('#from').inputValue(), '2026-03-04');
       assert.equal(await page.locator('#to').inputValue(), '2026-03-10');
-      assert.deepEqual(await values(page), ['$7.00', '4.3K', '5', '2', '72.9%', '$30.00']);
+      assert.deepEqual(await values(page), ['$7.00', '4.3K', '5', '2', '72.9%']);
       assert.equal(await delta(page, 0), '+16.7% · prev $6.00');
       assert.equal(await delta(page, 2), '+150.0% · prev 2');
       assert.equal(await delta(page, 3), '0.0% · prev 2');
       assert.equal(await delta(page, 4), '+35.4 pp · prev 37.5%');
-      assert.equal(await delta(page, 5), '+50.0% · prev $20.00');
       assert.match(await page.locator('#comparison-note').textContent(), /2026-02-25 – 2026-03-03/);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 2);
       assert.match(await page.locator('#daily').textContent(), /previous · 2026-02-25/);
@@ -70,17 +61,16 @@ const payments = [
       assert.equal(await page.locator('#providers-table [data-provider]').count(), 2);
       await page.locator('[data-provider="Codex"]').click();
       assert.equal(await page.locator('#provider').inputValue(), 'Codex');
-      assert.deepEqual(await values(page), ['$3.00', '1.8K', '3', '1', '50.0%', '$20.00']);
+      assert.deepEqual(await values(page), ['$3.00', '1.8K', '3', '1', '50.0%']);
       assert.equal(await delta(page, 0), '+50.0% · prev $2.00');
       assert.equal(await page.locator('#providers-table [data-provider]').count(), 1);
       await page.click('#reset');
       assert.equal(await page.locator('#provider').inputValue(), '');
       assert.equal((await values(page))[0], '$7.00');
     });
-    await check('model/project/role filters; role does not reallocate payments', {}, async page => {
+    await check('model/project/role filters apply to both periods', {}, async page => {
       await page.selectOption('#role', 'subagent');
       assert.equal((await values(page))[0], '$4.00');
-      assert.equal((await values(page))[5], '$30.00');
       assert.equal(await delta(page, 0), '0.0% · prev $4.00');
       await page.click('#reset');
       await page.selectOption('#model', 'gpt-5.6-sol');
@@ -127,7 +117,7 @@ const payments = [
       assert.equal(await delta(page, 0), 'No nonzero baseline · prev $0.00');
       assert(!/Infinity|NaN/.test(await page.locator('body').textContent()));
     });
-    await check('empty history and invalid date range are explicit', { rows: [], billing: [], billing_loaded: false }, async page => {
+    await check('empty history and invalid date range are explicit', { rows: [] }, async page => {
       assert.equal((await values(page))[2], '0');
       assert.equal(await delta(page, 0), 'No previous-period data');
       await page.fill('#from', '2026-03-12'); await page.locator('#from').dispatchEvent('change');

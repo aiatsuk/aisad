@@ -12,9 +12,8 @@
 *.db
 *.db-*
 
-# Private billing and local tariff overrides. Only the empty schema is shared.
+# Local data exports and tariff overrides.
 *.csv
-!/billing-template.csv
 /prices.json
 *.local.json
 .env

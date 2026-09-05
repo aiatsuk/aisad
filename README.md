@@ -42,7 +42,6 @@ Watch mode runs while its process is open. It does not install a system service 
 - Global period, date, provider, model, project and role filters; a searchable session table.
 - Cost concentration, subagent share and average input per request.
 - Trace coverage, parsing diagnostics and requests with unknown prices.
-- Actual payments imported separately from a local billing CSV.
 
 Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export.
 
@@ -54,32 +53,15 @@ Choose **Last 30 days**, **All time**, or enter a custom date range. Bounded ran
 
 Summary cards show percentage changes and previous values; cache rates show changes in percentage points. The daily chart aligns the previous period by day, with actual dates available on hover. Provider, model, project and role filters apply to both periods. Search only affects the sessions table.
 
-Comparisons use recorded observations, not guaranteed complete coverage. The current day is partial. Missing previous-period records are labeled explicitly, and missing current records do not produce a false 100% decrease. A zero baseline has no percentage change. Cost deltas are suppressed when either period contains unknown prices or a price range. Payments are compared separately by their recorded dates; missing payment rows are not inferred from tokens.
+Comparisons use recorded observations, not guaranteed complete coverage. The current day is partial. Missing previous-period records are labeled explicitly, and missing current records do not produce a false 100% decrease. A zero baseline has no percentage change. Cost deltas are suppressed when either period contains unknown prices or a price range.
 
-## Estimated cost versus actual payments
+## How cost is estimated
 
 **Local token counts cannot reveal subscription charges, remaining account limits or a provider invoice.** Even Claude SDK `total_cost_usd` is an estimate. AISAD does not add it to request-level costs because it may already include subagents and cumulative totals across turns.
 
 Built-in rates calculate an **API-equivalent estimate** from each model's input, output, cache usage and available processing mode/geography. The catalog was checked on **September 5, 2026**. It is a current-rate scenario applied to the available history, not a reconstructed billing history.
 
 Missing tiers default to Standard and missing geography defaults to global. An unknown model or unsupported mode has a missing price, not a zero price; the total is marked partial. If a Claude cache-write TTL is unknown, cost is shown as a 5-minute to 1-hour range.
-
-To show actual payments, prepare a local file using [billing-template.csv](billing-template.csv):
-
-```sh
-python3 agent_usage.py --billing billing.csv --open
-```
-
-| Field | Meaning |
-| --- | --- |
-| `transaction_id` | Unique payment or charge row ID; duplicates are rejected |
-| `date` | Accounting date, `YYYY-MM-DD` |
-| `provider` | `Codex`/`OpenAI` or `Claude`/`Anthropic` |
-| `amount_usd` | Confirmed amount in USD; a negative value represents a refund |
-| `model` | Optional model attribution from your billing records |
-| `project` | Optional project attribution from your billing records |
-
-There is no currency conversion or verification of payment authenticity. Use exact rows from your statement or export, then reconcile the import against its source. Rows without a model or project remain `unallocated`; costs are not allocated by token share. The role filter does not affect payments. Subscription payments and API estimates must not be added together as one expense.
 
 ## Local pricing overrides
 
@@ -128,7 +110,7 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 
 The local server exposes only the dashboard and its update timestamp. Raw exports and the parse cache are not served.
 
-**Clone the code on each device; keep its reports local.** Default output, JSONL traces, databases, local CSV files and price overrides are excluded through `.gitignore`. If you use a custom `--output` directory, place it outside the repository or add it to your local Git exclusions. Reports still contain session and project metadata; publishing them is not required to use AISAD.
+**Clone the code on each device; keep its reports local.** Default output, JSONL traces, databases, local data exports and price overrides are excluded through `.gitignore`. If you use a custom `--output` directory, place it outside the repository or add it to your local Git exclusions. Reports still contain session and project metadata; publishing them is not required to use AISAD.
 
 `refresh.py` is an alternative entry point with the same behavior.
 
@@ -138,7 +120,7 @@ The local server exposes only the dashboard and its update timestamp. Raw export
 python3 -m unittest -v test_agent_usage.py
 ```
 
-Tests use synthetic profiles only. They cover deduplication, counter resets, pricing, cache TTLs, unknown models, CSV billing, empty profiles, file changes and deletion, paths with spaces, safe HTML embedding and loopback refresh. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
+Tests use synthetic profiles only. They cover deduplication, counter resets, pricing, cache TTLs, unknown models, empty profiles, file changes and deletion, paths with spaces, safe HTML embedding and loopback refresh. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
 
 To generate the example dashboard without reading your sessions:
 
@@ -146,7 +128,7 @@ To generate the example dashboard without reading your sessions:
 python3 scripts/make_demo.py
 ```
 
-Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions and payments. The README screenshot was captured from this page. Playwright is needed only if you choose to recreate the screenshot with `scripts/capture_demo.cjs`; it is not a dashboard dependency.
+Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions. The README screenshot was captured from this page. Playwright is needed only if you choose to recreate the screenshot with `scripts/capture_demo.cjs`; it is not a dashboard dependency.
 
 Optional browser regression checks and screenshot generation:
 

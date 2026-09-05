@@ -21,7 +21,7 @@ const { chromium } = require('playwright');
     assert.equal(await page.locator('.badge').textContent(), 'Synthetic demo');
     assert(!/[\u0400-\u04ff]/.test(await page.locator('body').textContent()));
     const base = await page.locator('#cards .value').allTextContents();
-    assert.equal(base.length, 6);
+    assert.equal(base.length, 5);
     assert(await page.locator('svg rect').count() > 0);
     await page.selectOption('#provider', 'Claude');
     assert.notEqual((await page.locator('#cards .value').allTextContents())[2], base[2]);

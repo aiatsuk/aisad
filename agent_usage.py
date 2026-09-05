@@ -5,9 +5,8 @@ Run: python3 agent_usage.py --open
 """
 import argparse
 import collections
-import csv
 import datetime as dt
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -23,7 +22,7 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 PARSER_VERSION = 2
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -296,24 +295,6 @@ def price_request(row,catalog):
     return dict(cost=float(cost),cost_high=float(high),cost_parts=[float(x) for x in parts],
                 price_status='range' if high!=cost else 'priced',assumptions=assumptions)
 
-def read_billing(path):
-    if not path:return []
-    result=[];seen=set()
-    with Path(path).open(newline='',encoding='utf-8-sig') as f:
-        reader=csv.DictReader(f)
-        if not {'transaction_id','date','provider','amount_usd'}<=set(reader.fieldnames or []):
-            raise ValueError('Billing CSV needs transaction_id,date,provider,amount_usd; optional model,project')
-        for line,r in enumerate(reader,2):
-            key=r['transaction_id'].strip()
-            if not key or key in seen:raise ValueError('Missing/duplicate billing transaction_id at line '+str(line))
-            seen.add(key);date=dt.date.fromisoformat(r['date']).isoformat();amount=Decimal(r['amount_usd'])
-            if not amount.is_finite():raise ValueError('Invalid billing amount at line '+str(line))
-            provider=r['provider'].strip().lower()
-            if provider not in ['claude','anthropic','codex','openai']:raise ValueError('Unknown billing provider at line '+str(line))
-            result.append(dict(date=date,provider='Claude' if provider in ['claude','anthropic'] else 'Codex',
-                               model=(r.get('model') or '').strip() or 'unallocated',project=(r.get('project') or '').strip() or 'unallocated',amount=float(amount)))
-    return result
-
 def discover(args):
     home=Path(args.home).expanduser().resolve() if args.home else Path.home()
     codex=Path(args.codex_dir or (os.environ.get('CODEX_HOME') if not args.home else '') or home/'.codex').expanduser().resolve()
@@ -372,13 +353,13 @@ def report_timezone(name):
 def source_fingerprint(args):
     codex,files,_=discover(args)
     paths=[p for _,p in files]+list(codex.glob('state_*.sqlite*'))
-    paths += [Path(p) for p in [args.prices,args.billing] if p]
+    if args.prices:paths.append(Path(args.prices))
     day=dt.datetime.now(dt.timezone.utc).astimezone(report_timezone(args.timezone)).date().isoformat()
     return day,tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
 
 def make_snapshot(args):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
-    catalog=load_prices(args.prices);billing=read_billing(args.billing)
+    catalog=load_prices(args.prices)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
     sessions=registry(codex,args.include_titles,q);rows=[];reports={}
     cache=ParseCache(output/'parse-cache.sqlite')
@@ -433,7 +414,7 @@ def make_snapshot(args):
                   sources=[dict(provider=p,exists=root.is_dir(),path=str(root)) for p,root in roots],
                   summary=summary,quality=dict(q),scan=dict(stats),rows=list(grouped.values()),
                   titles={s['id']:s['title'] for s in sessions.values() if s['id'] in measured} if args.include_titles else {},
-                  billing=billing,billing_loaded=bool(args.billing),unknown_models=sorted({r['model'] for r in rows if r['cost'] is None}),
+                  unknown_models=sorted({r['model'] for r in rows if r['cost'] is None}),
                   reports=list(reports.values()))
     # Private evidence stays local. Requests are normalized fields only.
     atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
@@ -449,7 +430,7 @@ HTML = r'''<!doctype html>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
 <title>AISAD · Claude &amp; Codex usage</title><style>
 :root{color-scheme:light dark;--bg:#f7f8fa;--card:#fff;--ink:#17212d;--muted:#626e7b;--line:#e4e8ed;--accent:#147e78;--orange:#bf672b;--shade:#ecf6f4;--previous:#acb8c7}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:1440px;margin:auto;padding:34px 32px 70px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}h2{font-size:17px;letter-spacing:-.2px;margin:0 0 14px}h3{margin:24px 0 8px}.muted,small{color:var(--muted)}small{font-size:12px}.badge{border:1px solid var(--line);padding:7px 11px;border-radius:30px;color:var(--accent);white-space:nowrap}.coverage{margin:22px 0 16px;border-left:3px solid var(--accent);padding:12px 16px;background:var(--shade);border-radius:4px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:9px 11px;min-height:38px}select{max-width:240px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.cards{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}.card .value{font-size:26px;font-weight:650;letter-spacing:-.8px;margin:8px 0;overflow-wrap:anywhere}.card label{display:block;font-size:12px}.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.panel{margin-bottom:0}.wide{margin-top:16px}svg{display:block;width:100%;height:auto;max-height:310px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.table-wrap{overflow:auto;max-height:630px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:12px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted)}td:first-child{max-width:330px;overflow:hidden;text-overflow:ellipsis}th button{padding:2px 0;min-height:0;border:none;font-weight:600;background:none}.barrow{display:grid;grid-template-columns:155px 1fr 100px;align-items:center;gap:12px;margin:13px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:11px;background:var(--line);border-radius:10px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:10px}.barvalue{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:15px}.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.insight{padding:16px 20px;background:var(--shade);border-radius:10px}.insight b{font-size:19px;display:block;margin-bottom:4px}details{margin-top:18px}summary{cursor:pointer;font-weight:600}details p,details li{overflow-wrap:anywhere;color:var(--muted);max-width:1080px}a{color:var(--accent)}.empty{padding:40px 10px;text-align:center;color:var(--muted)}.legend{display:flex;gap:16px;margin-top:10px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--accent)}footer{margin-top:25px;font-size:12px;color:var(--muted)}.money-note{margin:10px 0;color:var(--muted);font-size:12px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:1440px;margin:auto;padding:34px 32px 70px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}h2{font-size:17px;letter-spacing:-.2px;margin:0 0 14px}h3{margin:24px 0 8px}.muted,small{color:var(--muted)}small{font-size:12px}.badge{border:1px solid var(--line);padding:7px 11px;border-radius:30px;color:var(--accent);white-space:nowrap}.coverage{margin:22px 0 16px;border-left:3px solid var(--accent);padding:12px 16px;background:var(--shade);border-radius:4px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:9px 11px;min-height:38px}select{max-width:240px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}.card .value{font-size:26px;font-weight:650;letter-spacing:-.8px;margin:8px 0;overflow-wrap:anywhere}.card label{display:block;font-size:12px}.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.panel{margin-bottom:0}.wide{margin-top:16px}svg{display:block;width:100%;height:auto;max-height:310px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.table-wrap{overflow:auto;max-height:630px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:12px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted)}td:first-child{max-width:330px;overflow:hidden;text-overflow:ellipsis}th button{padding:2px 0;min-height:0;border:none;font-weight:600;background:none}.barrow{display:grid;grid-template-columns:155px 1fr 100px;align-items:center;gap:12px;margin:13px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:11px;background:var(--line);border-radius:10px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:10px}.barvalue{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:15px}.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.insight{padding:16px 20px;background:var(--shade);border-radius:10px}.insight b{font-size:19px;display:block;margin-bottom:4px}details{margin-top:18px}summary{cursor:pointer;font-weight:600}details p,details li{overflow-wrap:anywhere;color:var(--muted);max-width:1080px}a{color:var(--accent)}.empty{padding:40px 10px;text-align:center;color:var(--muted)}.legend{display:flex;gap:16px;margin-top:10px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--accent)}footer{margin-top:25px;font-size:12px;color:var(--muted)}.money-note{margin:10px 0;color:var(--muted);font-size:12px}
 @media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#19212a;--ink:#e5edf5;--muted:#9aaabd;--line:#303b48;--accent:#59c6b8;--orange:#eda76b;--shade:#1b302f;--previous:#65778c}}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){main{padding:22px 14px}header{align-items:flex-start}h1{font-size:25px}.badge{font-size:11px}.grid,.grid.equal{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}.card,.panel{padding:15px}.card .value{font-size:23px}.insights{grid-template-columns:1fr}.barrow{grid-template-columns:115px 1fr 90px}.filters label{flex:1;min-width:130px}select{max-width:100%}.filters button{align-self:end}svg{min-height:190px}}
 .comparison{margin:10px 0 18px;color:var(--muted);font-size:13px}.delta{display:block;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;color:var(--accent)}.provider-button{padding:0;min-height:0;border:none;background:none;text-align:left;color:var(--accent)}.filters{align-items:flex-end}.legend{flex-wrap:wrap}.legend .previous{background:var(--previous)}
@@ -470,7 +451,6 @@ HTML = r'''<!doctype html>
 <div class="grid equal"><section class="panel"><h2>Estimated cost breakdown</h2><div id="parts"></div></section><section class="panel"><h2>Top 8 projects</h2><div id="projects-chart"></div></section></div>
 <section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Click a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section>
 <section class="panel wide"><div class="tools"><h2>Sessions</h2><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"></div><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:14px"><small id="page-info"></small><div><button id="prev">←</button> <button id="next">→</button></div></div></section>
-<section class="panel wide"><h2>Actual payments · local import</h2><p class="muted" id="billing-note"></p><div class="table-wrap"><table id="billing-table"></table></div></section>
 <details class="panel wide"><summary>Methodology, pricing and coverage</summary><div id="method"></div></details>
 <footer id="footer"></footer></main>
 <script id="snapshot" type="application/json">__DATA__</script><script>
@@ -482,7 +462,7 @@ const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{mo
 const rangeLabel=range=>range?range.from+' – '+range.to:'';
 const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
 let page=0,modelSort='cost',ascending=false;
-const allDates=D.rows.map(r=>r.date).concat(D.billing.map(r=>r.date)).sort();
+const allDates=D.rows.map(r=>r.date).sort();
 const today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
 function setPeriod(value){
     $('period').value=value;
@@ -498,15 +478,15 @@ function selectedRange(){
 }
 function previousRange(range){return range&&$('period').value!=='all'?{from:shiftDate(range.from,-range.days),to:shiftDate(range.from,-1),days:range.days}:null}
 for(const field of ['provider','model','project']){
-    const values=[...new Set(D.rows.concat(D.billing).map(r=>r[field]))].sort();
+    const values=[...new Set(D.rows.map(r=>r[field]))].sort();
     $(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(field==='provider'?providerLabel(v):v)+'</option>').join('');
 }
 setPeriod('7');
 $('subtitle').textContent=D.device+' · '+new Date(D.generated).toLocaleString('en-US')+' · '+D.timezone;
 if(D.demo)document.querySelector('.badge').textContent='Synthetic demo';
 $('coverage').textContent=D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.';
-function chosen(r,billing=false,range=selectedRange()){
-    return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(billing||!$('role').value||r.role===$('role').value));
+function chosen(r,range=selectedRange()){
+    return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(!$('role').value||r.role===$('role').value));
 }
 function aggregate(rows){const a={requests:0,input:0,cached:0,write:0,output:0,total:0,cost:0,cost_high:0,unpriced:0,max_context:0,parts:[0,0,0,0,0],assumed:0,write_unknown:0,sessions:new Set()};for(const r of rows){for(const f of ['requests','input','cached','write','output','total','cost','cost_high','unpriced','assumed','write_unknown'])a[f]+=r[f]||0;a.max_context=Math.max(a.max_context,r.max_context||0);a.parts=a.parts.map((v,i)=>v+(r.parts?.[i]||0));a.sessions.add(r.session)}a.cache=a.input?a.cached/a.input:null;return a}
 function groups(rows,field){const m=new Map();for(const r of rows){if(!m.has(r[field]))m.set(r[field],[]);m.get(r[field]).push(r)}return [...m].map(([name,rs])=>({name,...aggregate(rs)}))}
@@ -574,28 +554,24 @@ function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[m
 function sessionsTable(rs){const search=$('search').value.toLowerCase();let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b.cost-a.cost);page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);$('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Tokens</th><th>Cache</th><th>Max context</th><th>Cost, USD</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}">${esc(D.titles[g.name]||g.name.slice(0,22))}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';$('page-info').textContent=`${gs.length? page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length}
 function render(){
     const range=selectedRange(),previous=previousRange(range);
-    const rs=D.rows.filter(r=>chosen(r,false,range)),priorRows=D.rows.filter(r=>chosen(r,false,previous));
-    const a=aggregate(rs),b=aggregate(priorRows),bill=D.billing.filter(r=>chosen(r,true,range)),priorBill=D.billing.filter(r=>chosen(r,true,previous));
-    const actual=bill.reduce((s,r)=>s+r.amount,0),priorActual=priorBill.reduce((s,r)=>s+r.amount,0);
-    const paidDelta=!previous||!D.billing_loaded?'':!priorBill.length?'No previous payment rows':!bill.length?'No current payment rows':numericDelta(actual,priorActual,usd);
+    const rs=D.rows.filter(r=>chosen(r,range)),priorRows=D.rows.filter(r=>chosen(r,previous));
+    const a=aggregate(rs),b=aggregate(priorRows);
     const values=[
         ['API cost estimate',cost(a),'Token-based estimate, not an invoice',usageDelta(a,b,'cost',previous)],
         ['Input + output',compact(a.total),'Includes repeated cache reads',usageDelta(a,b,'total',previous)],
         ['Requests',integer(a.requests),'Deduplicated usage records',usageDelta(a,b,'requests',previous)],
         ['Sessions',integer(a.sessions.size),'Main threads and subagents',usageDelta(a,b,'sessions',previous)],
         ['Cached input',pct(a.cache),'Cache reads / total input',usageDelta(a,b,'cache',previous)],
-        ['Paid · CSV',D.billing_loaded?(bill.length?usd(actual):'—'):'—',D.billing_loaded?(bill.length+' imported rows; payment date'):'No local billing imported',paidDelta]
     ];
     $('cards').innerHTML=values.map(([label,value,note,delta])=>`<div class="card"><label>${label}</label><div class="value">${value}</div><small>${note}</small>${delta?`<span class="delta">${esc(delta)}</span>`:''}</div>`).join('');
     $('comparison-note').textContent=comparisonNote(range,previous,rs,priorRows);
-    $('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}Subscriptions are not allocated by tokens; payments and estimates are kept separate.`;
+    $('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}API-equivalent estimate; subscription charges are not inferred.`;
     const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);
     bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,10),metric);
     bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);
     providersTable(rs,priorRows,previous);
 const labels=['Uncached input','Cache reads','Cache writes','Output','Web search'];bars('parts',labels.map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:1,unpriced:0})));const top=groups(rs,'session').sort((a,b)=>b.cost-a.cost).slice(0,10).reduce((s,g)=>s+g.cost,0);const sub=aggregate(rs.filter(r=>r.role==='subagent'));$('insights').innerHTML=`<div class="insight"><b>${pct(a.cost?top/a.cost:null)}</b>of estimated cost comes from the top 10 sessions</div><div class="insight"><b>${pct(a.cost?sub.cost/a.cost:null)}</b>of estimated cost comes from subagents</div><div class="insight"><b>${compact(a.requests?a.input/a.requests:0)}</b>average input tokens per request, including cache</div>`;modelsTable(rs);sessionsTable(rs);
-$('billing-note').textContent=D.billing_loaded?'Local CSV: payments and charges by accounting date. Model and project come only from the CSV; unattributed rows are not allocated automatically. The role filter does not affect payments. Reconcile the import against your statement.':'Actual charges cannot be reconstructed from subscription tokens. To display them, run with --billing billing.csv. Required fields: transaction_id,date,provider,amount_usd; optional: model,project.';
-$('billing-table').innerHTML=bill.length?'<thead><tr><th>Date</th><th>Provider</th><th>Model</th><th>Project</th><th>Paid, USD</th></tr></thead><tbody>'+bill.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(providerLabel(r.provider))}</td><td>${esc(r.model)}</td><td>${esc(r.project)}</td><td>${usd(r.amount)}</td></tr>`).join('')+'</tbody>':'';}
+}
 for(const field of ['from','to','provider','model','project','role','chartmetric'])$(field).addEventListener('change',()=>{
     if(field==='from'||field==='to')$('period').value='custom';page=0;render();
 });
@@ -603,7 +579,7 @@ $('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;r
 $('search').addEventListener('input',()=>{page=0;render()});
 $('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};
 $('reset').onclick=()=>{setPeriod('7');for(const field of ['provider','model','project','role','search'])$(field).value='';page=0;render()};
-$('method').innerHTML=`<p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Actual payments come only from an explicit local CSV. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
+$('method').innerHTML=`<p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
 $('footer').textContent=`AISAD ${D.version} · Python standard library · Offline HTML · ${D.scan.cached_files||0} files from the local cache.`;render();
 // Only the loopback watcher serves this endpoint; file:// snapshots never request a network resource.
 if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{try{const r=await fetch('/status.json',{cache:'no-store'});if(r.ok&&(await r.json()).generated!==D.generated)location.reload()}catch{}},5000);
@@ -640,7 +616,6 @@ def parser():
     p.add_argument('--cowork',action='store_true',help='Also read local Claude Cowork audit traces on macOS')
     p.add_argument('--timezone',help='IANA timezone, e.g. Europe/Amsterdam; defaults to the system timezone')
     p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
-    p.add_argument('--billing',help='Local CSV of confirmed payments or charges (USD)')
     p.add_argument('--include-titles',action='store_true',help='Include shortened session titles; IDs only by default')
     p.add_argument('--write-prices',metavar='FILE',help='Write the built-in price catalog and exit')
     p.add_argument('--watch',type=float,default=0,metavar='SECONDS',help='Rebuild every N seconds and serve on the loopback interface')

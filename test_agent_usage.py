@@ -57,11 +57,6 @@ class UsageTests(unittest.TestCase):
   cat=app.default_prices();cat['note']='Local rates — USD'
   p=self.root/'prices.json';p.write_text(json.dumps(cat,ensure_ascii=False),encoding='utf-8')
   self.assertEqual(app.load_prices(p)['note'],cat['note'])
- def test_billing_duplicate_rejected_and_credit_preserved(self):
-  p=self.root/'billing.csv';p.write_text('transaction_id,date,provider,amount_usd\none,2026-09-01,Claude,-5\n')
-  self.assertEqual(app.read_billing(p)[0]['amount'],-5)
-  p.write_text(p.read_text()+'one,2026-09-01,Claude,1\n')
-  with self.assertRaises(ValueError):app.read_billing(p)
  def test_partial_jsonl(self):
   p=self.file('active.jsonl',[dict(type='valid')]);p.write_bytes(p.read_bytes()+b'{"type":')
   q=collections.Counter();self.assertEqual(len(list(app.read_jsonl(p,q))),1);self.assertEqual(q['partial_tail'],1)

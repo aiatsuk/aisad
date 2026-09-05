@@ -82,12 +82,8 @@ def build_demo():
             database.commit()
         finally:
             database.close()
-        billing = Path(folder) / 'billing.csv'
-        billing.write_text('transaction_id,date,provider,amount_usd\n'
-                           'demo-payment-1,2026-09-01,Claude,100\n'
-                           'demo-payment-2,2026-09-01,Codex,200\n', encoding='utf-8')
         args = app.parser().parse_args(['--home', str(profile), '--output', str(Path(folder) / 'report'),
-                                       '--billing', str(billing), '--timezone', 'UTC'])
+                                       '--timezone', 'UTC'])
         snapshot = app.make_snapshot(args)
     snapshot.pop('sources', None)
     snapshot.update(device='demo-device', generated='2026-09-05T12:00:00+00:00', as_of_date='2026-09-05', demo=True)
