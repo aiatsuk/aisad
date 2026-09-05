@@ -254,8 +254,9 @@ class SkillTests(unittest.TestCase):
             result = json.loads(run.stdout)
             self.assertEqual(result['version'], self.version)
             if command == 'analyze':
-                self.assertEqual(result['current']['diagnostics']['finding_count'], 0)
-                self.assertEqual(len(result['analysis_rules']), 8)
+                self.assertEqual(result['schema_version'], 2)
+                self.assertEqual(result['current']['telemetry']['total_records'], 0)
+                self.assertNotIn('analysis_rules', result)
             else:
                 self.assertEqual(result['session']['id'], 'Claude:empty')
                 self.assertEqual(result['session']['observed_requests'], 0)

@@ -1,4 +1,4 @@
 interface:
   display_name: "AISAD"
-  short_description: "Local usage, cost diagnostics and live status line"
+  short_description: "Local usage statistics, dashboard and live status line"
   default_prompt: "Use $aisad usage to summarize my Claude and Codex usage this week and compare it with the previous week."

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-09-05
+
+- Focus AISAD on collecting and displaying usage statistics. Remove the recommendation engine, findings, hypothetical savings, routing suggestions and status-line coaching.
+- Keep weekly comparisons, provider/model filters, session timelines, context and tool counts, cache usage, cost components and spend pools. The dashboard now has four views.
+- Keep `analyze` as an alias for `usage`. JSON schema 2 replaces `diagnostics` with `telemetry` and `analysis_records` with `request_stats`, removes `analysis_rules`, and omits status-line coaching. Existing usage totals and breakdown fields are unchanged.
+- Update skill instructions, documentation, synthetic demo and README screenshot. Installation and automatic updates retain their existing behavior.
+
 ## 1.0.0 — 2026-09-05
 
 - Establish 1.0.0 as the stable version baseline, retaining the complete local dashboard, usage CLI, diagnostics and installable Codex/Claude Code skill.

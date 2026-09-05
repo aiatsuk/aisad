@@ -19,10 +19,10 @@ def write_trace(path, records):
     path.write_text(''.join(json.dumps(row) + '\n' for row in records), encoding='utf-8')
 
 
-def diagnostic_examples(profile, start):
-    """Specific workflows exercise every check through the real trace parser."""
+def telemetry_examples(profile, start):
+    """Varied contexts, tool payloads and cache counters pass through the real trace parser."""
     patterns = {
-        'routing-check': ([20000, 22000, 24000], 'standard'),
+        'short-session': ([20000, 22000, 24000], 'standard'),
         'large-tool-result': ([40000, 110000, 115000], 'standard'),
         'growing-context': ([100000, 220000, 240000, 280000, 300000], 'standard'),
         'cache-after-break': ([150000, 155000, 160000, 165000], 'standard'),
@@ -108,7 +108,7 @@ def build_demo():
                                             payload=dict(type='token_count', info=dict(
                                                 last_token_usage=usage, total_token_usage=dict(cumulative)))))
                 write_trace(trace, records)
-        diagnostic_examples(profile, start)
+        telemetry_examples(profile, start)
         database = sqlite3.connect(profile / '.codex/state_1.sqlite')
         try:
             database.execute('CREATE TABLE threads(id TEXT, model TEXT, cwd TEXT, agent_path TEXT)')
@@ -125,7 +125,7 @@ def build_demo():
     destination = ROOT / 'output/demo/dashboard.html'
     app.atom_write(destination, app.render_html(snapshot).encode('utf-8'))
     args.date_to = '2026-09-05'
-    app.atom_json(destination.with_name('expected-analysis.json'), app.usage_report(snapshot, args))
+    app.atom_json(destination.with_name('expected-usage.json'), app.usage_report(snapshot, args))
     print('Synthetic example: ' + str(destination))
 
 

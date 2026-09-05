@@ -1,10 +1,10 @@
 # AISAD — AI Session Analysis Dashboard
 
-A portable, local-only session analyzer for Claude Code and Codex. Track estimated API costs, inspect context and cache behavior, review actionable recommendations, and keep a live spend counter in your terminal. Install the optional skill to ask questions about usage directly in Codex or Claude Code.
+A portable, local-only usage dashboard for Claude Code and Codex. Track tokens, requests, estimated API costs, context and cache statistics, and keep a live spend counter in your terminal. Install the optional skill to ask questions about usage directly in Codex or Claude Code.
 
 **Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The collector makes no outbound network requests; watch mode serves the dashboard on `127.0.0.1`. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
-![AISAD dashboard with weekly comparisons, session diagnostics, scenario savings and model costs](docs/dashboard.png)
+![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
 
 *Example dashboard with synthetic sessions. The screenshot contains no personal usage data.*
 
@@ -72,39 +72,19 @@ python3 agent_usage.py usage --json --all-time --include-requests
 | `changes` | Comparison status and deltas; missing data and uncertain prices remain explicit |
 | `quality`, `scan`, `source_summary` | Collection diagnostics over all discovered history, not just the filtered period |
 | `price_as_of`, `price_sources`, `unknown_models` | Price provenance and unpriced models in the current filtered period |
-| `analysis_rules` | Definitions, thresholds, required telemetry and actions for every check |
-| `current.diagnostics`, `previous.diagnostics` | Findings, associated cost, conditional savings and trace coverage |
-| `current.analysis_records`, `previous.analysis_records` | Per-request check evidence and numeric trace statistics with `--include-requests` |
+| `current.telemetry`, `previous.telemetry` | Trace coverage and measured tool/MCP counts and sizes |
+| `current.request_stats`, `previous.request_stats` | Per-request context, timing and numeric trace statistics with `--include-requests` |
 | `pools`, `pool_scope` | Shared interactive and managed spend across all providers/projects for the selected dates |
 
 `estimated_cost_usd` and `estimated_cost_high_usd` are null when no requests can be priced. With partial pricing they contain the known subtotal; check `unpriced_requests` before interpreting them as a complete total. `known_cost_usd` always names that known subtotal explicitly. A nonzero range reflects unknown cache TTLs. `cache_share` is a fraction; its delta uses percentage points. Session counts are distinct within each group, so adding sessions across models or dates double-counts shared sessions. Missing dates are absent from the breakdown, not proof of zero usage.
 
-## Session cost checks
+## Session statistics
 
-```sh
-python3 agent_usage.py analyze
-python3 agent_usage.py analyze --json --include-requests
-python3 agent_usage.py analyze --json --provider claude --days 30
-```
+Use `usage --json --include-requests` to inspect request timing, input/output tokens, cache usage, and numeric tool/MCP counts and sizes. These records support questions such as “Which sessions had the largest tool payloads?” or “How did cache usage change this week?” Tool bytes are measured locally and are not converted into billed tokens. Missing tool telemetry is reported explicitly.
 
-`analyze` reports the weekly summary and findings without generating a dashboard or starting a server. Its JSON uses the same report contract as `usage --json`. An agent can filter the evidence locally to answer questions such as “Which sessions have large tool payloads?” or “What changed in cache behavior this week?”
+`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. AISAD does not generate recommendations, flag workflow patterns, or estimate hypothetical savings.
 
-The checks run on recorded session history, then results are scoped to the selected dates and filters:
-
-| Check | Evidence | Suggested action / financial interpretation |
-| --- | --- | --- |
-| Model routing candidate | Premium model, 2–6 requests, at most 32K input per request and 8K total output | Benchmark a smaller model for correctness and retries; fixed-token price scenario |
-| Large initial context | First observed request has at least 100K input tokens | Inspect startup instructions, tools and loaded context; no invented saving |
-| Large tool payload | A local tool/MCP result is at least 40KB | Filter, paginate or summarize; show associated request cost, not payload billing |
-| Sustained context growth | Three consecutive requests have at least 2× initial input and 100K additional input | Consider compaction or a focused session; no invented saving |
-| Cache rebuild after a pause | Gap ≥ 5 minutes, previous cache share ≥ 50%, current share < 20%, substantial retained context | Check TTL and prompt changes; model possible prefix reuse, capped to previous input |
-| Long-context price premium | Recorded context activates a higher tariff | Show the incremental price premium; recoverability is not assumed |
-| Premium processing mode | Explicit priority/fast mode with a higher price | Compare Standard at the same token workload; validate latency tradeoff |
-| Repeated status checks | At least five polling/status calls between usage events | Use longer waits or backoff; calls are not automatically waste |
-
-**Associated cost is not wasted money.** Findings can overlap. Portfolio scenario savings take only the largest single saving per request, so switching models and processing modes is not double-counted. A null saving means no scenario was calculated. Scenario totals cover priced requests only; validate quality, latency and cache reuse before acting.
-
-The first recorded context is not necessarily initialization from an empty session. Traces cannot isolate system/schema overhead from every other input source. Tool bytes are measured locally and never converted to billed tokens. A pause and cache drop do not prove expiration, and a short session does not prove a simple task. Missing tool telemetry is reported explicitly.
+Usage and status-line JSON now use `schema_version: 2`. Usage reports replace `diagnostics` with `telemetry` and `analysis_records` with `request_stats`; `analysis_rules` is removed. Status-line reports omit coaching fields. Token and cost totals, breakdowns, periods and comparisons keep their existing field names. The full `usage.json` snapshot exposes numeric request statistics in `request_stats`.
 
 ## Live terminal status line
 
@@ -114,9 +94,9 @@ python3 agent_usage.py statusline --watch 5 --budget 500
 python3 agent_usage.py statusline --json --session Codex:SESSION_ID
 ```
 
-The line shows the recorded session lifetime estimate, provider spend for the selected period, the shared interactive pool, context/cache counters, and a coaching tip. `--session` selects a session; otherwise AISAD uses `CODEX_THREAD_ID` when present or clearly labels the latest observed session. This is local trace telemetry, so the counter updates when the harness writes usage records. `--watch` runs in the terminal without HTTP or HTML; press `Ctrl+C` to stop. `--json --watch 5` emits NDJSON, one object per change.
+The line shows the recorded session lifetime estimate, provider spend for the selected period, the shared interactive pool, and context/cache counters. `--session` selects a session; otherwise AISAD uses `CODEX_THREAD_ID` when present or clearly labels the latest observed session. This is local trace telemetry, so the counter updates when the harness writes usage records. `--watch` runs in the terminal without HTTP or HTML; press `Ctrl+C` to stop. `--json --watch 5` emits NDJSON, one object per change.
 
-`--budget USD` sets expected spend for the selected period across all local interactive harnesses. Visible nudges appear at 50/80/100% of that amount. Provider/model/project/role filters never reduce this shared pool. `--managed-budget USD` sets a separate budget, and repeated `--managed-session PROVIDER:ID` options tag managed roots and their confirmed descendants. Ordinary subagents remain in the interactive pool. `--pool managed` or `--pool interactive` filters analysis.
+`--budget USD` sets expected spend for the selected period across all local interactive harnesses. The counter marks the 50/80/100% thresholds of that amount. Provider/model/project/role filters never reduce this shared pool. `--managed-budget USD` sets a separate budget, and repeated `--managed-session PROVIDER:ID` options tag managed roots and their confirmed descendants. Ordinary subagents remain in the interactive pool. `--pool managed` or `--pool interactive` filters statistics.
 
 Budgets are optional CLI inputs, not enforced limits or inferred subscription allowances. The same amount applies to whichever period you select. There are no Slack notifications, approval flows, remote collection, or automatic model changes.
 
@@ -144,7 +124,7 @@ From a clone of this repository:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.0` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.1` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
 
 You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
 
@@ -154,7 +134,7 @@ In a new turn, invoke `$aisad usage` in Codex or `/aisad usage` in Claude Code. 
 - “Compare Claude and Codex with the previous week.”
 - “Which sessions explain the increase in estimated cost?”
 - “Show cache usage for this project over the last 30 days.”
-- “Analyze my sessions and suggest specific cost improvements.”
+- “Show the largest recorded context and tool payloads by session.”
 - “Show a live shared spend counter for Claude and Codex.”
 
 The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/aisad/SKILL.md](skills/aisad/SKILL.md).
@@ -184,7 +164,7 @@ For offline installation, download the skill ZIP and `SHA256SUMS` from a [releas
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install \
-  --archive aisad-skill-v1.0.0.zip --checksum-file SHA256SUMS --target codex
+  --archive aisad-skill-v1.0.1.zip --checksum-file SHA256SUMS --target codex
 ```
 
 ### Move an existing 2.x installation to 1.0.0
@@ -208,8 +188,7 @@ Use `--target claude` or `--target both` as appropriate. Reports remain in the d
 - Uncached input, output, cache reads and 5-minute/1-hour cache writes.
 - Main threads, subagents and auto-review where roles are recorded.
 - Global period, date, provider, model, project, role and pool filters; a searchable, sortable session table with request timelines.
-- Eight session checks with evidence, associated cost, conditional savings and a targeted next step.
-- Context and tool/MCP footprints, cache rebuild signals, shared spend pools and optional budget nudges.
+- Context and tool/MCP footprints, cache usage, shared spend pools and optional budget counters.
 - Trace coverage, parsing diagnostics and requests with unknown prices.
 
 Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export.
@@ -274,7 +253,7 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `dashboard.html` | Self-contained offline dashboard |
 | `usage.json` | Normalized usage evidence and local source metadata |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
-| `statusline.json` | Session/provider/pool counters and coaching from `statusline` |
+| `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files |
 | `prices-used.json` | Price catalog used for the snapshot |
 | `status.json` | Snapshot timestamp for automatic refresh |
@@ -287,7 +266,7 @@ The local server exposes only the dashboard and its update timestamp. Raw export
 
 ## Versions and releases
 
-`python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic versions: patch releases fix behavior, minor releases add compatible features, and major releases cover breaking changes. The usage JSON has a separate `schema_version`; incompatible report changes increment it.
+`python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic release versions. The JSON contracts are versioned separately with `schema_version`; incompatible report changes increment that field. Scripts consuming JSON should check it before reading the report.
 
 **1.0.0 is the stable baseline.** Earlier 2.x tags remain available as historical artifacts. GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
 
@@ -301,7 +280,7 @@ For maintainers, update `VERSION` and the changelog, then test and build:
 
 ```sh
 python3 -m unittest discover -v
-python3 scripts/build_release.py --tag v1.0.0
+python3 scripts/build_release.py --tag v1.0.1
 ```
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
@@ -336,7 +315,7 @@ These checks exercise calendar boundaries, comparison arithmetic, provider filte
 
 ## Background and limits
 
-Inspired by Visibility & Education and figures 11–12 in [Uber: The Efficient Software Factory](https://www.uber.com/by/en/blog/efficient-software-factory/). The article names four examples of its internal 16 checks; AISAD provides eight explicit local checks, not a reproduction of undisclosed Uber rules. Token counts do not establish productivity, output quality or time saved.
+Inspired by Visibility & Education and figures 11–12 in [Uber: The Efficient Software Factory](https://www.uber.com/by/en/blog/efficient-software-factory/). Token counts do not establish productivity, output quality or time saved.
 
 The dashboard follows [Uber Base](https://base.uber.com/6d2425e9f/p/294ab4-base-design-system) conventions using the public [Base Web colors](https://baseweb.design/guides/colors/) and [theme guidance](https://baseweb.design/guides/theming/): neutral surfaces, black primary controls, clear type, and semantic status colors. It includes a dark theme and keyboard navigation. The implementation stays dependency-free, with system fonts and no remote assets; it does not bundle proprietary Uber fonts or require access to private design-system pages.
 

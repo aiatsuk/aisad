@@ -24,7 +24,7 @@ const rows = [
   const html = await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8');
   const pattern = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
   const template = JSON.parse(html.match(pattern)[2]);
-  const expected = JSON.parse(await readFile(path.join(__dirname, '../output/demo/expected-analysis.json'), 'utf8'));
+  const expected = JSON.parse(await readFile(path.join(__dirname, '../output/demo/expected-usage.json'), 'utf8'));
   const browser = await chromium.launch({ headless: true });
   let passed = 0;
   const errors = [], network = [];
@@ -32,7 +32,7 @@ const rows = [
   const delta = (page, index) => page.locator('#cards .card').nth(index).locator('.delta').textContent();
   async function check(name, overrides, run) {
     const data = { ...template, as_of_date: '2026-03-10', generated: '2026-03-11T00:30:00Z',
-      timezone: 'America/Los_Angeles', rows: structuredClone(rows), analysis: {...template.analysis, records: []}, ...overrides };
+      timezone: 'America/Los_Angeles', rows: structuredClone(rows), request_stats: [], ...overrides };
     const json = JSON.stringify(data).replace(/</g, '\\u003c');
     const page = await browser.newPage({ locale: 'en-US', timezoneId: 'Pacific/Auckland' });
     page.on('pageerror', e => errors.push(String(e)));
@@ -48,7 +48,7 @@ const rows = [
     await check('calendar week, boundaries, weighted cache and distinct sessions', {}, async page => {
       assert.equal(await page.locator('#from').inputValue(), '2026-03-04');
       assert.equal(await page.locator('#to').inputValue(), '2026-03-10');
-      assert.deepEqual(await values(page), ['$7.00', '2', '72.9%', '$7.00', '—']);
+      assert.deepEqual(await values(page), ['$7.00', '2', '72.9%', '$7.00']);
       assert.equal(await delta(page, 0), '+16.7% · prev $6.00');
       assert.equal(await page.locator('#requests-delta').textContent(), 'Requests: +150.0% · prev 2');
       assert.equal(await delta(page, 1), '0.0% · prev 2');
@@ -62,7 +62,7 @@ const rows = [
       assert.equal(await page.locator('#providers-table [data-provider]').count(), 2);
       await page.locator('[data-provider="Codex"]').click();
       assert.equal(await page.locator('#provider').inputValue(), 'Codex');
-      assert.deepEqual(await values(page), ['$3.00', '1', '50.0%', '$3.00', '—']);
+      assert.deepEqual(await values(page), ['$3.00', '1', '50.0%', '$3.00']);
       assert.equal(await delta(page, 0), '+50.0% · prev $2.00');
       assert.equal(await page.locator('#providers-table [data-provider]').count(), 1);
       await page.click('#reset');
@@ -125,59 +125,58 @@ const rows = [
       assert.match(await page.locator('#comparison-note').textContent(), /Choose a valid date range/);
       assert.equal(await page.locator('#daily svg').count(), 0);
     });
-    await check('browser diagnostics reconcile with Python, including filter scope', template, async page => {
-      const diagnostic = await page.evaluate(() => diagnostics(selectedRecords()));
-      const oracle = expected.current.diagnostics;
-      assert.equal(diagnostic.findings.length, oracle.finding_count);
-      assert.equal(diagnostic.flagged, oracle.flagged_sessions);
-      assert.equal(diagnostic.traceRecords, oracle.trace_records);
-      assert(Math.abs(diagnostic.scenario - oracle.scenario_savings_usd) < 1e-9);
-      assert(Math.abs(diagnostic.scenarioHigh - oracle.scenario_savings_high_usd) < 1e-9);
-      for (const finding of diagnostic.findings) {
-        const match = oracle.findings.find(f => f.rule === finding.rule && f.session === finding.session && f.model === finding.model && f.project === finding.project && f.role === finding.role && f.pool === finding.pool);
-        assert(match);
-        assert.equal(finding.requests, match.requests);
-        assert.equal(finding.unpriced, match.unpriced_requests);
-        assert(Math.abs(finding.cost - match.known_cost_usd) < 1e-9);
-        assert.deepEqual(finding.evidence, match.evidence);
-        if (match.savings_usd == null) assert.equal(finding.savings, null);
-        else assert(Math.abs(finding.savings - match.savings_usd) < 1e-9);
-      }
-      assert.deepEqual(new Set(diagnostic.findings.map(f => f.rule)), new Set(Object.keys(template.analysis.rules)));
+    await check('browser statistics reconcile with Python and retain filter scope', template, async page => {
+      assert.equal(expected.schema_version, 2);
+      assert(!('analysis' in template));
+      assert(!('analysis_rules' in expected));
+      const measured = await page.evaluate(() => telemetry(selectedRecords()));
+      const oracle = expected.current.telemetry;
+      assert.equal(measured.traceRecords, oracle.trace_records);
+      assert.equal(measured.totalRecords, oracle.total_records);
+      assert.deepEqual(measured.stats, oracle.tool_stats);
+      const totals = await page.evaluate(() => aggregate(D.rows.filter(r => chosen(r))));
+      assert.equal(totals.requests, expected.current.totals.requests);
+      assert.equal(totals.input, expected.current.totals.input_tokens);
+      assert.equal(totals.output, expected.current.totals.output_tokens);
+      assert(Math.abs(totals.cost - expected.current.totals.known_cost_usd) < 1e-9);
       const poolText = await page.locator('#pools').textContent();
       await page.selectOption('#provider', 'Claude');
       assert.equal(await page.locator('#pools').textContent(), poolText);
-      assert((await page.evaluate(() => diagnostics(selectedRecords()).findings)).every(f => f.session.startsWith('Claude:')));
+      assert((await page.evaluate(() => selectedRecords())).every(r => r.session.startsWith('Claude:')));
+      assert.equal(await page.evaluate(() => telemetry(selectedRecords()).totalRecords), expected.current.by_provider.find(p => p.name === 'Claude').requests);
       await page.click('#reset');
       await page.selectOption('#pool', 'managed');
       assert.equal(await page.locator('#card-sessions .value').textContent(), '1');
       assert.equal(await page.locator('#pools').textContent(), poolText);
     });
-    await check('recommendations, session drilldown, context, cache, keyboard and dark theme', template, async page => {
-      await page.click('#tab-recommendations');
-      await page.selectOption('#check-filter', 'large_tool_result');
-      assert.equal(await page.locator('#findings .finding').count(), 1);
-      assert.match(await page.locator('#findings').textContent(), /46.0 KB/);
-      assert.match(await page.locator('#findings').textContent(), /Not estimated/);
-      await page.locator('#findings [data-session]').click();
+    await check('statistics-only views, session drilldown, keyboard and dark theme', template, async page => {
+      assert.equal(await page.locator('[data-tab]').count(), 4);
+      assert.equal(await page.locator('#card-savings, #view-recommendations, #review-next').count(), 0);
+      await page.click('#tab-sessions');
+      await page.fill('#search', 'large-tool-result');
+      await page.locator('#sessions-table [data-session]').click();
       assert.equal(await page.locator('#session-dialog').evaluate(el => el.open), true);
       assert.equal(await page.locator('#session-title').textContent(), 'Codex:large-tool-result');
       assert.equal(await page.locator('#session-timeline circle').count(), 3);
+      assert.equal(await page.locator('#session-findings').count(), 0);
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#session-dialog').evaluate(el => el.open), false);
       await page.click('#tab-context');
       assert(await page.locator('#tool-coverage').isVisible());
+      assert.match(await page.locator('#context-cards').textContent(), /46.0 KB/);
       await page.click('#tab-cache');
-      assert.equal(await page.locator('#cache-findings .finding').count(), 1);
+      assert.match(await page.locator('#cache-cards').textContent(), /Cache writes/);
+      assert.equal(await page.locator('#cache-findings').count(), 0);
       await page.locator('#tab-cache').press('Home');
       assert.equal(await page.locator('#tab-overview').getAttribute('aria-selected'), 'true');
       await page.click('#theme');
       assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
       await page.setViewportSize({width:390, height:844});
-      for (const view of ['overview', 'recommendations', 'sessions', 'context', 'cache']) {
+      for (const view of ['overview', 'sessions', 'context', 'cache']) {
         await page.click('#tab-' + view);
         assert(await page.locator('#view-' + view).isVisible());
         assert(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), view + ' overflows');
+        assert(!/recommendations|scenario savings|review next|possible rebuilds|flagged|benchmark/i.test(await page.locator('main').innerText()));
       }
     });
     assert.deepEqual(errors, []);
