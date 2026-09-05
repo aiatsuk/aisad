@@ -15,7 +15,7 @@ For `usage`, collect local metrics and return the default weekly summary without
 python3 <skill-directory>/scripts/aisad.py usage
 ```
 
-Example format: `For Aug 30–Sep 5: 4,630 requests, 35 sessions, $1,327.32 estimated API cost.` Use the actual command output, never these example numbers. Include the previous-period comparison when available.
+Example format: `For Aug 30–Sep 5: $1,327.32 estimated API cost. In: 29M, Out: 1.28M` Use the actual command output, never these example numbers. `In` is total input tokens, including cache reads and writes; `Out` is output tokens. Compact counts use K/M/B/T with up to two decimals. Include the previous-period cost and token comparison when available. Exact token totals, request counts and session counts remain in JSON.
 
 For questions about costs, models, sessions, projects or trends, collect structured data and process it locally:
 
@@ -85,4 +85,4 @@ Clone the repository, then run its helper:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 2.3.0` selects an explicit published version. The repository README documents release and offline installation options.
+`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 2.3.1` selects an explicit published version. The repository README documents release and offline installation options.

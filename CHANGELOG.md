@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1 — 2026-09-05
+
+- Lead quick `usage` reports with estimated API cost and compact input/output token counts.
+- Compare estimated cost, input and output with the previous period. Keep exact token counts, requests and sessions in JSON.
+- Update the skill's response format and README examples.
+
 ## 2.3.0 — 2026-09-05
 
 - Add `usage` for a fast weekly text report without HTML or a running server.

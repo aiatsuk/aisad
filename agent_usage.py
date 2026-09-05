@@ -22,7 +22,7 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.3.0'
+VERSION = '2.3.1'
 PARSER_VERSION = 2
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -519,17 +519,25 @@ def usage_text(report):
     def date_label(value):
         day=dt.date.fromisoformat(value)
         return months[day.month-1]+' '+str(day.day)
+    def tokens(value):
+        units=('', 'K', 'M', 'B', 'T');unit=0
+        while value>=1000 and unit<len(units)-1:
+            value/=1000;unit+=1
+        if not unit:return str(value)
+        if round(value,2)>=1000 and unit<len(units)-1:
+            value/=1000;unit+=1
+        return f'{value:.2f}'.rstrip('0').rstrip('.')+units[unit]
     period=report['period'];a=report['current']['totals']
     cost=a['estimated_cost_usd'];high=a['estimated_cost_high_usd']
     amount='unavailable' if cost is None else f'${cost:,.2f}'+(f'–${high:,.2f}' if high-cost>.005 else '')
     if a['unpriced_requests']:amount+=f" (partial; {a['unpriced_requests']:,} unpriced requests)"
     label=date_label(period['from'])+'–'+date_label(period['to'])
     if period['from'][:4]!=period['to'][:4]:label=period['from']+'–'+period['to']
-    lines=[f"For {label}: {a['requests']:,} requests, {a['sessions']:,} sessions, {amount} estimated API cost."]
+    lines=[f"For {label}: {amount} estimated API cost. In: {tokens(a['input_tokens'])}, Out: {tokens(a['output_tokens'])}"]
     changes=report['changes']
     if changes['status']=='available':
         descriptions=[]
-        for metric,name in [('requests','requests'),('estimated_cost_usd','estimated cost')]:
+        for metric,name in [('estimated_cost_usd','estimated cost'),('input_tokens','input'),('output_tokens','output')]:
             value=changes[metric]
             if value['status']=='available':descriptions.append(f"{name} {value['percent']:+.1f}%")
             else:descriptions.append(name+': '+value['status'].replace('_',' '))

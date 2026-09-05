@@ -41,10 +41,12 @@ python3 agent_usage.py usage
 Example output:
 
 ```text
-For Aug 30–Sep 5: 4,630 requests, 35 sessions, $1,327.32 estimated API cost.
+For Aug 30–Sep 5: $1,327.32 estimated API cost. In: 29M, Out: 1.28M
 ```
 
 The command reads local traces, reuses the parse cache, prints the last seven days, and includes a comparison with the previous seven days when records exist. It generates no HTML, opens no browser and starts no server. These example numbers are illustrative; your report uses this device's actual recorded usage.
+
+`In` is total input tokens, including cache reads and writes; `Out` is output tokens. Counts use K/M/B/T with up to two decimal places. The comparison covers estimated cost, input and output. JSON retains exact token counts, requests and sessions for detailed analysis.
 
 Use JSON for scripts and agent analysis:
 
@@ -81,7 +83,7 @@ From a clone of this repository:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 2.3.0` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 2.3.1` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
 
 You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
 
@@ -117,7 +119,7 @@ For offline installation, download the skill ZIP and `SHA256SUMS` from a [releas
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install \
-  --archive aisad-skill-v2.3.0.zip --checksum-file SHA256SUMS --target codex
+  --archive aisad-skill-v2.3.1.zip --checksum-file SHA256SUMS --target codex
 ```
 
 ## What you can explore
@@ -217,7 +219,7 @@ For maintainers, update `VERSION` and the changelog, then test and build:
 
 ```sh
 python3 -m unittest discover -v
-python3 scripts/build_release.py --tag v2.3.0
+python3 scripts/build_release.py --tag v2.3.1
 ```
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.

@@ -27,12 +27,18 @@ class ReportTests(unittest.TestCase):
 
     def test_default_week_and_exact_summary_format(self):
         rows = [self.row(session='Codex:' + str(i), requests=4596 if i == 0 else 1,
+                         input=29_000_123 - 34_000 if i == 0 else 1000,
+                         output=1_279_999 - 3400 if i == 0 else 100,
+                         total=30_280_122 - 37_400 if i == 0 else 1100,
                          cost=1327.32 if i == 0 else 0., cost_high=1327.32 if i == 0 else 0.) for i in range(35)]
         result = self.report(rows + [self.row('2026-08-29')])
         self.assertEqual(result['period'], {'from': '2026-08-30', 'to': '2026-09-05', 'days': 7})
         self.assertEqual(result['previous_period']['from'], '2026-08-23')
         self.assertEqual(app.usage_text(result).splitlines()[0],
-                         'For Aug 30–Sep 5: 4,630 requests, 35 sessions, $1,327.32 estimated API cost.')
+                         'For Aug 30–Sep 5: $1,327.32 estimated API cost. In: 29M, Out: 1.28M')
+        totals = result['current']['totals']
+        self.assertEqual((totals['requests'], totals['sessions']), (4630, 35))
+        self.assertEqual((totals['input_tokens'], totals['output_tokens']), (29_000_123, 1_279_999))
         self.assertEqual(result['previous']['totals']['requests'], 1)
 
     def test_filters_apply_to_both_periods_and_request_details(self):
