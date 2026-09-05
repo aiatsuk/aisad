@@ -35,3 +35,22 @@ jobs:
         run: python -m unittest -v test_agent_usage.py
       - name: Build synthetic preview without personal data
         run: python scripts/make_demo.py
+
+  browser:
+    name: Browser comparisons and responsive layout
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install browser test tools
+        run: |
+          npm install --no-save --package-lock=false playwright@1.62.1
+          npx --no-install playwright install --with-deps chromium
+      - name: Test weekly comparisons with synthetic data
+        run: |
+          python3 scripts/make_demo.py
+          node scripts/test_dashboard.cjs
+          node scripts/capture_demo.cjs

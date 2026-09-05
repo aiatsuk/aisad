@@ -4,7 +4,7 @@ A portable, local-only dashboard for Claude Code and Codex usage. Track tokens, 
 
 **Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The script makes no outbound network requests; watch mode serves the dashboard on `127.0.0.1`.
 
-![AISAD dashboard showing daily usage, model costs and cache breakdowns](docs/dashboard.png)
+![AISAD dashboard showing the last seven days, previous-period comparisons and provider totals](docs/dashboard.png)
 
 *Example dashboard with synthetic sessions. The screenshot contains no personal usage data.*
 
@@ -34,15 +34,27 @@ Watch mode runs while its process is open. It does not install a system service 
 
 ## What you can explore
 
+- The last seven days by default, compared with the preceding seven days when records exist.
+- Provider totals for OpenAI/Codex and Anthropic/Claude; click a provider to filter the dashboard.
 - Tokens and estimated cost by model, day, project and session.
 - Uncached input, output, cache reads and 5-minute/1-hour cache writes.
 - Main threads, subagents and auto-review where roles are recorded.
-- Global date, tool, model, project and role filters; a searchable session table.
+- Global period, date, provider, model, project and role filters; a searchable session table.
 - Cost concentration, subagent share and average input per request.
 - Trace coverage, parsing diagnostics and requests with unknown prices.
 - Actual payments imported separately from a local billing CSV.
 
 Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export.
+
+## Periods and comparisons
+
+The default **Last 7 days** includes the snapshot date and the six preceding calendar days, using the report's timezone. For example, a September 5 snapshot shows August 30–September 5 against August 23–29. An old trace does not move the window backward. Watch mode refreshes at local midnight even when source files have not changed.
+
+Choose **Last 30 days**, **All time**, or enter a custom date range. Bounded ranges are compared with the immediately preceding range of equal length. All time has no comparison, and Reset restores the last seven days with all providers selected.
+
+Summary cards show percentage changes and previous values; cache rates show changes in percentage points. The daily chart aligns the previous period by day, with actual dates available on hover. Provider, model, project and role filters apply to both periods. Search only affects the sessions table.
+
+Comparisons use recorded observations, not guaranteed complete coverage. The current day is partial. Missing previous-period records are labeled explicitly, and missing current records do not produce a false 100% decrease. A zero baseline has no percentage change. Cost deltas are suppressed when either period contains unknown prices or a price range. Payments are compared separately by their recorded dates; missing payment rows are not inferred from tokens.
 
 ## Estimated cost versus actual payments
 
@@ -135,6 +147,18 @@ python3 scripts/make_demo.py
 ```
 
 Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions and payments. The README screenshot was captured from this page. Playwright is needed only if you choose to recreate the screenshot with `scripts/capture_demo.cjs`; it is not a dashboard dependency.
+
+Optional browser regression checks and screenshot generation:
+
+```sh
+npm install --no-save --package-lock=false playwright@1.62.1
+npx --no-install playwright install chromium
+python3 scripts/make_demo.py
+node scripts/test_dashboard.cjs
+node scripts/capture_demo.cjs
+```
+
+These checks exercise calendar boundaries, comparison arithmetic, provider filters, missing history, price uncertainty and mobile rendering using synthetic data only. GitHub Actions runs them in addition to the Python tests.
 
 ## Background and limits
 

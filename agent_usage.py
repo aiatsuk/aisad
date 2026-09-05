@@ -23,7 +23,7 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 PARSER_VERSION = 2
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -363,6 +363,19 @@ class ParseCache:
             if path not in paths:self.c.execute('DELETE FROM files WHERE path=?',(path,))
         self.c.commit();self.c.close()
 
+def report_timezone(name):
+    if not name:return None
+    if name=='UTC':return dt.timezone.utc
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(name)
+
+def source_fingerprint(args):
+    codex,files,_=discover(args)
+    paths=[p for _,p in files]+list(codex.glob('state_*.sqlite*'))
+    paths += [Path(p) for p in [args.prices,args.billing] if p]
+    day=dt.datetime.now(dt.timezone.utc).astimezone(report_timezone(args.timezone)).date().isoformat()
+    return day,tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
+
 def make_snapshot(args):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices);billing=read_billing(args.billing)
@@ -381,12 +394,7 @@ def make_snapshot(args):
             for report in r['reports']:reports[report['id']]=report
     finally:cache.close({str(p) for _,p in files})
     rows=merge_requests(rows,q)
-    tz=None
-    if args.timezone == 'UTC':
-        tz=dt.timezone.utc
-    elif args.timezone:
-        from zoneinfo import ZoneInfo
-        tz=ZoneInfo(args.timezone)
+    tz=report_timezone(args.timezone)
     session_max=collections.defaultdict(int)
     for r in rows:session_max[(r['session'],r['model'])]=max(session_max[(r['session'],r['model'])],r['input'])
     for r in rows:
@@ -419,7 +427,8 @@ def make_snapshot(args):
     assert summary['input']==sum(g['input'] for g in grouped.values())
     assert math.isclose(summary['cost'],sum(g['cost'] for g in grouped.values()),abs_tol=1e-7)
     # No source paths, transcript, hidden reasoning or arguments are embedded in the HTML.
-    snapshot=dict(version=VERSION,generated=dt.datetime.now(dt.timezone.utc).isoformat(),device=socket.gethostname(),
+    now=dt.datetime.now(dt.timezone.utc)
+    snapshot=dict(version=VERSION,generated=now.isoformat(),as_of_date=now.astimezone(tz).date().isoformat(),device=socket.gethostname(),
                   timezone=args.timezone or 'System local timezone',price_as_of=catalog.get('as_of','custom'),price_sources=catalog.get('sources',[]),
                   sources=[dict(provider=p,exists=root.is_dir(),path=str(root)) for p,root in roots],
                   summary=summary,quality=dict(q),scan=dict(stats),rows=list(grouped.values()),
@@ -439,20 +448,24 @@ HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
 <title>AISAD · Claude &amp; Codex usage</title><style>
-:root{color-scheme:light dark;--bg:#f7f8fa;--card:#fff;--ink:#17212d;--muted:#626e7b;--line:#e4e8ed;--accent:#147e78;--orange:#bf672b;--shade:#ecf6f4}
+:root{color-scheme:light dark;--bg:#f7f8fa;--card:#fff;--ink:#17212d;--muted:#626e7b;--line:#e4e8ed;--accent:#147e78;--orange:#bf672b;--shade:#ecf6f4;--previous:#acb8c7}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:1440px;margin:auto;padding:34px 32px 70px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}h2{font-size:17px;letter-spacing:-.2px;margin:0 0 14px}h3{margin:24px 0 8px}.muted,small{color:var(--muted)}small{font-size:12px}.badge{border:1px solid var(--line);padding:7px 11px;border-radius:30px;color:var(--accent);white-space:nowrap}.coverage{margin:22px 0 16px;border-left:3px solid var(--accent);padding:12px 16px;background:var(--shade);border-radius:4px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:9px 11px;min-height:38px}select{max-width:240px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.cards{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}.card .value{font-size:26px;font-weight:650;letter-spacing:-.8px;margin:8px 0;overflow-wrap:anywhere}.card label{display:block;font-size:12px}.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.panel{margin-bottom:0}.wide{margin-top:16px}svg{display:block;width:100%;height:auto;max-height:310px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.table-wrap{overflow:auto;max-height:630px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:12px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted)}td:first-child{max-width:330px;overflow:hidden;text-overflow:ellipsis}th button{padding:2px 0;min-height:0;border:none;font-weight:600;background:none}.barrow{display:grid;grid-template-columns:155px 1fr 100px;align-items:center;gap:12px;margin:13px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:11px;background:var(--line);border-radius:10px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:10px}.barvalue{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:15px}.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.insight{padding:16px 20px;background:var(--shade);border-radius:10px}.insight b{font-size:19px;display:block;margin-bottom:4px}details{margin-top:18px}summary{cursor:pointer;font-weight:600}details p,details li{overflow-wrap:anywhere;color:var(--muted);max-width:1080px}a{color:var(--accent)}.empty{padding:40px 10px;text-align:center;color:var(--muted)}.legend{display:flex;gap:16px;margin-top:10px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--accent)}footer{margin-top:25px;font-size:12px;color:var(--muted)}.money-note{margin:10px 0;color:var(--muted);font-size:12px}
-@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#19212a;--ink:#e5edf5;--muted:#9aaabd;--line:#303b48;--accent:#59c6b8;--orange:#eda76b;--shade:#1b302f}}
+@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#19212a;--ink:#e5edf5;--muted:#9aaabd;--line:#303b48;--accent:#59c6b8;--orange:#eda76b;--shade:#1b302f;--previous:#65778c}}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){main{padding:22px 14px}header{align-items:flex-start}h1{font-size:25px}.badge{font-size:11px}.grid,.grid.equal{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}.card,.panel{padding:15px}.card .value{font-size:23px}.insights{grid-template-columns:1fr}.barrow{grid-template-columns:115px 1fr 90px}.filters label{flex:1;min-width:130px}select{max-width:100%}.filters button{align-self:end}svg{min-height:190px}}
+.comparison{margin:10px 0 18px;color:var(--muted);font-size:13px}.delta{display:block;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;color:var(--accent)}.provider-button{padding:0;min-height:0;border:none;background:none;text-align:left;color:var(--accent)}.filters{align-items:flex-end}.legend{flex-wrap:wrap}.legend .previous{background:var(--previous)}
 </style></head><body><main>
 <header><div><h1>AISAD · Agent usage</h1><div class="muted" id="subtitle"></div></div><span class="badge">● This device only</span></header>
 <div class="coverage" id="coverage"></div>
 <div class="filters">
+<label>Period<select id="period"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom</option></select></label>
 <label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label>
-<label>Tool<select id="provider"></select></label><label>Model<select id="model"></select></label>
+<label>Provider<select id="provider"></select></label><label>Model<select id="model"></select></label>
 <label>Project<select id="project"></select></label><label>Role<select id="role"><option value="">All roles</option><option value="main">Main thread</option><option value="subagent">Subagent</option><option value="review">Auto-review</option></select></label>
 <button id="reset">Reset</button></div>
+<p class="comparison" id="comparison-note" aria-live="polite"></p>
 <div class="cards" id="cards"></div><div class="money-note" id="money-note"></div>
 <div class="grid"><section class="panel"><div class="tools"><h2>Daily usage</h2><select id="chartmetric" aria-label="Chart metric"><option value="cost">Estimated cost, USD</option><option value="total">Total tokens</option><option value="output">Output tokens</option><option value="requests">Requests</option></select></div><div id="daily"></div></section><section class="panel"><h2>Top 10 models</h2><div id="models-chart"></div></section></div>
+<section class="panel wide"><div class="tools"><h2>Usage by provider</h2><small>Click a provider to filter the dashboard</small></div><div class="table-wrap"><table id="providers-table"></table></div></section>
 <div class="insights" id="insights"></div>
 <div class="grid equal"><section class="panel"><h2>Estimated cost breakdown</h2><div id="parts"></div></section><section class="panel"><h2>Top 8 projects</h2><div id="projects-chart"></div></section></div>
 <section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Click a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section>
@@ -463,27 +476,133 @@ HTML = r'''<!doctype html>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';const D=JSON.parse(document.getElementById('snapshot').textContent);const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const compact=n=>new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n||0);const integer=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);const pct=n=>n==null?'—':(n*100).toFixed(1)+'%';
-let page=0,modelSort='cost',ascending=false;const allDates=D.rows.map(r=>r.date).concat(D.billing.map(r=>r.date)).sort();const first=allDates[0]||'',last=allDates[allDates.length-1]||'';
-for(const field of ['provider','model','project']){const values=[...new Set(D.rows.concat(D.billing).map(r=>r[field]))].sort();$(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option>'+esc(v)+'</option>').join('')}
-$('from').value=first;$('to').value=last;$('subtitle').textContent=D.device+' · '+new Date(D.generated).toLocaleString('en-US')+' · '+D.timezone;
+// Calendar dates use UTC arithmetic to avoid DST and browser-timezone shifts.
+const shiftDate=(date,days)=>{const value=new Date(date+'T00:00:00Z');value.setUTCDate(value.getUTCDate()+days);return value.toISOString().slice(0,10)};
+const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
+const rangeLabel=range=>range?range.from+' – '+range.to:'';
+const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
+let page=0,modelSort='cost',ascending=false;
+const allDates=D.rows.map(r=>r.date).concat(D.billing.map(r=>r.date)).sort();
+const today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
+function setPeriod(value){
+    $('period').value=value;
+    if(value==='custom')return;
+    $('from').value=value==='all'?first:shiftDate(today,1-Number(value));
+    $('to').value=value==='all'?last:today;
+}
+function selectedRange(){
+    const from=$('from').value,to=$('to').value;
+    if(!from||!to||from>to)return null;
+    const days=Math.round((Date.parse(to+'T00:00:00Z')-Date.parse(from+'T00:00:00Z'))/86400000)+1;
+    return {from,to,days};
+}
+function previousRange(range){return range&&$('period').value!=='all'?{from:shiftDate(range.from,-range.days),to:shiftDate(range.from,-1),days:range.days}:null}
+for(const field of ['provider','model','project']){
+    const values=[...new Set(D.rows.concat(D.billing).map(r=>r[field]))].sort();
+    $(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(field==='provider'?providerLabel(v):v)+'</option>').join('');
+}
+setPeriod('7');
+$('subtitle').textContent=D.device+' · '+new Date(D.generated).toLocaleString('en-US')+' · '+D.timezone;
 if(D.demo)document.querySelector('.badge').textContent='Synthetic demo';
 $('coverage').textContent=D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.';
-function chosen(r,billing=false){return (!$('from').value||r.date>=$('from').value)&&(!$('to').value||r.date<=$('to').value)&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(billing||!$('role').value||r.role===$('role').value)}
+function chosen(r,billing=false,range=selectedRange()){
+    return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(billing||!$('role').value||r.role===$('role').value));
+}
 function aggregate(rows){const a={requests:0,input:0,cached:0,write:0,output:0,total:0,cost:0,cost_high:0,unpriced:0,max_context:0,parts:[0,0,0,0,0],assumed:0,write_unknown:0,sessions:new Set()};for(const r of rows){for(const f of ['requests','input','cached','write','output','total','cost','cost_high','unpriced','assumed','write_unknown'])a[f]+=r[f]||0;a.max_context=Math.max(a.max_context,r.max_context||0);a.parts=a.parts.map((v,i)=>v+(r.parts?.[i]||0));a.sessions.add(r.session)}a.cache=a.input?a.cached/a.input:null;return a}
 function groups(rows,field){const m=new Map();for(const r of rows){if(!m.has(r[field]))m.set(r[field],[]);m.get(r[field]).push(r)}return [...m].map(([name,rs])=>({name,...aggregate(rs)}))}
 function cost(a){if(a.requests===a.unpriced)return '—';return usd(a.cost)+(a.cost_high-a.cost>.005?'–'+usd(a.cost_high):'')+(a.unpriced?' + ?':'')}
 function bars(id,items,metric='cost'){const entries=[...items].sort((a,b)=>b[metric]-a[metric]);const max=Math.max(...entries.map(x=>x[metric]),1e-9);$(id).innerHTML=entries.length?entries.map((x,i)=>`<div class="barrow"><span class="barlabel" title="${esc(x.name)}">${esc(x.name)}</span><div class="bartrack"><div class="barfill" style="width:${Math.max(0,x[metric]/max*100)}%;opacity:${Math.max(.45,1-i*.06)}"></div></div><span class="barvalue">${metric==='cost'?cost(x):compact(x[metric])}</span></div>`).join(''):'<div class="empty">No data in the selected period</div>'}
-function daily(rows,metric){const gs=groups(rows,'date').sort((a,b)=>a.name.localeCompare(b.name));if(!gs.length){$('daily').innerHTML='<div class="empty">No data</div>';return}const start=new Date(gs[0].name+'T00:00:00Z'),end=new Date(gs[gs.length-1].name+'T00:00:00Z');const observed=new Map(gs.map(x=>[x.name,x]));let points=[];for(let day=new Date(start);day<=end;day.setUTCDate(day.getUTCDate()+1)){let name=day.toISOString().slice(0,10);points.push(observed.get(name)||{name,[metric]:0,missing:true})}const w=780,h=300,L=58,R=16,T=18,B=35;const max=Math.max(...points.map(x=>x[metric]),1e-9);const bw=(w-L-R)/points.length;let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc($('chartmetric').selectedOptions[0].textContent)} by day">`;
-for(let i=0;i<4;i++){const y=T+(h-T-B)*i/3;svg+=`<line x1="${L}" x2="${w-R}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L-8}" y="${y+4}" text-anchor="end" class="chart-text">${esc(metric==='cost'?usd(max*(1-i/3)):compact(max*(1-i/3)))}</text>`}
-points.forEach((p,i)=>{const x=L+i*bw+1,hh=(h-T-B)*p[metric]/max;svg+=`<rect x="${x}" y="${h-B-hh}" width="${Math.max(1,bw-2)}" height="${hh}" rx="2" fill="var(--accent)"><title>${esc(p.name+': '+(p.missing?'no observations':metric==='cost'?cost(p):integer(p[metric])))}</title></rect>`;if(i%Math.max(1,Math.ceil(points.length/8))===0)svg+=`<text x="${x+bw/2}" y="${h-10}" text-anchor="middle" class="chart-text">${new Date(p.name+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}</text>`});$('daily').innerHTML=svg+'</svg><small>Empty days have no observations; today may be incomplete. Hover over a bar for details.</small>'}
+function numericDelta(current,previous,format,points=false){
+    if(current==null||previous==null)return 'No comparable value';
+    const difference=current-previous;
+    if(points)return `${difference>0?'+':''}${(difference*100).toFixed(1)} pp · prev ${format(previous)}`;
+    if(previous===0)return current===0?'No change · prev '+format(previous):'No nonzero baseline · prev '+format(previous);
+    return `${difference>0?'+':''}${(difference/Math.abs(previous)*100).toFixed(1)}% · prev ${format(previous)}`;
+}
+function usageDelta(current,previous,metric,range){
+    if(!range)return '';
+    if(!previous.requests)return 'No previous-period data';
+    if(!current.requests)return 'No current-period data';
+    if(metric==='cost'&&(current.unpriced||previous.unpriced||current.cost_high-current.cost>.005||previous.cost_high-previous.cost>.005))return 'Incomplete pricing · no delta';
+    const value=a=>metric==='sessions'?a.sessions.size:metric==='cache'?a.cache:a[metric];
+    return numericDelta(value(current),value(previous),metric==='cost'?usd:metric==='cache'?pct:metric==='requests'||metric==='sessions'?integer:compact,metric==='cache');
+}
+function comparisonNote(range,previous,rows,priorRows){
+    if(!range)return 'Choose a valid date range: From must be on or before To.';
+    if(!previous)return `${rangeLabel(range)} · All recorded history. Select a bounded period to compare.`;
+    const observed=new Set(priorRows.map(r=>r.date)).size;
+    const history=priorRows.length?`Previous period: ${observed} of ${previous.days} days have records.`:'No previous-period usage for these filters.';
+    const current=rows.length?'':' No current-period usage for these filters.';
+    return `${rangeLabel(range)} vs ${rangeLabel(previous)} · ${history}${current} Comparisons use observed records; missing days are not proof of zero usage.${range.to>=today?' Today is partial.':''}`;
+}
+function providersTable(rows,priorRows,previous){
+    const now=new Map(groups(rows,'provider').map(g=>[g.name,g]));
+    const before=new Map(groups(priorRows,'provider').map(g=>[g.name,g]));
+    const names=[...new Set([...now.keys(),...before.keys()])].sort((a,b)=>(now.get(b)?.cost||0)-(now.get(a)?.cost||0));
+    $('providers-table').innerHTML='<thead><tr><th>Provider</th><th>Requests</th><th>Tokens</th><th>Cache</th><th>Estimated cost</th><th>vs previous period</th></tr></thead><tbody>'+names.map(name=>{
+        const a=now.get(name)||aggregate([]),b=before.get(name)||aggregate([]);
+        return `<tr><td><button class="provider-button" data-provider="${esc(name)}">${esc(providerLabel(name))}</button></td><td>${integer(a.requests)}</td><td>${compact(a.total)}</td><td>${pct(a.cache)}</td><td>${cost(a)}</td><td>${esc(usageDelta(a,b,'cost',previous)||'—')}</td></tr>`;
+    }).join('')+'</tbody>';
+    if(!names.length)$('providers-table').innerHTML='<tbody><tr><td class="empty">No provider usage in these periods</td></tr></tbody>';
+    document.querySelectorAll('[data-provider]').forEach(button=>button.onclick=()=>{$('provider').value=button.dataset.provider;page=0;render()});
+}
+function daily(rows,priorRows,metric,range,previous){
+    if(!range){$('daily').innerHTML='<div class="empty">Choose a valid date range</div>';return}
+    const current=new Map(groups(rows,'date').map(g=>[g.name,g])),prior=new Map(groups(priorRows,'date').map(g=>[g.name,g]));
+    const compare=Boolean(previous&&priorRows.length),points=[];
+    for(let i=0;i<range.days;i++){
+        const date=shiftDate(range.from,i),priorDate=previous?shiftDate(previous.from,i):null;
+        points.push({date,priorDate,current:current.get(date),previous:prior.get(priorDate)});
+    }
+    const usable=g=>g&&!(metric==='cost'&&g.requests===g.unpriced);
+    const all=points.flatMap(p=>[p.current,compare?p.previous:null]).filter(usable);
+    if(!all.length){$('daily').innerHTML='<div class="empty">No priced observations in these periods</div>';if(metric!=='cost')$('daily').textContent='No observations in these periods';return}
+    const w=780,h=300,L=58,R=16,T=18,B=35,max=Math.max(...all.map(g=>g[metric]),1e-9),step=(w-L-R)/points.length;
+    let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc($('chartmetric').selectedOptions[0].textContent)} by day">`;
+    for(let i=0;i<4;i++){const y=T+(h-T-B)*i/3;svg+=`<line x1="${L}" x2="${w-R}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L-8}" y="${y+4}" text-anchor="end" class="chart-text">${esc(metric==='cost'?usd(max*(1-i/3)):compact(max*(1-i/3)))}</text>`}
+    points.forEach((p,i)=>{
+        for(const [series,date,g] of [['current',p.date,p.current],...(compare?[['previous',p.priorDate,p.previous]]:[])]){
+            if(!usable(g))continue;
+            const width=compare?step*.36:step*.72,x=L+i*step+(series==='previous'?step*.54:step*.1),hh=(h-T-B)*g[metric]/max;
+            svg+=`<rect data-series="${series}" x="${x}" y="${h-B-hh}" width="${Math.max(.2,width)}" height="${hh}" rx="2" fill="var(--${series==='previous'?'previous':'accent'})"><title>${esc(series+' · '+date+': '+(metric==='cost'?cost(g):integer(g[metric])))}</title></rect>`;
+        }
+        if(i%Math.max(1,Math.ceil(points.length/8))===0)svg+=`<text x="${L+(i+.5)*step}" y="${h-10}" text-anchor="middle" class="chart-text">${shortDate(p.date)}</text>`;
+    });
+    $('daily').innerHTML=svg+'</svg>'+`<div class="legend"><span><i class="dot"></i>Selected period</span>${compare?'<span><i class="dot previous"></i>Previous period, aligned by day</span>':''}</div><small>Missing bars mean no observations${metric==='cost'?' or unavailable prices':''}; today may be incomplete. Hover for the actual date and value.</small>`;
+}
 function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[modelSort])*(ascending?1:-1));$('models-table').innerHTML='<thead><tr><th>Model</th>'+[['requests','Requests'],['total','Tokens'],['output','Output'],['cached','Cache'],['cost','Cost, USD']].map(([f,l])=>`<th><button data-sort="${f}">${l}${modelSort===f?(ascending?' ↑':' ↓'):''}</button></th>`).join('')+'<th>Unpriced</th></tr></thead><tbody>'+gs.map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${compact(g.output)}</td><td>${pct(g.cache)}</td><td>${cost(g)}</td><td>${g.unpriced||'—'}</td></tr>`).join('')+'</tbody>';document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{ascending=modelSort===b.dataset.sort?!ascending:false;modelSort=b.dataset.sort;modelsTable(rs)})}
 function sessionsTable(rs){const search=$('search').value.toLowerCase();let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b.cost-a.cost);page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);$('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Tokens</th><th>Cache</th><th>Max context</th><th>Cost, USD</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}">${esc(D.titles[g.name]||g.name.slice(0,22))}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';$('page-info').textContent=`${gs.length? page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length}
-function render(){const rs=D.rows.filter(r=>chosen(r)),a=aggregate(rs),bill=D.billing.filter(r=>chosen(r,true)),actual=bill.reduce((s,r)=>s+r.amount,0);const values=[['API cost estimate',cost(a),'Token-based estimate, not an invoice'],['Input + output',compact(a.total),'Includes repeated cache reads'],['Requests',integer(a.requests),'Deduplicated usage records'],['Sessions',integer(a.sessions.size),'Main threads and subagents'],['Cached input',pct(a.cache),'Cache reads / total input'],['Paid · CSV',D.billing_loaded?(bill.length?usd(actual):'—'):'—',D.billing_loaded?(bill.length+' imported rows; payment date'):'No local billing imported']];$('cards').innerHTML=values.map(([l,v,n])=>`<div class="card"><label>${l}</label><div class="value">${v}</div><small>${n}</small></div>`).join('');$('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}Subscriptions are not allocated by tokens; payments and estimates are kept separate.`;
-const metric=$('chartmetric').value;daily(rs,metric);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,10),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);
+function render(){
+    const range=selectedRange(),previous=previousRange(range);
+    const rs=D.rows.filter(r=>chosen(r,false,range)),priorRows=D.rows.filter(r=>chosen(r,false,previous));
+    const a=aggregate(rs),b=aggregate(priorRows),bill=D.billing.filter(r=>chosen(r,true,range)),priorBill=D.billing.filter(r=>chosen(r,true,previous));
+    const actual=bill.reduce((s,r)=>s+r.amount,0),priorActual=priorBill.reduce((s,r)=>s+r.amount,0);
+    const paidDelta=!previous||!D.billing_loaded?'':!priorBill.length?'No previous payment rows':!bill.length?'No current payment rows':numericDelta(actual,priorActual,usd);
+    const values=[
+        ['API cost estimate',cost(a),'Token-based estimate, not an invoice',usageDelta(a,b,'cost',previous)],
+        ['Input + output',compact(a.total),'Includes repeated cache reads',usageDelta(a,b,'total',previous)],
+        ['Requests',integer(a.requests),'Deduplicated usage records',usageDelta(a,b,'requests',previous)],
+        ['Sessions',integer(a.sessions.size),'Main threads and subagents',usageDelta(a,b,'sessions',previous)],
+        ['Cached input',pct(a.cache),'Cache reads / total input',usageDelta(a,b,'cache',previous)],
+        ['Paid · CSV',D.billing_loaded?(bill.length?usd(actual):'—'):'—',D.billing_loaded?(bill.length+' imported rows; payment date'):'No local billing imported',paidDelta]
+    ];
+    $('cards').innerHTML=values.map(([label,value,note,delta])=>`<div class="card"><label>${label}</label><div class="value">${value}</div><small>${note}</small>${delta?`<span class="delta">${esc(delta)}</span>`:''}</div>`).join('');
+    $('comparison-note').textContent=comparisonNote(range,previous,rs,priorRows);
+    $('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}Subscriptions are not allocated by tokens; payments and estimates are kept separate.`;
+    const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);
+    bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,10),metric);
+    bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);
+    providersTable(rs,priorRows,previous);
 const labels=['Uncached input','Cache reads','Cache writes','Output','Web search'];bars('parts',labels.map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:1,unpriced:0})));const top=groups(rs,'session').sort((a,b)=>b.cost-a.cost).slice(0,10).reduce((s,g)=>s+g.cost,0);const sub=aggregate(rs.filter(r=>r.role==='subagent'));$('insights').innerHTML=`<div class="insight"><b>${pct(a.cost?top/a.cost:null)}</b>of estimated cost comes from the top 10 sessions</div><div class="insight"><b>${pct(a.cost?sub.cost/a.cost:null)}</b>of estimated cost comes from subagents</div><div class="insight"><b>${compact(a.requests?a.input/a.requests:0)}</b>average input tokens per request, including cache</div>`;modelsTable(rs);sessionsTable(rs);
 $('billing-note').textContent=D.billing_loaded?'Local CSV: payments and charges by accounting date. Model and project come only from the CSV; unattributed rows are not allocated automatically. The role filter does not affect payments. Reconcile the import against your statement.':'Actual charges cannot be reconstructed from subscription tokens. To display them, run with --billing billing.csv. Required fields: transaction_id,date,provider,amount_usd; optional: model,project.';
-$('billing-table').innerHTML=bill.length?'<thead><tr><th>Date</th><th>Provider</th><th>Model</th><th>Project</th><th>Paid, USD</th></tr></thead><tbody>'+bill.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.provider)}</td><td>${esc(r.model)}</td><td>${esc(r.project)}</td><td>${usd(r.amount)}</td></tr>`).join('')+'</tbody>':'';}
-for(const f of ['from','to','provider','model','project','role','chartmetric'])$(f).addEventListener('change',()=>{page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};$('reset').onclick=()=>{$('from').value=first;$('to').value=last;for(const f of ['provider','model','project','role','search'])$(f).value='';page=0;render()};
+$('billing-table').innerHTML=bill.length?'<thead><tr><th>Date</th><th>Provider</th><th>Model</th><th>Project</th><th>Paid, USD</th></tr></thead><tbody>'+bill.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(providerLabel(r.provider))}</td><td>${esc(r.model)}</td><td>${esc(r.project)}</td><td>${usd(r.amount)}</td></tr>`).join('')+'</tbody>':'';}
+for(const field of ['from','to','provider','model','project','role','chartmetric'])$(field).addEventListener('change',()=>{
+    if(field==='from'||field==='to')$('period').value='custom';page=0;render();
+});
+$('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});
+$('search').addEventListener('input',()=>{page=0;render()});
+$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};
+$('reset').onclick=()=>{setPeriod('7');for(const field of ['provider','model','project','role','search'])$(field).value='';page=0;render()};
 $('method').innerHTML=`<p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Actual payments come only from an explicit local CSV. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
 $('footer').textContent=`AISAD ${D.version} · Python standard library · Offline HTML · ${D.scan.cached_files||0} files from the local cache.`;render();
 // Only the loopback watcher serves this endpoint; file:// snapshots never request a network resource.
@@ -544,17 +663,12 @@ def main(argv=None):
         return
     server=serve(output,args.port);url=f'http://127.0.0.1:{server.server_address[1]}/';print(url+' (Ctrl+C to stop)',flush=True)
     if args.open:webbrowser.open(url)
-    def fingerprint():
-        codex,files,_=discover(args)
-        paths=[p for _,p in files]+list(codex.glob('state_*.sqlite*'))
-        paths += [Path(p) for p in [args.prices,args.billing] if p]
-        return tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
-    previous=fingerprint()
+    previous=source_fingerprint(args)
     try:
         while True:
             time.sleep(args.watch)
             try:
-                current=fingerprint()
+                current=source_fingerprint(args)
                 if current==previous:continue
                 report(make_snapshot(args));previous=current
             except (OSError,ValueError,KeyError,sqlite3.Error) as e:

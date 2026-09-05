@@ -1,6 +1,7 @@
 """Synthetic fixtures only. Run python3 -m unittest -v test_agent_usage.py."""
 import collections
 import copy
+import datetime as dt
 import json
 from pathlib import Path
 import tempfile
@@ -69,6 +70,19 @@ class UsageTests(unittest.TestCase):
   with patch('socket.socket',side_effect=AssertionError('network used')):
    d=app.make_snapshot(args)
   self.assertEqual(d['summary']['requests'],0);self.assertTrue((self.root/'out folder/dashboard.html').exists())
+ def test_snapshot_date_and_midnight_refresh_use_report_timezone(self):
+  args=app.parser().parse_args(['--home',str(self.root/'empty'),'--output',str(self.root/'out')])
+  instant=dt.datetime(2026,3,11,6,59,tzinfo=dt.timezone.utc)
+  class Clock(dt.datetime):
+   @classmethod
+   def now(cls,tz=None):return instant.astimezone(tz)
+  with patch.object(app.dt,'datetime',Clock),patch.object(app,'report_timezone',return_value=dt.timezone(dt.timedelta(hours=-7))):
+   before=app.source_fingerprint(args)
+   self.assertEqual(app.make_snapshot(args)['as_of_date'],'2026-03-10')
+   instant=dt.datetime(2026,3,11,7,1,tzinfo=dt.timezone.utc)
+   after=app.source_fingerprint(args)
+   self.assertEqual(app.make_snapshot(args)['as_of_date'],'2026-03-11')
+  self.assertNotEqual(before,after);self.assertEqual(before[1],after[1])
  def test_cache_reuse_append_and_deletion(self):
   msg=dict(type='assistant',timestamp='2026-09-01T00:00:00Z',message=dict(id='first',model='claude-opus-5',usage=dict(input_tokens=100,output_tokens=10)))
   p=self.file('fresh/.claude/projects/project/one.jsonl',[msg]);args=app.parser().parse_args(['--home',str(self.root/'fresh'),'--output',str(self.root/'out')])

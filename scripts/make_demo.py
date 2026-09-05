@@ -90,7 +90,7 @@ def build_demo():
                                        '--billing', str(billing), '--timezone', 'UTC'])
         snapshot = app.make_snapshot(args)
     snapshot.pop('sources', None)
-    snapshot.update(device='demo-device', generated='2026-09-05T12:00:00+00:00', demo=True)
+    snapshot.update(device='demo-device', generated='2026-09-05T12:00:00+00:00', as_of_date='2026-09-05', demo=True)
     destination = ROOT / 'output/demo/dashboard.html'
     app.atom_write(destination, app.render_html(snapshot).encode('utf-8'))
     print('Synthetic example: ' + str(destination))
