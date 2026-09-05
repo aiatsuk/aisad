@@ -22,7 +22,7 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.2.0'
+VERSION = '2.3.0'
 PARSER_VERSION = 2
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -357,7 +357,7 @@ def source_fingerprint(args):
     day=dt.datetime.now(dt.timezone.utc).astimezone(report_timezone(args.timezone)).date().isoformat()
     return day,tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
 
-def make_snapshot(args):
+def make_snapshot(args, dashboard=True, include_requests=False):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
@@ -419,11 +419,123 @@ def make_snapshot(args):
     # Private evidence stays local. Requests are normalized fields only.
     atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
     atom_json(output/'prices-used.json',catalog)
-    public={k:v for k,v in snapshot.items() if k!='sources'}
-    body=render_html(public)
-    atom_write(output/'dashboard.html',body.encode())
-    atom_json(output/'status.json',{'generated':snapshot['generated'],'version':VERSION})
-    return snapshot
+    if dashboard:
+        public={k:v for k,v in snapshot.items() if k!='sources'}
+        body=render_html(public)
+        atom_write(output/'dashboard.html',body.encode())
+        atom_json(output/'status.json',{'generated':snapshot['generated'],'version':VERSION})
+    return dict(snapshot,requests=rows) if include_requests else snapshot
+
+def usage_totals(rows):
+    fields={'input_tokens':'input','output_tokens':'output','total_tokens':'total',
+            'cached_input_tokens':'cached','cache_write_tokens':'write'}
+    result={name:sum(row[key] for row in rows) for name,key in fields.items()}
+    count=sum(row['requests'] for row in rows)
+    missing=sum(row['unpriced'] for row in rows)
+    known=sum(row['cost'] for row in rows)
+    high=sum(row['cost_high'] for row in rows)
+    result.update(requests=count,sessions=len({row['session'] for row in rows}),
+                  days_with_records=len({row['date'] for row in rows}),
+                  priced_requests=count-missing,unpriced_requests=missing,
+                  estimated_cost_usd=known if count>missing else None,
+                  estimated_cost_high_usd=high if count>missing else None,
+                  known_cost_usd=known,
+                  requests_with_assumptions=sum(row['assumed'] for row in rows),
+                  unknown_cache_ttl_tokens=sum(row['write_unknown'] for row in rows),
+                  max_input_tokens=max((row['max_context'] for row in rows),default=0),
+                  cache_share=result['cached_input_tokens']/result['input_tokens'] if result['input_tokens'] else None,
+                  cost_parts_usd=dict(zip(['uncached_input','cache_reads','cache_writes','output','web_search'],
+                                         [sum(row['parts'][i] for row in rows) for i in range(5)])))
+    return result
+
+def usage_period(rows,include_requests=None):
+    result=dict(totals=usage_totals(rows),rows=rows)
+    for field in ['provider','model','project','role','session','date']:
+        groups=collections.defaultdict(list)
+        for row in rows:groups[row[field]].append(row)
+        values=[dict(name=name,**usage_totals(group)) for name,group in groups.items()]
+        result['by_'+field]=sorted(values,key=(lambda value:value['name']) if field=='date' else (lambda value:(-value['known_cost_usd'],value['name'])))
+    if include_requests is not None:result['requests']=include_requests
+    return result
+
+def usage_changes(current,previous):
+    if previous is None:return {'status':'not_requested'}
+    a,b=current['totals'],previous['totals']
+    if not b['requests']:return {'status':'no_previous_data'}
+    if not a['requests']:return {'status':'no_current_data'}
+    result={'status':'available'}
+    for metric in ['requests','sessions','input_tokens','output_tokens','total_tokens','estimated_cost_usd','cache_share']:
+        x,y=a[metric],b[metric]
+        if metric=='estimated_cost_usd' and (a['unpriced_requests'] or b['unpriced_requests'] or
+                any(value['estimated_cost_usd'] is not None and value['estimated_cost_high_usd']-value['estimated_cost_usd']>1e-9 for value in [a,b])):
+            result[metric]={'status':'incomplete_pricing'};continue
+        if x is None or y is None:
+            result[metric]={'status':'unavailable'};continue
+        difference=x-y
+        change={'status':'available','previous':y,'absolute':difference}
+        if metric=='cache_share':change['percentage_points']=difference*100
+        else:
+            change['percent']=difference/abs(y)*100 if y else 0. if not x else None
+            if change['percent'] is None:change['status']='zero_baseline'
+        result[metric]=change
+    return result
+
+def usage_report(snapshot,args):
+    if args.days<1:raise ValueError('--days must be positive')
+    if args.all_time and (args.date_from or args.date_to):raise ValueError('--all-time cannot be combined with --from or --to')
+    dates=sorted(row['date'] for row in snapshot['rows'])
+    end=dt.date.fromisoformat(args.date_to or (dates[-1] if args.all_time and dates else snapshot['as_of_date']))
+    start=dt.date.fromisoformat(args.date_from or (dates[0] if args.all_time and dates else (end-dt.timedelta(days=args.days-1)).isoformat()))
+    if start>end:raise ValueError('--from must be on or before --to')
+    days=(end-start).days+1
+    before=(start-dt.timedelta(days=days),start-dt.timedelta(days=1)) if not args.all_time else None
+    provider={'codex':'Codex','openai':'Codex','claude':'Claude','anthropic':'Claude'}.get((args.provider or '').lower())
+    if args.provider and not provider:raise ValueError('--provider must be Codex/OpenAI or Claude/Anthropic')
+    model=canonical_model(args.model) if args.model else None
+    def matching(row,window):
+        return bool(window and window[0].isoformat()<=row['date']<=window[1].isoformat() and
+                    (not provider or row['provider']==provider) and (not model or canonical_model(row['model'])==model) and
+                    (not args.project or row['project']==args.project) and (not args.role or row['role']==args.role))
+    def period(window):
+        selected=[row for row in snapshot['rows'] if matching(row,window)]
+        details=[row for row in snapshot.get('requests',[]) if matching(row,window)] if args.include_requests else None
+        return usage_period(selected,details)
+    current=period((start,end));previous=period(before) if before else None
+    report=dict(schema_version=1,version=VERSION,generated=snapshot['generated'],as_of_date=snapshot['as_of_date'],
+                timezone=snapshot['timezone'],price_as_of=snapshot['price_as_of'],price_sources=snapshot.get('price_sources',[]),
+                period={'from':start.isoformat(),'to':end.isoformat(),'days':days},
+                previous_period={'from':before[0].isoformat(),'to':before[1].isoformat(),'days':days} if before else None,
+                filters={'provider':provider,'model':model,'project':args.project,'role':args.role},
+                current=current,previous=previous,changes=usage_changes(current,previous),
+                quality=snapshot['quality'],scan=snapshot['scan'],source_summary=snapshot['summary'],
+                unknown_models=sorted({row['model'] for row in current['rows'] if row['unpriced']}),
+                notes=['Costs are API-equivalent estimates, not subscription charges.',
+                       'Comparisons use recorded observations; missing records do not prove zero usage.',
+                       'A period including the snapshot date may contain a partial day.'])
+    return report
+
+def usage_text(report):
+    months=('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
+    def date_label(value):
+        day=dt.date.fromisoformat(value)
+        return months[day.month-1]+' '+str(day.day)
+    period=report['period'];a=report['current']['totals']
+    cost=a['estimated_cost_usd'];high=a['estimated_cost_high_usd']
+    amount='unavailable' if cost is None else f'${cost:,.2f}'+(f'–${high:,.2f}' if high-cost>.005 else '')
+    if a['unpriced_requests']:amount+=f" (partial; {a['unpriced_requests']:,} unpriced requests)"
+    label=date_label(period['from'])+'–'+date_label(period['to'])
+    if period['from'][:4]!=period['to'][:4]:label=period['from']+'–'+period['to']
+    lines=[f"For {label}: {a['requests']:,} requests, {a['sessions']:,} sessions, {amount} estimated API cost."]
+    changes=report['changes']
+    if changes['status']=='available':
+        descriptions=[]
+        for metric,name in [('requests','requests'),('estimated_cost_usd','estimated cost')]:
+            value=changes[metric]
+            if value['status']=='available':descriptions.append(f"{name} {value['percent']:+.1f}%")
+            else:descriptions.append(name+': '+value['status'].replace('_',' '))
+        lines.append('Versus the previous period: '+', '.join(descriptions)+'.')
+    elif changes['status']!='not_requested':lines.append(changes['status'].replace('_',' ').capitalize()+'.')
+    return '\n'.join(lines)
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -609,6 +721,17 @@ def serve(output,port):
 
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage'],default='dashboard',help='Dashboard (default) or text/JSON usage without HTML')
+    p.add_argument('--json',action='store_true',help='Usage: emit a structured JSON report to stdout')
+    p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
+    p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
+    p.add_argument('--from',dest='date_from',help='Usage: inclusive start date, YYYY-MM-DD')
+    p.add_argument('--to',dest='date_to',help='Usage: inclusive end date, YYYY-MM-DD')
+    p.add_argument('--provider',help='Usage: Codex/OpenAI or Claude/Anthropic')
+    p.add_argument('--model',help='Usage: filter by model ID')
+    p.add_argument('--project',help='Usage: filter by exact project name')
+    p.add_argument('--role',choices=['main','subagent','review'],help='Usage: filter by agent role')
+    p.add_argument('--include-requests',action='store_true',help='Usage JSON: include normalized per-request records; no transcripts')
     p.add_argument('--output',default=str(Path(__file__).resolve().parent/'output'),help='Directory for HTML and the local cache')
     p.add_argument('--home',help='Local profile root (for another user or tests)')
     p.add_argument('--codex-dir',help='Codex directory; defaults to CODEX_HOME or ~/.codex')
@@ -629,6 +752,13 @@ def main(argv=None):
     if args.watch and args.watch<5:raise SystemExit('--watch must be at least 5 seconds')
     if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
     output=Path(args.output).expanduser().resolve()
+    if args.command=='usage':
+        if args.watch or args.open:raise SystemExit('usage does not open a dashboard or run a watcher')
+        snap=make_snapshot(args,dashboard=False,include_requests=args.include_requests)
+        result=usage_report(snap,args)
+        atom_json(output/'usage-report.json',result)
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else usage_text(result))
+        return
     snap=make_snapshot(args)
     def report(s):
         t=s['summary'];print(f"{s['generated']} | {t['requests']:,} requests | {t['sessions']} sessions | API estimate ${t['cost']:.2f}–${t['cost_high']:.2f} | unpriced {t['unpriced']} | parsed {s['scan'].get('parsed_files',0)}, cached {s['scan'].get('cached_files',0)}",flush=True)

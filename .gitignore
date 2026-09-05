@@ -3,6 +3,7 @@
 /previous-snapshot/
 /dashboard.html
 /usage.json
+/usage-report.json
 /status.json
 /prices-used.json
 *.jsonl
@@ -28,3 +29,8 @@ node_modules/
 .DS_Store
 /qa-*
 *.zip
+
+# Generated releases and bootstrapped skill runtime.
+/dist/
+/skills/aisad/runtime/
+/skills/aisad/manifest.json

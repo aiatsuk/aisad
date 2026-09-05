@@ -2,7 +2,9 @@ name: Tests
 
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -32,9 +34,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Test with synthetic local profiles only
-        run: python -m unittest -v test_agent_usage.py
+        run: python -m unittest discover -v
       - name: Build synthetic preview without personal data
         run: python scripts/make_demo.py
+      - name: Build portable release assets
+        run: python scripts/build_release.py
 
   browser:
     name: Browser comparisons and responsive layout

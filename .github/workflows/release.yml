@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Build assets and verify the tag matches VERSION
+        run: python scripts/build_release.py --tag "$GITHUB_REF_NAME"
+      - name: Publish the stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/agent_usage.py "dist/aisad-skill-$GITHUB_REF_NAME.zip" dist/SHA256SUMS \
+            --verify-tag --title "AISAD $GITHUB_REF_NAME" --notes-file CHANGELOG.md

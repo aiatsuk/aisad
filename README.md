@@ -1,8 +1,8 @@
 # AISAD — AI Session Analysis Dashboard
 
-A portable, local-only dashboard for Claude Code and Codex usage. Track tokens, cache usage and estimated API costs by model, project, day and session.
+A portable, local-only dashboard and usage CLI for Claude Code and Codex. Track tokens, cache usage and estimated API costs by model, project, day and session. Install the optional skill to ask questions about your usage directly in Codex or Claude Code.
 
-**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The script makes no outbound network requests; watch mode serves the dashboard on `127.0.0.1`.
+**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The collector makes no outbound network requests; watch mode serves the dashboard on `127.0.0.1`. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ![AISAD dashboard showing the last seven days, previous-period comparisons and provider totals](docs/dashboard.png)
 
@@ -31,6 +31,94 @@ python3 agent_usage.py --open
 The generated HTML works offline. You can also copy just `agent_usage.py` to another device: the dashboard and price catalog are embedded in this one file.
 
 Watch mode runs while its process is open. It does not install a system service or configure startup. Restart it after a reboot. If a refresh fails, the previous HTML stays available and the process retries on the next interval. To update the code, run `git pull --ff-only`, then restart the script.
+
+## Quick usage without a dashboard
+
+```sh
+python3 agent_usage.py usage
+```
+
+Example output:
+
+```text
+For Aug 30–Sep 5: 4,630 requests, 35 sessions, $1,327.32 estimated API cost.
+```
+
+The command reads local traces, reuses the parse cache, prints the last seven days, and includes a comparison with the previous seven days when records exist. It generates no HTML, opens no browser and starts no server. These example numbers are illustrative; your report uses this device's actual recorded usage.
+
+Use JSON for scripts and agent analysis:
+
+```sh
+python3 agent_usage.py usage --json
+python3 agent_usage.py usage --json --provider claude --days 30
+python3 agent_usage.py usage --json --from 2026-08-30 --to 2026-09-05 --model gpt-6-astra
+python3 agent_usage.py usage --json --all-time --include-requests
+```
+
+`--provider` accepts Codex/OpenAI or Claude/Anthropic, case-insensitively. `--model`, `--project` and `--role main|subagent|review` filter both periods. `--from` and `--to` are inclusive report-timezone dates. `--days` defaults to 7; `--to` can anchor a historical window. `--all-time` includes all observed dates with no comparison. Existing source, pricing, timezone and output options work with `usage` too.
+
+`--json` writes one JSON object to stdout. Every usage run also saves `output/usage-report.json`; full normalized evidence remains in `output/usage.json`.
+
+| JSON field | Contents |
+| --- | --- |
+| `schema_version`, `version` | Report schema and AISAD release versions |
+| `period`, `previous_period`, `filters`, `timezone` | Exact scope of the report |
+| `current.totals`, `previous.totals` | Requests, distinct sessions, tokens, weighted cache share, pricing coverage and cost components |
+| `current.by_provider`, `by_model`, `by_project`, `by_role`, `by_session`, `by_date` | Breakdowns; also present under `previous` |
+| `current.rows`, `previous.rows` | Joint date/provider/model/session/project/role groups for custom analysis |
+| `current.requests`, `previous.requests` | Optional normalized request records with `--include-requests`; no transcripts |
+| `changes` | Comparison status and deltas; missing data and uncertain prices remain explicit |
+| `quality`, `scan`, `source_summary` | Collection diagnostics over all discovered history, not just the filtered period |
+| `price_as_of`, `price_sources`, `unknown_models` | Price provenance and unpriced models in the current filtered period |
+
+`estimated_cost_usd` and `estimated_cost_high_usd` are null when no requests can be priced. With partial pricing they contain the known subtotal; check `unpriced_requests` before interpreting them as a complete total. `known_cost_usd` always names that known subtotal explicitly. A nonzero range reflects unknown cache TTLs. `cache_share` is a fraction; its delta uses percentage points. Session counts are distinct within each group, so adding sessions across models or dates double-counts shared sessions. Missing dates are absent from the breakdown, not proof of zero usage.
+
+## Install the skill
+
+From a clone of this repository:
+
+```sh
+python3 skills/aisad/scripts/aisad.py install --target codex
+```
+
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 2.3.0` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+
+You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
+
+In a new turn, invoke `$aisad usage` in Codex or `/aisad usage` in Claude Code. Ask follow-up questions such as:
+
+- “Which models cost the most this week?”
+- “Compare Claude and Codex with the previous week.”
+- “Which sessions explain the increase in estimated cost?”
+- “Show cache usage for this project over the last 30 days.”
+
+The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/aisad/SKILL.md](skills/aisad/SKILL.md).
+
+### Updates and offline use
+
+The installed helper supports:
+
+```sh
+python3 ~/.codex/skills/aisad/scripts/aisad.py version
+python3 ~/.codex/skills/aisad/scripts/aisad.py check-update
+python3 ~/.codex/skills/aisad/scripts/aisad.py update
+python3 ~/.codex/skills/aisad/scripts/aisad.py usage --json
+python3 ~/.codex/skills/aisad/scripts/aisad.py usage --offline
+python3 ~/.codex/skills/aisad/scripts/aisad.py run -- --watch 60 --open
+```
+
+Substitute your installed skill directory if it differs. `usage` and `run` check for a newer stable release at most once every 24 hours when invoked. They update the skill, launcher and collector together before running. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Running dashboard processes retain their loaded code until restarted.
+
+Checks and downloads contact only the public GitHub repository for release metadata and code. They transmit no traces, metrics or device identifiers. `--offline` skips those requests. Set `AISAD_AUTO_UPDATE=0` to disable automatic checks persistently in your environment; explicit `check-update` and `update` still work. If an automatic check fails, the installed version remains usable. No scheduler or startup service is installed.
+
+Skill reports default to `~/.local/share/aisad/output`, outside the replaceable installation. `AISAD_DATA_DIR` or the helper's `--data-dir` selects another local data directory. Collector arguments can follow `--`; keep custom outputs outside the skill directory. Updates verify SHA-256 checksums and the package manifest, preserve local modifications by refusing to overwrite them, and restore the previous installation if replacement fails.
+
+For offline installation, download the skill ZIP and `SHA256SUMS` from a [release](https://github.com/aiatsuk/aisad/releases), then use a local copy of the helper:
+
+```sh
+python3 skills/aisad/scripts/aisad.py install \
+  --archive aisad-skill-v2.3.0.zip --checksum-file SHA256SUMS --target codex
+```
 
 ## What you can explore
 
@@ -74,7 +162,7 @@ python3 agent_usage.py --prices prices.json --open
 
 `models` maps model IDs to `input`, `cached`, `write_5m`, `write_1h` and `output` rates in USD per million tokens. To describe historical prices, replace a model's rate object with a list of objects using `valid_from` (inclusive) and `valid_to` (exclusive). Zero or multiple matching rules leave the price unknown.
 
-Supported adjustments include `long_threshold`, `long_input_multiplier`, `long_output_multiplier`, `long_scope` (`session`, or per request by default), `fast_multiplier`, `flex_multiplier` and `batch_multiplier`. `as_of` records when the catalog was checked. Rates are never downloaded or updated automatically.
+Supported adjustments include `long_threshold`, `long_input_multiplier`, `long_output_multiplier`, `long_scope` (`session`, or per request by default), `fast_multiplier`, `flex_multiplier` and `batch_multiplier`. `as_of` records when the catalog was checked. The collector never fetches prices. A new AISAD release may include an updated built-in catalog; a local `--prices` file continues to override it.
 
 Explicitly recorded server-side web searches are included at $0.01 per search. Other service fees, discounts, taxes and missing telemetry are not reconstructed. Output counts come from traces, which can contain intermediate SDK values; estimates reflect only the recorded observations.
 
@@ -104,6 +192,7 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | --- | --- |
 | `dashboard.html` | Self-contained offline dashboard |
 | `usage.json` | Normalized usage evidence and local source metadata |
+| `usage-report.json` | Filtered text/JSON command report, written by `usage` |
 | `parse-cache.sqlite` | Local cache of parsed files |
 | `prices-used.json` | Price catalog used for the snapshot |
 | `status.json` | Snapshot timestamp for automatic refresh |
@@ -114,13 +203,32 @@ The local server exposes only the dashboard and its update timestamp. Raw export
 
 `refresh.py` is an alternative entry point with the same behavior.
 
+## Versions and releases
+
+`python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic versions: patch releases fix behavior, minor releases add compatible features, and major releases cover breaking changes. The usage JSON has a separate `schema_version`; incompatible report changes increment it.
+
+`VERSION` in `agent_usage.py` is the source of truth. Release tags use `vX.Y.Z` and must match it. See [CHANGELOG.md](CHANGELOG.md) for changes and [GitHub Releases](https://github.com/aiatsuk/aisad/releases) for published assets:
+
+- `agent_usage.py`: standalone collector and dashboard.
+- `aisad-skill-vX.Y.Z.zip`: skill instructions, helper, bundled collector and file manifest.
+- `SHA256SUMS`: checksums for both downloads.
+
+For maintainers, update `VERSION` and the changelog, then test and build:
+
+```sh
+python3 -m unittest discover -v
+python3 scripts/build_release.py --tag v2.3.0
+```
+
+The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
+
 ## Tests and demo
 
 ```sh
-python3 -m unittest -v test_agent_usage.py
+python3 -m unittest discover -v
 ```
 
-Tests use synthetic profiles only. They cover deduplication, counter resets, pricing, cache TTLs, unknown models, empty profiles, file changes and deletion, paths with spaces, safe HTML embedding and loopback refresh. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
+Tests use synthetic profiles only. They cover parsing, pricing, weekly JSON/text reports, filters, missing data, offline operation, release integrity, installation, updates, rollback, preservation of local edits, paths with spaces and loopback refresh. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
 
 To generate the example dashboard without reading your sessions:
 
