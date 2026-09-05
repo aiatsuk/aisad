@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import sqlite3
 import sys
@@ -22,8 +23,8 @@ import threading
 import time
 import webbrowser
 
-VERSION = '2.3.1'
-PARSER_VERSION = 2
+VERSION = '2.4.0'
+PARSER_VERSION = 3
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
 # A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
@@ -148,8 +149,43 @@ def read_jsonl(path,quality):
     except OSError:
         quality['unreadable_files']+=1
 
+class TraceSignals:
+    """Keep sizes and counts, never tool payloads, arguments or message text."""
+    def __init__(self):
+        self.pending=collections.Counter();self.calls={};self.results=set();self.observed=False
+    def call(self,key,name):
+        if not key or key in self.calls:return
+        name=str(name or '').lower()
+        self.calls[key]='mcp' if name.startswith('mcp__') or '.mcp__' in name else 'tool'
+        self.pending['tool_calls']+=1
+        if re.search(r'(^|[_.])(wait|poll|status|get_status|write_stdin)([_.]|$)',name):self.pending['poll_calls']+=1
+    def result(self,key,content,error=False):
+        if not key or key in self.results:return
+        self.results.add(key)
+        size=len((content if isinstance(content,str) else json.dumps(content,ensure_ascii=False,separators=(',',':'))).encode('utf-8'))
+        self.pending['tool_results']+=1;self.pending['tool_bytes']+=size
+        self.pending['max_tool_bytes']=max(self.pending['max_tool_bytes'],size)
+        self.pending['tool_errors']+=bool(error)
+        if size>=40000:self.pending['large_results']+=1
+        if self.calls.get(key)=='mcp':
+            self.pending['mcp_results']+=1;self.pending['mcp_bytes']+=size
+            self.pending['max_mcp_bytes']=max(self.pending['max_mcp_bytes'],size)
+    def take(self):
+        value=dict(self.pending);self.pending.clear();return value
+
+def parent_thread(source):
+    if not isinstance(source,dict):return None
+    for key in ['parent_thread_id','parent_session_id']:
+        if isinstance(source.get(key),str):return 'Codex:'+source[key]
+    for value in source.values():
+        if isinstance(value,dict):
+            found=parent_thread(value)
+            if found:return found
+    return None
+
 def parse_codex(path,include_titles=False):
     q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
+    signals=TraceSignals();parent=None
     for x in read_jsonl(path,q):
         p=x.get('payload') or {}
         if not isinstance(p,dict):continue
@@ -158,8 +194,14 @@ def parse_codex(path,include_titles=False):
             sid=str(p.get('id') or p.get('session_id') or path.stem)
             project=project_name(p.get('cwd'));model=p.get('model') or 'unknown'
             role='subagent' if 'subagent' in json.dumps(p.get('source',{})).lower() or p.get('agent_path','/root') not in ['/root',None,''] else 'main'
+            parent=parent_thread(p.get('source'))
             sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True))
         if not sid:continue
+        if typ=='response_item':
+            signals.observed=True
+            if p.get('type') in ['function_call','custom_tool_call']:signals.call(p.get('call_id'),p.get('name'))
+            if p.get('type') in ['function_call_output','custom_tool_call_output']:signals.result(p.get('call_id'),p.get('output',''))
+            if p.get('type')=='message' and p.get('role')=='user':signals.pending['user_messages']+=1
         if typ=='turn_context':
             model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
             tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
@@ -181,11 +223,14 @@ def parse_codex(path,include_titles=False):
         key=hashlib.sha256(json.dumps([sid,ts,turn,cu or u],sort_keys=True).encode()).hexdigest()
         requests.append(dict(id='cx:'+key,session='Codex:'+sid,provider='Codex',model=model,
                              effort=effort,tier=tier,speed='unknown',geo='unknown',project=project,
-                             role=role,ts=ts,web_searches=None,**usage))
+                             role=role,ts=ts,web_searches=None,parent_session=parent,turn_id=turn or None,
+                             trace_stats=signals.take(),**usage))
+    for row in requests:row['trace_observed']=signals.observed
     return dict(sessions=list(sessions.values()),requests=requests,reports=[],quality=dict(q))
 
 def parse_claude(path,include_titles=False):
     q=collections.Counter();requests=[];sessions={};reports=[]
+    signals=TraceSignals();turn=None
     sub='subagents' in path.parts
     sid=(path.parent.parent.name+'/'+path.stem) if sub else path.parent.name if path.name=='audit.jsonl' else path.stem
     skey='Claude:'+sid;project='unknown';role='subagent' if sub else 'main';title=sid[:12]
@@ -198,6 +243,19 @@ def parse_claude(path,include_titles=False):
                                 session=skey,ts=ts,reported_usd=x['total_cost_usd']))
         m=x.get('message') or {}
         if not isinstance(m,dict):continue
+        content=m.get('content')
+        if isinstance(content,list):
+            signals.observed=True
+            tool_result=False
+            for item in content:
+                if not isinstance(item,dict):continue
+                if item.get('type')=='tool_use':signals.call(item.get('id'),item.get('name'))
+                if item.get('type')=='tool_result':
+                    tool_result=True;signals.result(item.get('tool_use_id'),item.get('content',''),item.get('is_error',False))
+            if typ=='user' and not tool_result and not x.get('isMeta'):
+                signals.pending['user_messages']+=1;turn=str(x.get('uuid') or ts)
+        elif isinstance(content,str) and typ=='user' and not x.get('isMeta'):
+            signals.observed=True;signals.pending['user_messages']+=1;turn=str(x.get('uuid') or ts)
         if include_titles and typ=='user' and title==sid[:12] and not x.get('isMeta'):
             content=m.get('content','');texts=content if isinstance(content,str) else ' '.join(a.get('text','') for a in content if isinstance(a,dict))
             if texts and not texts.startswith(('/', '<local-command','<command-name')):title=title_text(texts)
@@ -215,7 +273,10 @@ def parse_claude(path,include_titles=False):
         requests.append(dict(id='cl:'+str(mid),session=skey,provider='Claude',model=m.get('model'),
                              effort=x.get('effort') or 'unknown',tier=u.get('service_tier') or 'unknown',
                              speed=u.get('speed') or 'unknown',geo=u.get('inference_geo') or 'unknown',
-                             project=project,role=role,ts=ts,web_searches=searches,**usage))
+                             project=project,role=role,ts=ts,web_searches=searches,turn_id=turn,
+                             parent_session='Claude:'+path.parent.parent.name if sub else None,
+                             trace_stats=signals.take(),**usage))
+    for row in requests:row['trace_observed']=signals.observed
     return dict(sessions=list(sessions.values()),requests=requests,reports=reports,quality=dict(q))
 
 def merge_requests(rows,quality):
@@ -232,6 +293,9 @@ def merge_requests(rows,quality):
         result=chosen.copy()
         for k in ['session','role','project']:result[k]=owner[k]
         result['ts']=min(old['ts'],r['ts']);result['output']=output;result['total']=result['input']+output
+        result['trace_observed']=old.get('trace_observed',False) or r.get('trace_observed',False)
+        result['trace_stats']={key:max(old.get('trace_stats',{}).get(key,0),r.get('trace_stats',{}).get(key,0))
+                               for key in set(old.get('trace_stats',{}))|set(r.get('trace_stats',{}))}
         searches=[v for v in [old.get('web_searches'),r.get('web_searches')] if v is not None]
         result['web_searches']=max(searches) if searches else None
         merged[r['id']]=result
@@ -294,6 +358,189 @@ def price_request(row,catalog):
     cost=sum(parts);high=cost+(whigh-wlow)*mult/million
     return dict(cost=float(cost),cost_high=float(high),cost_parts=[float(x) for x in parts],
                 price_status='range' if high!=cost else 'priced',assumptions=assumptions)
+
+CHECKS = {
+ 'model_routing': dict(title='Model routing candidate',category='Model routing',confidence='Scenario',
+    requirement='Request usage and model prices',
+    description='A premium-model session has 2–6 requests, at most 32K input per request and 8K output in total. This does not establish task difficulty.',
+    action='Benchmark the same task on the suggested model. Compare correctness and retries before changing the default.'),
+ 'initial_context': dict(title='Large initial context',category='Context',confidence='Observed footprint',
+    requirement='First observed request in a session',
+    description='The first recorded request already contains at least 100K input tokens. Logs cannot separate system instructions, schemas, project files and the user prompt.',
+    action='Inspect startup instructions, loaded skills and tool definitions. Load optional context on demand and measure the next fresh session.'),
+ 'large_tool_result': dict(title='Large tool payload',category='Context',confidence='Observed payload',
+    requirement='Structured tool calls and results',
+    description='A tool result of at least 40KB was recorded between usage events. Its associated request cost is not a token-level attribution to the payload.',
+    action='Filter or paginate the tool result. Keep bulk data in local files and return a compact summary to the model.'),
+ 'context_growth': dict(title='Sustained context growth',category='Context',confidence='Review signal',
+    requirement='At least three consecutive usage records',
+    description='Three consecutive requests carry at least twice the first observed context and at least 100K additional input tokens.',
+    action='Summarize completed work, remove obsolete context or start a focused session. Check that essential constraints survive compaction.'),
+ 'cache_rebuild': dict(title='Cache rebuild after a pause',category='Cache',confidence='Possible expiration',
+    requirement='Consecutive timestamps and cache counters for the same model',
+    description='After a gap of at least five minutes, cached input falls from at least 50% to below 20%, with a substantial prefix rebuilt. A pause does not prove expiration.',
+    action='Check the recorded cache TTL and whether the prompt changed. Batch related work; compare a longer TTL when the provider supports it.'),
+ 'long_context': dict(title='Long-context price premium',category='Pricing',confidence='Rate calculation',
+    requirement='A priced request and a long-context tariff',
+    description='The recorded context activates a higher token rate. The premium is calculated against the base tariff for the same tokens.',
+    action='Compact before crossing the model tariff threshold when the task permits. The premium is a cost driver, not guaranteed recoverable spend.'),
+ 'premium_mode': dict(title='Premium processing mode',category='Pricing',confidence='Scenario',
+    requirement='An explicitly recorded priority or fast mode',
+    description='A recorded premium processing mode costs more than Standard for the same usage.',
+    action='Use Standard for work without a latency requirement. Validate the time/cost tradeoff before changing a harness default.'),
+ 'polling': dict(title='Repeated status checks',category='Tool use',confidence='Review signal',
+    requirement='Structured tool call names',
+    description='At least five polling/status calls were observed between usage records. Tool names alone cannot prove that a call was unnecessary.',
+    action='Wait inside a local script and return only the final result. Use longer waits or backoff for jobs that report no new progress.'),
+}
+ROUTING_ALTERNATIVES = {'gpt-6-astra':'gpt-5.6-sol','gpt-5.5':'gpt-5.4-mini',
+    'claude-opus-5':'claude-sonnet-5','claude-opus-4-8':'claude-sonnet-5',
+    'claude-opus-4-7':'claude-sonnet-4-6','claude-opus-4-6':'claude-sonnet-4-6',
+    'claude-opus-4-5':'claude-sonnet-4-5','claude-opus-4-1':'claude-sonnet-4',
+    'claude-opus-4':'claude-sonnet-4'}
+COACHING = {'model_routing':'Benchmark a smaller model', 'initial_context':'Review startup context',
+    'large_tool_result':'Filter large tool results', 'context_growth':'Consider context compaction',
+    'cache_rebuild':'Check cache TTL and prompt changes', 'long_context':'Review long-context tariff',
+    'premium_mode':'Check whether Standard is fast enough', 'polling':'Use longer waits or backoff'}
+
+def scenario_delta(row,alternative):
+    if row.get('cost') is None or alternative.get('cost') is None:return None
+    if math.isclose(row['cost'],alternative['cost'],abs_tol=1e-12) and math.isclose(row['cost_high'],alternative['cost_high'],abs_tol=1e-12):return None
+    low=max(0.,row['cost']-alternative['cost_high'])
+    high=max(0.,row['cost_high']-alternative['cost'])
+    return (low,high) if high>1e-9 else None
+
+def cache_scenario(row,tokens):
+    candidate=dict(row);remaining=min(tokens,row['uncached']+row['write'])
+    candidate['cached']+=remaining
+    removed=min(remaining,candidate['uncached']);candidate['uncached']-=removed;remaining-=removed
+    if remaining:
+        candidate['write']-=remaining
+        for key in ['write_unknown','write_5m','write_1h']:
+            removed=min(remaining,candidate[key]);candidate[key]-=removed;remaining-=removed
+    return candidate
+
+def analyze_requests(rows,catalog,managed_sessions=()):
+    """Deterministic, local checks. Scenarios keep the observed token workload fixed."""
+    sessions=collections.defaultdict(list);children=collections.defaultdict(set)
+    for row in rows:
+        sessions[row['session']].append(row)
+        if row.get('parent_session'):children[row['parent_session']].add(row['session'])
+    managed=set(managed_sessions);queue=collections.deque(managed)
+    while queue:
+        for child in children[queue.popleft()]-managed:managed.add(child);queue.append(child)
+    base_models={}
+    for name,rules in catalog['models'].items():
+        convert=lambda rule:dict(rule,long_input_multiplier=1,long_output_multiplier=1)
+        base_models[name]=[convert(rule) for rule in rules] if isinstance(rules,list) else convert(rules)
+    base_catalog=dict(catalog,models=base_models)
+    records=[]
+    for session,observations in sessions.items():
+        observations.sort(key=lambda r:(r['ts'],r['id']))
+        initial=observations[0]['input'];context_streak=0;previous=None
+        short=2<=len(observations)<=6 and max(r['input'] for r in observations)<=32000 and sum(r['output'] for r in observations)<=8000
+        for index,row in enumerate(observations):
+            row['pool']='managed' if session in managed else 'interactive'
+            stats=row.get('trace_stats',{});signals=[]
+            def add(rule,evidence,delta=None,impact=None):
+                signals.append(dict(rule=rule,evidence=evidence,
+                                    savings_usd=delta[0] if delta else None,
+                                    savings_high_usd=delta[1] if delta else None,
+                                    premium_usd=impact[0] if impact else None,
+                                    premium_high_usd=impact[1] if impact else None))
+            alternate=ROUTING_ALTERNATIVES.get(canonical_model(row['model']))
+            if short and alternate:
+                delta=scenario_delta(row,price_request(dict(row,model=alternate),catalog))
+                if delta:add('model_routing',{'alternative_model':alternate,'session_requests':len(observations),
+                    'max_input_tokens':max(r['input'] for r in observations)},delta)
+            if index==0 and initial>=100000:add('initial_context',{'initial_input_tokens':initial})
+            if stats.get('max_tool_bytes',0)>=40000:
+                add('large_tool_result',{'max_tool_bytes':stats['max_tool_bytes'],'max_mcp_bytes':stats.get('max_mcp_bytes',0)})
+            context_streak=context_streak+1 if row['input']>=max(initial*2,initial+100000) else 0
+            if context_streak>=3:add('context_growth',{'initial_input_tokens':initial,'max_input_tokens':row['input'],'consecutive_requests':context_streak})
+            gap=max(0.,row['ts']-previous['ts']) if previous else None
+            cacheable=0
+            if (previous and canonical_model(row['model'])==canonical_model(previous['model']) and gap>=300 and
+                previous['input']>=10000 and previous['cached']/previous['input']>=.5 and row['input']>=previous['input']*.5 and
+                row['cached']/max(1,row['input'])<.2):
+                cacheable=min(previous['input'],row['uncached']+row['write'])
+                delta=scenario_delta(row,price_request(cache_scenario(row,cacheable),catalog))
+                add('cache_rebuild',{'gap_minutes':round(gap/60,1),'possible_prefix_tokens':cacheable,
+                    'min_cache_percent':round(row['cached']/max(1,row['input'])*100,1)},delta)
+            if row.get('cost') is not None:
+                premium=scenario_delta(row,price_request(row,base_catalog))
+                if premium:add('long_context',{'max_input_tokens':row['input'],'pricing_context_tokens':row.get('session_max_input',row['input'])},impact=premium)
+                if row.get('tier') in ('priority','fast') or row.get('speed')=='fast':
+                    delta=scenario_delta(row,price_request(dict(row,tier='standard',speed='standard'),catalog))
+                    if delta:add('premium_mode',{'mode':'priority / fast'},delta)
+            if stats.get('poll_calls',0)>=5:add('polling',{'max_poll_calls':stats['poll_calls']})
+            fields=['id','session','provider','model','project','role','date','ts','input','output','cached','write','uncached','cost','cost_high','pool']
+            record={key:row[key] for key in fields}
+            record.update(step=index+1,gap_seconds=gap,trace_stats=stats,trace_observed=row.get('trace_observed',False),
+                checks=signals,parts=row.get('cost_parts'),effort=row.get('effort','unknown'),
+                scenario_usd=max((s['savings_usd'] for s in signals if s['savings_usd'] is not None),default=None),
+                scenario_high_usd=max((s['savings_high_usd'] for s in signals if s['savings_high_usd'] is not None),default=None))
+            records.append(record);previous=row
+    return dict(schema_version=1,rules=CHECKS,records=records,
+        notes=['Checks describe observed signals; they do not prove waste or task difficulty.',
+               'Scenario savings use the largest single saving per request, avoiding overlap. Quality, latency and cache reuse require validation.',
+               'First observed context includes every input source; system/schema overhead cannot be isolated.',
+               'Tool payload byte counts are measured locally. Payloads and conversation bodies are not exported.',
+               'The article publishes four examples, not the definitions of all 16 Uber checks. AISAD provides eight documented checks.'])
+
+def merge_evidence(target,evidence):
+    for key,value in evidence.items():
+        if isinstance(value,(int,float)) and key in target:
+            target[key]=(min if key.startswith('min_') else max)(target[key],value)
+        else:target[key]=value
+
+def diagnostics_summary(records):
+    findings={};flagged=[];scenarios=[];stats=collections.Counter()
+    for row in records:
+        for key,value in row.get('trace_stats',{}).items():
+            if key.startswith('max_'):stats[key]=max(stats[key],value)
+            else:stats[key]+=value
+        if row['checks']:flagged.append(row)
+        if row['scenario_usd'] is not None:scenarios.append(row)
+        for signal in row['checks']:
+            key=(signal['rule'],row['session'],row['model'],row['project'],row['role'],row['pool'])
+            if key not in findings:
+                findings[key]=dict(id=hashlib.sha256(json.dumps(key).encode()).hexdigest()[:16],rule=signal['rule'],
+                    session=row['session'],provider=row['provider'],model=row['model'],project=row['project'],role=row['role'],pool=row['pool'],
+                    **CHECKS[signal['rule']],requests=0,unpriced_requests=0,known_cost_usd=0.,cost_high_usd=0.,
+                    scenario_requests=0,savings_usd=0.,savings_high_usd=0.,premium_usd=0.,premium_high_usd=0.,
+                    first_date=row['date'],last_date=row['date'],evidence={})
+            f=findings[key];f['requests']+=1;f['unpriced_requests']+=row['cost'] is None
+            f['known_cost_usd']+=row['cost'] or 0.;f['cost_high_usd']+=row['cost_high'] or 0.
+            f['first_date']=min(f['first_date'],row['date']);f['last_date']=max(f['last_date'],row['date'])
+            if signal['savings_usd'] is not None:
+                f['scenario_requests']+=1;f['savings_usd']+=signal['savings_usd'];f['savings_high_usd']+=signal['savings_high_usd']
+            f['premium_usd']+=signal['premium_usd'] or 0.;f['premium_high_usd']+=signal['premium_high_usd'] or 0.
+            merge_evidence(f['evidence'],signal['evidence'])
+    for finding in findings.values():
+        finding['observed_cost_usd']=finding['known_cost_usd'] if finding['requests']>finding['unpriced_requests'] else None
+        if not finding['scenario_requests']:finding['savings_usd']=finding['savings_high_usd']=None
+    priced=[r for r in flagged if r['cost'] is not None]
+    return dict(findings=sorted(findings.values(),key=lambda f:(-(f['savings_usd'] or 0),-f['known_cost_usd'],f['id'])),
+        finding_count=len(findings),flagged_sessions=len({r['session'] for r in flagged}),flagged_requests=len(flagged),
+        affected_cost_usd=sum(r['cost'] for r in priced) if priced else None,
+        affected_cost_high_usd=sum(r['cost_high'] for r in priced) if priced else None,
+        unpriced_flagged_requests=len(flagged)-len(priced),
+        scenario_savings_usd=sum(r['scenario_usd'] for r in scenarios) if scenarios else None,
+        scenario_savings_high_usd=sum(r['scenario_high_usd'] for r in scenarios) if scenarios else None,
+        scenario_requests=len(scenarios),trace_records=sum(r['trace_observed'] for r in records),
+        total_records=len(records),tool_stats=dict(stats))
+
+def budget_status(records,budget):
+    if budget is not None and (not math.isfinite(budget) or budget<=0):raise ValueError('Budgets must be finite positive USD amounts')
+    missing=sum(r['cost'] is None for r in records);known=sum(r['cost'] or 0 for r in records);high=sum(r['cost_high'] or 0 for r in records)
+    ratio=known/budget if budget and records else None
+    level=max((n for n in (50,80,100) if ratio is not None and ratio*100>=n),default=0)
+    return dict(budget_usd=budget,known_cost_usd=known,cost_high_usd=high,unpriced_requests=missing,
+        observed_requests=len(records),
+        used_percent=ratio*100 if ratio is not None else None,nudge_percent=level,
+        pricing_complete=not missing and math.isclose(known,high,abs_tol=1e-9),
+        status='not_configured' if budget is None else 'no_data' if not records else 'partial_pricing' if missing else 'range' if high-known>1e-9 else 'over_budget' if level==100 else 'attention' if level else 'within_budget')
 
 def discover(args):
     home=Path(args.home).expanduser().resolve() if args.home else Path.home()
@@ -386,12 +633,14 @@ def make_snapshot(args, dashboard=True, include_requests=False):
         r.update(price_request(r,catalog))
         moment=dt.datetime.fromtimestamp(r['ts'],dt.timezone.utc).astimezone(tz)
         r['date']=moment.date().isoformat()
+    analysis=analyze_requests(rows,catalog,getattr(args,'managed_session',[]))
     # Dashboard rows: one date × model × session × project × role, preserving filter correctness.
     grouped={}
     for r in rows:
         key=(r['date'],r['provider'],r['model'],r['session'],r['project'],r['role'])
         if key not in grouped:grouped[key]=dict(zip(['date','provider','model','session','project','role'],key),requests=0,input=0,cached=0,write=0,output=0,total=0,cost=0.,cost_high=0.,unpriced=0,max_context=0,parts=[0.]*5,assumed=0,write_unknown=0)
         g=grouped[key];g['requests']+=1
+        g['pool']=r['pool']
         for f in ['input','cached','write','output','total','write_unknown']:g[f]+=r[f]
         g['max_context']=max(g['max_context'],r['input'])
         g['assumed']+=bool(r['assumptions'])
@@ -415,7 +664,8 @@ def make_snapshot(args, dashboard=True, include_requests=False):
                   summary=summary,quality=dict(q),scan=dict(stats),rows=list(grouped.values()),
                   titles={s['id']:s['title'] for s in sessions.values() if s['id'] in measured} if args.include_titles else {},
                   unknown_models=sorted({r['model'] for r in rows if r['cost'] is None}),
-                  reports=list(reports.values()))
+                  reports=list(reports.values()),analysis=analysis,
+                  budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)))
     # Private evidence stays local. Requests are normalized fields only.
     atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
     atom_json(output/'prices-used.json',catalog)
@@ -448,14 +698,17 @@ def usage_totals(rows):
                                          [sum(row['parts'][i] for row in rows) for i in range(5)])))
     return result
 
-def usage_period(rows,include_requests=None):
+def usage_period(rows,include_requests=None,analysis_records=None):
     result=dict(totals=usage_totals(rows),rows=rows)
     for field in ['provider','model','project','role','session','date']:
         groups=collections.defaultdict(list)
         for row in rows:groups[row[field]].append(row)
         values=[dict(name=name,**usage_totals(group)) for name,group in groups.items()]
         result['by_'+field]=sorted(values,key=(lambda value:value['name']) if field=='date' else (lambda value:(-value['known_cost_usd'],value['name'])))
-    if include_requests is not None:result['requests']=include_requests
+    if analysis_records is not None:result['diagnostics']=diagnostics_summary(analysis_records)
+    if include_requests is not None:
+        result['requests']=include_requests
+        if analysis_records is not None:result['analysis_records']=analysis_records
     return result
 
 def usage_changes(current,previous):
@@ -495,45 +748,51 @@ def usage_report(snapshot,args):
     def matching(row,window):
         return bool(window and window[0].isoformat()<=row['date']<=window[1].isoformat() and
                     (not provider or row['provider']==provider) and (not model or canonical_model(row['model'])==model) and
-                    (not args.project or row['project']==args.project) and (not args.role or row['role']==args.role))
+                    (not args.project or row['project']==args.project) and (not args.role or row['role']==args.role) and
+                    (not getattr(args,'pool',None) or row.get('pool','interactive')==args.pool))
     def period(window):
         selected=[row for row in snapshot['rows'] if matching(row,window)]
         details=[row for row in snapshot.get('requests',[]) if matching(row,window)] if args.include_requests else None
-        return usage_period(selected,details)
+        observations=[row for row in snapshot.get('analysis',{}).get('records',[]) if matching(row,window)]
+        return usage_period(selected,details,observations)
     current=period((start,end));previous=period(before) if before else None
     report=dict(schema_version=1,version=VERSION,generated=snapshot['generated'],as_of_date=snapshot['as_of_date'],
                 timezone=snapshot['timezone'],price_as_of=snapshot['price_as_of'],price_sources=snapshot.get('price_sources',[]),
                 period={'from':start.isoformat(),'to':end.isoformat(),'days':days},
                 previous_period={'from':before[0].isoformat(),'to':before[1].isoformat(),'days':days} if before else None,
-                filters={'provider':provider,'model':model,'project':args.project,'role':args.role},
+                filters={'provider':provider,'model':model,'project':args.project,'role':args.role,'pool':getattr(args,'pool',None)},
                 current=current,previous=previous,changes=usage_changes(current,previous),
                 quality=snapshot['quality'],scan=snapshot['scan'],source_summary=snapshot['summary'],
                 unknown_models=sorted({row['model'] for row in current['rows'] if row['unpriced']}),
                 notes=['Costs are API-equivalent estimates, not subscription charges.',
                        'Comparisons use recorded observations; missing records do not prove zero usage.',
                        'A period including the snapshot date may contain a partial day.'])
+    report['analysis_rules']=CHECKS
+    pool_records=[row for row in snapshot.get('analysis',{}).get('records',[]) if start.isoformat()<=row['date']<=end.isoformat()]
+    report['pools']={pool:budget_status([r for r in pool_records if r['pool']==pool],getattr(args,option,None))
+                     for pool,option in [('interactive','budget'),('managed','managed_budget')]}
+    report['pool_scope']='Selected dates, all providers and projects. Managed sessions are explicitly tagged; confirmed children inherit the pool.'
     return report
+
+def compact_tokens(value):
+    units=('', 'K', 'M', 'B', 'T');unit=0
+    while value>=1000 and unit<len(units)-1:value/=1000;unit+=1
+    if not unit:return str(value)
+    if round(value,2)>=1000 and unit<len(units)-1:value/=1000;unit+=1
+    return f'{value:.2f}'.rstrip('0').rstrip('.')+units[unit]
 
 def usage_text(report):
     months=('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
     def date_label(value):
         day=dt.date.fromisoformat(value)
         return months[day.month-1]+' '+str(day.day)
-    def tokens(value):
-        units=('', 'K', 'M', 'B', 'T');unit=0
-        while value>=1000 and unit<len(units)-1:
-            value/=1000;unit+=1
-        if not unit:return str(value)
-        if round(value,2)>=1000 and unit<len(units)-1:
-            value/=1000;unit+=1
-        return f'{value:.2f}'.rstrip('0').rstrip('.')+units[unit]
     period=report['period'];a=report['current']['totals']
     cost=a['estimated_cost_usd'];high=a['estimated_cost_high_usd']
     amount='unavailable' if cost is None else f'${cost:,.2f}'+(f'–${high:,.2f}' if high-cost>.005 else '')
     if a['unpriced_requests']:amount+=f" (partial; {a['unpriced_requests']:,} unpriced requests)"
     label=date_label(period['from'])+'–'+date_label(period['to'])
     if period['from'][:4]!=period['to'][:4]:label=period['from']+'–'+period['to']
-    lines=[f"For {label}: {amount} estimated API cost. In: {tokens(a['input_tokens'])}, Out: {tokens(a['output_tokens'])}"]
+    lines=[f"For {label}: {amount} estimated API cost. In: {compact_tokens(a['input_tokens'])}, Out: {compact_tokens(a['output_tokens'])}"]
     changes=report['changes']
     if changes['status']=='available':
         descriptions=[]
@@ -545,34 +804,100 @@ def usage_text(report):
     elif changes['status']!='not_requested':lines.append(changes['status'].replace('_',' ').capitalize()+'.')
     return '\n'.join(lines)
 
+def analysis_text(report):
+    lines=[usage_text(report),'']
+    analysis=report['current']['diagnostics']
+    lines.append(f"{analysis['finding_count']} findings across {analysis['flagged_sessions']} sessions; {len(CHECKS)} checks.")
+    def money(low,high):
+        return f"${low:,.2f}"+(f"–${high:,.2f}" if high-low>.005 else '')
+    for finding in analysis['findings'][:8]:
+        cost=money(finding['observed_cost_usd'],finding['cost_high_usd']) if finding['observed_cost_usd'] is not None else 'unpriced'
+        if finding['unpriced_requests'] and finding['observed_cost_usd'] is not None:cost+=' (partial)'
+        delta='; scenario saving '+money(finding['savings_usd'],finding['savings_high_usd']) if finding['savings_usd'] is not None else ''
+        if finding['premium_high_usd']>0:delta+='; tariff premium '+money(finding['premium_usd'],finding['premium_high_usd'])
+        lines.extend([f"- {finding['title']} · {finding['session']} · associated cost {cost}{delta}",
+                      '  Evidence: '+json.dumps(finding['evidence'],ensure_ascii=True),
+                      '  '+finding['action']])
+    lines.append(f"Message/tool telemetry: {analysis['trace_records']} of {analysis['total_records']} usage records. Showing up to eight findings; JSON contains all findings.")
+    if not analysis['trace_records']:lines.append('Tool payload and polling checks are unavailable: no message/tool telemetry was recorded.')
+    lines.append('Scenarios require validation. Findings can overlap; associated costs must not be added.')
+    return '\n'.join(lines)
+
+def statusline_report(snapshot,report,args):
+    records=snapshot['analysis']['records'];wanted=args.session or os.environ.get('CODEX_THREAD_ID')
+    matching=[r for r in records if wanted and (r['session']==wanted or r['session'].split(':',1)[-1]==wanted)]
+    if len({r['session'] for r in matching})>1:raise ValueError('Ambiguous session ID; include the Codex: or Claude: prefix')
+    selection='explicit' if wanted else 'latest_observed'
+    if not wanted:
+        candidates=[r for r in records if not report['filters']['provider'] or r['provider']==report['filters']['provider']]
+        latest=max(candidates,key=lambda r:r['ts'],default=None)
+        matching=[r for r in records if latest and r['session']==latest['session']]
+    latest=max(matching,key=lambda r:r['ts'],default=None)
+    provider=latest['provider'] if latest else report['filters']['provider']
+    period=report['period']
+    harness=[r for r in records if r['provider']==provider and period['from']<=r['date']<=period['to']]
+    findings=diagnostics_summary(matching)['findings']
+    tip=COACHING[findings[0]['rule']] if findings else 'No flagged patterns' if matching else 'No local session records'
+    return dict(schema_version=1,version=VERSION,generated=snapshot['generated'],period=period,
+        session=dict(id=latest['session'] if latest else wanted,selection=selection,records=len(matching),
+            model=latest['model'] if latest else None,context_tokens=latest['input'] if latest else None,
+            cache_share=latest['cached']/latest['input'] if latest and latest['input'] else None,
+            **budget_status(matching,None)),
+        harness=dict(provider=provider,records=len(harness),**budget_status(harness,None)),
+        pools=report['pools'],coaching=tip,coaching_detail=findings[0] if findings else None)
+
+def statusline_text(result,color=False):
+    def money(value):
+        if value['observed_requests']==0:return 'unavailable'
+        if value['observed_requests']==value['unpriced_requests']:return 'unpriced'
+        amount=f"${value['known_cost_usd']:,.2f}"
+        if value['cost_high_usd']-value['known_cost_usd']>.005:amount+=f"–${value['cost_high_usd']:,.2f}"
+        return amount+(' + ?' if value['unpriced_requests'] else '')
+    pool=result['pools']['interactive'];managed=result['pools']['managed'];session=result['session'];harness=result['harness']
+    scope='Session' if session['selection']=='explicit' else 'Latest session'
+    text=f"AISAD est · {scope} {money(session)} · {harness['provider'] or 'Harness'} {result['period']['days']}d {money(harness)} · Shared {money(pool)}"
+    if pool['budget_usd']:text+=f"/${pool['budget_usd']:,.0f}"
+    if managed['budget_usd'] or managed['known_cost_usd']:text+=f" · Managed {money(managed)}"+(f"/${managed['budget_usd']:,.0f}" if managed['budget_usd'] else '')
+    level=max(pool['nudge_percent'],managed['nudge_percent'])
+    for name,value in [('Shared',pool),('Managed',managed)]:
+        if value['nudge_percent']:text+=f" · {name} {value['nudge_percent']}% threshold"
+    if session['context_tokens'] is not None:text+=' · Ctx '+compact_tokens(session['context_tokens'])
+    if session['cache_share'] is not None:text+=f" · Cache {session['cache_share']*100:.0f}%"
+    text+=' · '+result['coaching']
+    text=re.sub(r'[\x00-\x1f\x7f-\x9f]',' ',text)
+    if color:text='\x1b['+('31' if level==100 else '33' if level else '36')+'m'+text+'\x1b[0m'
+    return text
+
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
-<title>AISAD · Claude &amp; Codex usage</title><style>
-:root{color-scheme:light dark;--bg:#f7f8fa;--card:#fff;--ink:#17212d;--muted:#626e7b;--line:#e4e8ed;--accent:#147e78;--orange:#bf672b;--shade:#ecf6f4;--previous:#acb8c7}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:1440px;margin:auto;padding:34px 32px 70px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}h2{font-size:17px;letter-spacing:-.2px;margin:0 0 14px}h3{margin:24px 0 8px}.muted,small{color:var(--muted)}small{font-size:12px}.badge{border:1px solid var(--line);padding:7px 11px;border-radius:30px;color:var(--accent);white-space:nowrap}.coverage{margin:22px 0 16px;border-left:3px solid var(--accent);padding:12px 16px;background:var(--shade);border-radius:4px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:9px 11px;min-height:38px}select{max-width:240px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}.card .value{font-size:26px;font-weight:650;letter-spacing:-.8px;margin:8px 0;overflow-wrap:anywhere}.card label{display:block;font-size:12px}.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.panel{margin-bottom:0}.wide{margin-top:16px}svg{display:block;width:100%;height:auto;max-height:310px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.table-wrap{overflow:auto;max-height:630px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:12px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--muted)}td:first-child{max-width:330px;overflow:hidden;text-overflow:ellipsis}th button{padding:2px 0;min-height:0;border:none;font-weight:600;background:none}.barrow{display:grid;grid-template-columns:155px 1fr 100px;align-items:center;gap:12px;margin:13px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:11px;background:var(--line);border-radius:10px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:10px}.barvalue{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:15px}.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.insight{padding:16px 20px;background:var(--shade);border-radius:10px}.insight b{font-size:19px;display:block;margin-bottom:4px}details{margin-top:18px}summary{cursor:pointer;font-weight:600}details p,details li{overflow-wrap:anywhere;color:var(--muted);max-width:1080px}a{color:var(--accent)}.empty{padding:40px 10px;text-align:center;color:var(--muted)}.legend{display:flex;gap:16px;margin-top:10px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--accent)}footer{margin-top:25px;font-size:12px;color:var(--muted)}.money-note{margin:10px 0;color:var(--muted);font-size:12px}
-@media(prefers-color-scheme:dark){:root{--bg:#11161c;--card:#19212a;--ink:#e5edf5;--muted:#9aaabd;--line:#303b48;--accent:#59c6b8;--orange:#eda76b;--shade:#1b302f;--previous:#65778c}}
-@media(max-width:1100px){.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){main{padding:22px 14px}header{align-items:flex-start}h1{font-size:25px}.badge{font-size:11px}.grid,.grid.equal{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}.card,.panel{padding:15px}.card .value{font-size:23px}.insights{grid-template-columns:1fr}.barrow{grid-template-columns:115px 1fr 90px}.filters label{flex:1;min-width:130px}select{max-width:100%}.filters button{align-self:end}svg{min-height:190px}}
-.comparison{margin:10px 0 18px;color:var(--muted);font-size:13px}.delta{display:block;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;color:var(--accent)}.provider-button{padding:0;min-height:0;border:none;background:none;text-align:left;color:var(--accent)}.filters{align-items:flex-end}.legend{flex-wrap:wrap}.legend .previous{background:var(--previous)}
+<title>AISAD · Session analysis</title><style>
+:root{color-scheme:light;--bg:#fff;--card:#fff;--ink:#000;--muted:#6b6b6b;--line:#e2e2e2;--accent:#000;--shade:#f6f6f6;--previous:#afafaf;--green:#0e8345;--green-bg:#eaf6ed;--orange:#9f6402;--red:#de1135;--focus:#276ef1}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#141414;--card:#1f1f1f;--ink:#fff;--muted:#afafaf;--line:#3d3d3d;--accent:#eee;--shade:#292929;--previous:#6b6b6b;--green:#66d19e;--green-bg:#163526;--orange:#ffc043;--red:#ff8f9e;--focus:#a0bff8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px Arial,Helvetica,sans-serif;line-height:1.5}main{max-width:1536px;margin:auto;padding:32px 40px 48px}header{display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line);padding-bottom:22px}.brand{display:flex;gap:20px;align-items:center}.wordmark{font-size:27px;font-weight:800;letter-spacing:-1.3px;border-right:1px solid var(--line);padding-right:20px}.eyebrow{font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);font-weight:600}h1{font-size:25px;line-height:1.2;letter-spacing:-.8px;margin:3px 0 0}h2{font-size:18px;letter-spacing:-.4px;margin:0}h3{font-size:16px;margin:0 0 8px}p{margin:8px 0}.muted,small{color:var(--muted)}small{font-size:12px}.header-tools{display:flex;align-items:center;gap:12px}.badge,.tag{display:inline-flex;align-items:center;gap:6px;border-radius:6px;background:var(--shade);padding:5px 9px;font-size:12px;white-space:nowrap}.badge:before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}button,select,input{font:inherit;color:var(--ink);border:1px solid transparent;background:var(--shade);border-radius:8px;min-height:40px;padding:9px 12px}button{cursor:pointer;font-weight:500}button:hover,select:hover{background:var(--line)}button:disabled{cursor:default;opacity:.4}button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}select{max-width:220px}a{color:inherit;text-underline-offset:3px}label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}label select,label input{color:var(--ink);font-size:13px}.tabs{display:flex;gap:8px;padding:24px 0 20px;overflow:auto}.tabs button{white-space:nowrap;border-radius:30px;padding:9px 18px;background:var(--shade)}.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}.count{font-size:11px;opacity:.65;margin-left:5px}.filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:16px;background:var(--shade);border-radius:12px}.filters select,.filters input,.filters button{background:var(--card);border-color:var(--line)}.filters label{flex:1;min-width:118px}.filters label:first-child{flex:1.1}.filters select,.filters input{width:100%;max-width:none;min-width:0}.filters label.dates{flex:.9}.comparison{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:16px 0 12px}.comparison p{margin:0;font-size:12px;color:var(--muted);max-width:1100px}.cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.card,.panel{border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0;background:var(--card)}.card{padding:20px 18px}.card label{display:block;color:var(--muted);font-size:13px}.value{font-size:29px;letter-spacing:-1.1px;line-height:1.2;font-weight:600;margin:12px 0 8px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.card.saving{background:var(--green-bg);border-color:transparent}.saving .value{color:var(--green)}.delta{display:block;border-top:1px solid var(--line);padding-top:10px;margin-top:16px;font-size:12px;color:var(--muted)}.scenario-note{display:block;font-size:11px;color:var(--green);margin-top:12px}.saving .delta{border-color:color-mix(in srgb,var(--green) 20%,transparent)}.usage-strip{display:flex;gap:24px;align-items:center;flex-wrap:wrap;margin:16px 0;font-size:12px;color:var(--muted)}.usage-strip b{color:var(--ink);font-weight:600}.money-note{font-size:11px;color:var(--muted);margin:10px 0 20px}.grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.tools{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.tools h2{margin:0}.tools p{font-size:12px;color:var(--muted)}.wide{margin-top:16px}.panel-intro{color:var(--muted);font-size:12px;margin:6px 0 18px}.barrow{display:grid;grid-template-columns:140px 1fr 90px;align-items:center;gap:12px;margin:14px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:8px;background:var(--shade);border-radius:3px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:3px}.barvalue{text-align:right;font-size:12px;font-variant-numeric:tabular-nums}svg{display:block;width:100%;height:auto;max-height:300px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:11px;color:var(--muted);margin:10px 0}.dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:var(--accent)}.dot.previous{background:var(--previous)}.table-wrap{overflow:auto;max-height:660px}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{white-space:nowrap;text-align:right;padding:13px 12px;border-bottom:1px solid var(--line);font-size:12px}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);color:var(--muted);font-weight:500}td:first-child{max-width:300px;overflow:hidden;text-overflow:ellipsis}th button{padding:0;min-height:0;border-radius:0;background:none;color:var(--muted);font-size:12px}.provider-button,.session-button,.text-button{background:none;padding:0;min-height:0;color:inherit;border-radius:2px;font:inherit;text-align:left;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:4px}.provider-button:hover,.session-button:hover,.text-button:hover{background:none;text-decoration-color:var(--ink)}.empty{padding:40px 16px;text-align:center;color:var(--muted)}.empty h3{color:var(--ink)}.review-list{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.review{border:1px solid var(--line);border-radius:8px;padding:18px;min-width:0}.review .tag{margin-bottom:12px}.review p{font-size:12px;color:var(--muted)}.review .amount{font-size:20px;font-weight:600;letter-spacing:-.5px;margin:12px 0 3px;color:var(--green)}.finding{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:28px;border-top:1px solid var(--line);padding:22px 0}.finding h3{margin:8px 0}.finding p{font-size:13px}.finding .evidence{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.finding .action{padding-left:12px;border-left:2px solid var(--ink);margin-top:14px}.finding-cost{border-left:1px solid var(--line);padding-left:24px;align-self:start}.finding-cost strong{display:block;font-size:23px;letter-spacing:-.5px}.finding-cost .scenario{color:var(--green);margin-top:12px}.pool-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.pool-card+.pool-card{border-left:1px solid var(--line);padding-left:24px}.pool-card strong{font-size:25px;font-weight:600;letter-spacing:-.7px}.pool-track{height:6px;border-radius:3px;background:var(--shade);margin:14px 0 8px;overflow:hidden}.pool-track span{display:block;background:var(--ink);height:100%}.nudge{color:var(--orange);font-size:12px}.mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:16px 0}.mini-grid .value{font-size:26px}.mini-grid .card{background:var(--shade);border:0}.coverage{font-size:12px;color:var(--muted)}details{margin-top:20px}summary{cursor:pointer;font-weight:600}details p,details li{color:var(--muted);overflow-wrap:anywhere;font-size:13px;max-width:1100px}.rules{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}.rules p{border-top:1px solid var(--line);padding-top:14px}footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:24px;font-size:11px;color:var(--muted)}[hidden]{display:none!important}dialog{width:min(1100px,calc(100% - 32px));max-height:90vh;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);padding:28px}dialog::backdrop{background:#0008}dialog .tools{position:sticky;top:-28px;background:var(--card);padding-top:4px;z-index:2}dialog h2{overflow-wrap:anywhere}dialog .finding{grid-template-columns:minmax(0,1fr) 200px}#session-caption{overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:1150px){main{padding:24px}.cards{grid-template-columns:repeat(3,minmax(0,1fr))}.review-list{grid-template-columns:1fr}.grid{grid-template-columns:1.3fr 1fr}.barrow{grid-template-columns:110px 1fr 82px}.filters label{min-width:130px}.card .value{font-size:27px}}
+@media(max-width:760px){main{padding:20px 16px}.wordmark{padding-right:12px;font-size:22px}.brand{gap:12px}h1{font-size:21px}.eyebrow{font-size:9px}.header-tools{gap:6px}.header-tools .badge{display:none}#theme{padding:8px;font-size:12px}header{gap:10px}.tabs{padding-top:18px;gap:6px}.tabs button{padding:8px 13px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.cards .card:last-child{grid-column:1/-1}.card,.panel{padding:16px}.grid,.grid.equal,.pool-grid,.mini-grid,.rules{grid-template-columns:1fr}.pool-card+.pool-card{border-left:0;padding:16px 0 0;border-top:1px solid var(--line)}.finding,dialog .finding{grid-template-columns:1fr;gap:16px}.finding-cost{border-left:0;padding-left:0;display:flex;gap:28px}.finding-cost .scenario{margin-top:0}.tools{flex-wrap:wrap}#search{max-width:100%}.usage-strip{gap:12px}.comparison{display:block}dialog{padding:18px}dialog .tools{top:-18px}.filters{padding:12px;gap:8px}.filters label{min-width:calc(50% - 8px)}.barrow{grid-template-columns:130px 1fr 82px}}
 </style></head><body><main>
-<header><div><h1>AISAD · Agent usage</h1><div class="muted" id="subtitle"></div></div><span class="badge">● This device only</span></header>
-<div class="coverage" id="coverage"></div>
+<header><div class="brand"><span class="wordmark">AISAD</span><div><div class="eyebrow">Understand your agent spend</div><h1>Session analysis</h1></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
+<nav class="tabs" role="tablist" aria-label="Analysis views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Overview</button><button id="tab-recommendations" role="tab" aria-selected="false" aria-controls="view-recommendations" tabindex="-1" data-tab="recommendations">Recommendations <span class="count" id="recommendation-count"></span></button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context &amp; tools</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache health</button></nav>
 <div class="filters">
-<label>Period<select id="period"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom</option></select></label>
-<label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label>
-<label>Provider<select id="provider"></select></label><label>Model<select id="model"></select></label>
-<label>Project<select id="project"></select></label><label>Role<select id="role"><option value="">All roles</option><option value="main">Main thread</option><option value="subagent">Subagent</option><option value="review">Auto-review</option></select></label>
-<button id="reset">Reset</button></div>
-<p class="comparison" id="comparison-note" aria-live="polite"></p>
-<div class="cards" id="cards"></div><div class="money-note" id="money-note"></div>
-<div class="grid"><section class="panel"><div class="tools"><h2>Daily usage</h2><select id="chartmetric" aria-label="Chart metric"><option value="cost">Estimated cost, USD</option><option value="total">Total tokens</option><option value="output">Output tokens</option><option value="requests">Requests</option></select></div><div id="daily"></div></section><section class="panel"><h2>Top 10 models</h2><div id="models-chart"></div></section></div>
-<section class="panel wide"><div class="tools"><h2>Usage by provider</h2><small>Click a provider to filter the dashboard</small></div><div class="table-wrap"><table id="providers-table"></table></div></section>
-<div class="insights" id="insights"></div>
-<div class="grid equal"><section class="panel"><h2>Estimated cost breakdown</h2><div id="parts"></div></section><section class="panel"><h2>Top 8 projects</h2><div id="projects-chart"></div></section></div>
-<section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Click a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section>
-<section class="panel wide"><div class="tools"><h2>Sessions</h2><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"></div><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:14px"><small id="page-info"></small><div><button id="prev">←</button> <button id="next">→</button></div></div></section>
-<details class="panel wide"><summary>Methodology, pricing and coverage</summary><div id="method"></div></details>
-<footer id="footer"></footer></main>
+<label>Period<select id="period"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom</option></select></label><label class="dates">From<input type="date" id="from"></label><label class="dates">To<input type="date" id="to"></label>
+<label>Provider<select id="provider"></select></label><label>Model<select id="model"></select></label><label>Project<select id="project"></select></label><label>Role<select id="role"><option value="">All roles</option><option value="main">Main thread</option><option value="subagent">Subagent</option><option value="review">Auto-review</option></select></label><label>Pool<select id="pool"><option value="">All pools</option><option value="interactive">Interactive</option><option value="managed">Managed</option></select></label><button id="reset">Reset</button></div>
+<div class="comparison"><p id="comparison-note" aria-live="polite"></p></div><div class="cards" id="cards"></div><div class="usage-strip" id="usage-strip"></div><div class="money-note" id="money-note"></div>
+<div id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+<div class="grid"><section class="panel"><div class="tools"><h2>Spend over time</h2><select id="chartmetric" aria-label="Chart metric"><option value="cost">Estimated cost, USD</option><option value="total">Total tokens</option><option value="output">Output tokens</option><option value="requests">Requests</option></select></div><div id="daily"></div></section><section class="panel"><div class="tools"><h2>Top models</h2><small>Selected period</small></div><div id="models-chart"></div></section></div>
+<section class="panel wide"><div class="tools"><div><h2>Review next</h2><p>Evidence from your sessions, with a specific next step.</p></div><button id="all-recommendations">All recommendations →</button></div><div class="review-list" id="review-next"></div></section>
+<section class="panel wide"><div class="tools"><h2>Spend pools</h2><small>Selected dates · all providers, projects and roles</small></div><div id="pools" class="pool-grid"></div></section>
+<section class="panel wide"><div class="tools"><h2>Usage by provider</h2><small>Select a provider to filter every view</small></div><div class="table-wrap"><table id="providers-table"></table></div></section>
+<div class="grid equal"><section class="panel"><h2>What the estimate pays for</h2><p class="panel-intro">Known priced components; cache write uncertainty is shown in the total.</p><div id="parts"></div></section><section class="panel"><h2>Top projects</h2><div id="projects-chart"></div></section></div>
+<section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Select a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section></div>
+<section id="view-recommendations" role="tabpanel" aria-labelledby="tab-recommendations" class="panel" hidden><div class="tools"><div><h2>Recommendations</h2><p>Observed cost is associated spend. Scenarios need quality and workflow validation.</p></div><select id="check-filter" aria-label="Filter recommendations by check"><option value="">All checks</option></select></div><p class="panel-intro" id="analysis-coverage"></p><div id="findings"></div></section>
+<section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions" class="panel" hidden><div class="tools"><h2>Sessions</h2><div><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"> <select id="session-sort" aria-label="Sort sessions"><option value="cost">Highest cost</option><option value="max_context">Largest context</option><option value="requests">Most requests</option></select></div></div><p class="panel-intro">Open a session to inspect its request timeline and recommendations within the selected filters.</p><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:16px"><small id="page-info"></small><div><button id="prev" aria-label="Previous sessions page">←</button> <button id="next" aria-label="Next sessions page">→</button></div></div></section>
+<section id="view-context" role="tabpanel" aria-labelledby="tab-context" hidden><div class="mini-grid" id="context-cards"></div><div class="grid equal"><section class="panel"><h2>Largest observed context</h2><p class="panel-intro">Peak input per session, including cached input.</p><div id="context-chart"></div></section><section class="panel"><h2>Tool payload footprint</h2><p class="panel-intro">UTF-8 bytes measured from local tool results. These are not token counts.</p><div id="tool-chart"></div><p class="panel-intro" id="tool-coverage"></p></section></div><section class="panel wide"><h2>Context recommendations</h2><div id="context-findings"></div></section></section>
+<section id="view-cache" role="tabpanel" aria-labelledby="tab-cache" hidden><div class="mini-grid" id="cache-cards"></div><section class="panel"><h2>Cache by model</h2><p class="panel-intro">Weighted cache reads / total input. Uncached input includes new prompts and changed prefixes.</p><div class="table-wrap"><table id="cache-table"></table></div></section><section class="panel wide"><h2>Possible rebuilds after a pause</h2><p class="panel-intro">A pause and a cache drop do not prove expiration. Check TTL, prompt changes and provider behavior before acting.</p><div id="cache-findings"></div></section></section>
+<details class="panel wide"><summary>How this analysis works</summary><div id="method"></div><div class="rules" id="rules"></div><p class="coverage" id="coverage"></p></details>
+<footer><span id="footer"></span><span id="subtitle"></span></footer></main>
+<dialog id="session-dialog" aria-labelledby="session-title"><div class="tools"><div><div class="eyebrow">Session detail</div><h2 id="session-title"></h2></div><button id="close-session" aria-label="Close session detail">Close ×</button></div><p class="panel-intro" id="session-caption"></p><div class="mini-grid" id="session-cards"></div><h3>Context per request</h3><div id="session-timeline"></div><div id="session-findings"></div></dialog>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';const D=JSON.parse(document.getElementById('snapshot').textContent);const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const compact=n=>new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n||0);const integer=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);const pct=n=>n==null?'—':(n*100).toFixed(1)+'%';
@@ -602,11 +927,12 @@ for(const field of ['provider','model','project']){
     $(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(field==='provider'?providerLabel(v):v)+'</option>').join('');
 }
 setPeriod('7');
-$('subtitle').textContent=D.device+' · '+new Date(D.generated).toLocaleString('en-US')+' · '+D.timezone;
+let generatedLabel;try{generatedLabel=new Date(D.generated).toLocaleString('en-US',{timeZone:D.timezone==='System local timezone'?undefined:D.timezone})}catch{generatedLabel=D.generated}
+$('subtitle').textContent=D.device+' · '+generatedLabel+' · '+D.timezone;
 if(D.demo)document.querySelector('.badge').textContent='Synthetic demo';
 $('coverage').textContent=D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.';
 function chosen(r,range=selectedRange()){
-    return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(!$('role').value||r.role===$('role').value));
+    return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(!$('role').value||r.role===$('role').value)&&(!$('pool').value||(r.pool||'interactive')===$('pool').value));
 }
 function aggregate(rows){const a={requests:0,input:0,cached:0,write:0,output:0,total:0,cost:0,cost_high:0,unpriced:0,max_context:0,parts:[0,0,0,0,0],assumed:0,write_unknown:0,sessions:new Set()};for(const r of rows){for(const f of ['requests','input','cached','write','output','total','cost','cost_high','unpriced','assumed','write_unknown'])a[f]+=r[f]||0;a.max_context=Math.max(a.max_context,r.max_context||0);a.parts=a.parts.map((v,i)=>v+(r.parts?.[i]||0));a.sessions.add(r.session)}a.cache=a.input?a.cached/a.input:null;return a}
 function groups(rows,field){const m=new Map();for(const r of rows){if(!m.has(r[field]))m.set(r[field],[]);m.get(r[field]).push(r)}return [...m].map(([name,rs])=>({name,...aggregate(rs)}))}
@@ -671,35 +997,110 @@ function daily(rows,priorRows,metric,range,previous){
     $('daily').innerHTML=svg+'</svg>'+`<div class="legend"><span><i class="dot"></i>Selected period</span>${compare?'<span><i class="dot previous"></i>Previous period, aligned by day</span>':''}</div><small>Missing bars mean no observations${metric==='cost'?' or unavailable prices':''}; today may be incomplete. Hover for the actual date and value.</small>`;
 }
 function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[modelSort])*(ascending?1:-1));$('models-table').innerHTML='<thead><tr><th>Model</th>'+[['requests','Requests'],['total','Tokens'],['output','Output'],['cached','Cache'],['cost','Cost, USD']].map(([f,l])=>`<th><button data-sort="${f}">${l}${modelSort===f?(ascending?' ↑':' ↓'):''}</button></th>`).join('')+'<th>Unpriced</th></tr></thead><tbody>'+gs.map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${compact(g.output)}</td><td>${pct(g.cache)}</td><td>${cost(g)}</td><td>${g.unpriced||'—'}</td></tr>`).join('')+'</tbody>';document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{ascending=modelSort===b.dataset.sort?!ascending:false;modelSort=b.dataset.sort;modelsTable(rs)})}
-function sessionsTable(rs){const search=$('search').value.toLowerCase();let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b.cost-a.cost);page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);$('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Tokens</th><th>Cache</th><th>Max context</th><th>Cost, USD</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}">${esc(D.titles[g.name]||g.name.slice(0,22))}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';$('page-info').textContent=`${gs.length? page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length}
-function render(){
-    const range=selectedRange(),previous=previousRange(range);
-    const rs=D.rows.filter(r=>chosen(r,range)),priorRows=D.rows.filter(r=>chosen(r,previous));
-    const a=aggregate(rs),b=aggregate(priorRows);
-    const values=[
-        ['API cost estimate',cost(a),'Token-based estimate, not an invoice',usageDelta(a,b,'cost',previous)],
-        ['Input + output',compact(a.total),'Includes repeated cache reads',usageDelta(a,b,'total',previous)],
-        ['Requests',integer(a.requests),'Deduplicated usage records',usageDelta(a,b,'requests',previous)],
-        ['Sessions',integer(a.sessions.size),'Main threads and subagents',usageDelta(a,b,'sessions',previous)],
-        ['Cached input',pct(a.cache),'Cache reads / total input',usageDelta(a,b,'cache',previous)],
-    ];
-    $('cards').innerHTML=values.map(([label,value,note,delta])=>`<div class="card"><label>${label}</label><div class="value">${value}</div><small>${note}</small>${delta?`<span class="delta">${esc(delta)}</span>`:''}</div>`).join('');
-    $('comparison-note').textContent=comparisonNote(range,previous,rs,priorRows);
-    $('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; total is partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}API-equivalent estimate; subscription charges are not inferred.`;
-    const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);
-    bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,10),metric);
-    bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);
-    providersTable(rs,priorRows,previous);
-const labels=['Uncached input','Cache reads','Cache writes','Output','Web search'];bars('parts',labels.map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:1,unpriced:0})));const top=groups(rs,'session').sort((a,b)=>b.cost-a.cost).slice(0,10).reduce((s,g)=>s+g.cost,0);const sub=aggregate(rs.filter(r=>r.role==='subagent'));$('insights').innerHTML=`<div class="insight"><b>${pct(a.cost?top/a.cost:null)}</b>of estimated cost comes from the top 10 sessions</div><div class="insight"><b>${pct(a.cost?sub.cost/a.cost:null)}</b>of estimated cost comes from subagents</div><div class="insight"><b>${compact(a.requests?a.input/a.requests:0)}</b>average input tokens per request, including cache</div>`;modelsTable(rs);sessionsTable(rs);
+const records=D.analysis?.records||[],rules=D.analysis?.rules||{};
+const moneyRange=(low,high)=>low==null?'—':usd(low)+(high-low>.005?'–'+usd(high):'');
+const bytes=n=>n>=1e6?(n/1e6).toFixed(1)+' MB':n>=1000?(n/1000).toFixed(1)+' KB':integer(n)+' B';
+function selectedRecords(){return records.filter(r=>chosen(r))}
+function recordRows(rs){return rs.map(r=>({...r,requests:1,total:r.input+r.output,unpriced:r.cost==null?1:0,max_context:r.input}))}
+function diagnostics(rs){
+    const findings=new Map(),stats={};let scenario=null,scenarioHigh=null,traceRecords=0;const flagged=new Set();
+    for(const r of rs){
+        if(r.trace_observed)traceRecords++;
+        for(const [k,v] of Object.entries(r.trace_stats||{}))stats[k]=k.startsWith('max_')?Math.max(stats[k]||0,v):(stats[k]||0)+v;
+        if(r.scenario_usd!=null){scenario=(scenario||0)+r.scenario_usd;scenarioHigh=(scenarioHigh||0)+r.scenario_high_usd}
+        if(r.checks.length)flagged.add(r.session);
+        for(const s of r.checks){
+            const key=JSON.stringify([s.rule,r.session,r.model,r.project,r.role,r.pool]);
+            if(!findings.has(key))findings.set(key,{...rules[s.rule],rule:s.rule,session:r.session,model:r.model,project:r.project,role:r.role,pool:r.pool,requests:0,unpriced:0,cost:0,cost_high:0,savings:null,savings_high:null,premium:0,premium_high:0,evidence:{}});
+            const f=findings.get(key);f.requests++;f.unpriced+=r.cost==null?1:0;f.cost+=r.cost||0;f.cost_high+=r.cost_high||0;
+            if(s.savings_usd!=null){f.savings=(f.savings||0)+s.savings_usd;f.savings_high=(f.savings_high||0)+s.savings_high_usd}
+            f.premium+=s.premium_usd||0;f.premium_high+=s.premium_high_usd||0;
+            for(const [k,v] of Object.entries(s.evidence))f.evidence[k]=typeof v==='number'&&k in f.evidence?(k.startsWith('min_')?Math.min(f.evidence[k],v):Math.max(f.evidence[k],v)):v;
+        }
+    }
+    return {findings:[...findings.values()].sort((a,b)=>(b.savings||0)-(a.savings||0)||b.cost-a.cost),scenario,scenarioHigh,stats,traceRecords,flagged:flagged.size};
 }
-for(const field of ['from','to','provider','model','project','role','chartmetric'])$(field).addEventListener('change',()=>{
-    if(field==='from'||field==='to')$('period').value='custom';page=0;render();
-});
-$('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});
-$('search').addEventListener('input',()=>{page=0;render()});
-$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};
-$('reset').onclick=()=>{setPeriod('7');for(const field of ['provider','model','project','role','search'])$(field).value='';page=0;render()};
-$('method').innerHTML=`<p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
+const evidenceLabels={alternative_model:'Compare with',session_requests:'Session requests',max_input_tokens:'Peak input',initial_input_tokens:'First observed input',max_tool_bytes:'Largest tool result',max_mcp_bytes:'Largest MCP result',consecutive_requests:'Consecutive growing requests',gap_minutes:'Gap in minutes',possible_prefix_tokens:'Possible rebuilt prefix',min_cache_percent:'Lowest cache %',pricing_context_tokens:'Context used for pricing',mode:'Recorded mode',max_poll_calls:'Polling calls between usage events'};
+function evidenceText(f){return Object.entries(f.evidence).filter(([k,v])=>k!=='max_mcp_bytes'||v>0).map(([k,v])=>(evidenceLabels[k]||k)+': '+(k.includes('bytes')?bytes(v):k.includes('tokens')?compact(v):v)).join(' · ')}
+function sessionLabel(id){return D.titles?.[id]||id}
+function findingMarkup(f){return `<article class="finding"><div><span class="tag">${esc(f.category)}</span> <small>${esc(f.confidence)}</small><h3>${esc(f.title)}</h3><small><button class="session-button" data-session="${esc(f.session)}">${esc(sessionLabel(f.session))}</button> · ${esc(f.model)} · ${integer(f.requests)} affected requests</small><p class="evidence">${esc(evidenceText(f))}</p><p>${esc(f.description)}</p><p class="action">${esc(f.action)}</p></div><div class="finding-cost"><div><small>Associated API estimate</small><strong>${cost(f)}</strong><small>Overlaps with other findings</small></div><div class="scenario"><small>${f.premium_high>0?'Tariff premium':'Scenario savings'}</small><strong>${f.premium_high>0?moneyRange(f.premium,f.premium_high):moneyRange(f.savings,f.savings_high)}</strong><small>${f.premium_high>0?'Not a guaranteed saving':f.savings==null?'Not estimated':'Validate before changing workflow'}</small></div></div></article>`}
+function findingsList(id,fs,empty='No checks matched these filters.'){ $(id).innerHTML=fs.length?fs.map(findingMarkup).join(''):`<div class="empty"><h3>${esc(empty)}</h3><p>This does not establish that every session is efficient. Review telemetry coverage below.</p></div>` }
+function sessionsTable(rs){
+    const search=$('search').value.toLowerCase(),metric=$('session-sort').value;
+    const detail=new Map();for(const r of selectedRecords()){if(!detail.has(r.session))detail.set(r.session,new Set());for(const c of r.checks)detail.get(r.session).add(c.rule)}
+    let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles?.[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b[metric]-a[metric]);
+    page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);
+    $('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Input + output</th><th>Cache</th><th>Peak context</th><th>Checks</th><th>API estimate</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}"><button class="session-button" data-session="${esc(g.name)}">${esc(sessionLabel(g.name))}</button></td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${detail.get(g.name)?.size||'—'}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';
+    $('page-info').textContent=`${gs.length?page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length;
+}
+function showTab(name){
+    for(const button of document.querySelectorAll('[data-tab]')){const active=button.dataset.tab===name;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.getAttribute('aria-controls')).hidden=!active}
+}
+function openSession(id){
+    const rs=selectedRecords().filter(r=>r.session===id).sort((a,b)=>a.ts-b.ts||a.step-b.step),a=aggregate(recordRows(rs)),d=diagnostics(rs);
+    $('session-title').textContent=sessionLabel(id);$('session-caption').textContent=`${rangeLabel(selectedRange())} · Selected filters · ${[...new Set(rs.map(r=>r.model))].join(', ')} · ${integer(d.traceRecords)} of ${integer(rs.length)} usage records have message/tool telemetry.`;
+    $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak context',compact(a.max_context),'Input tokens, including cache'],['Cache read share',pct(a.cache),'Weighted by input tokens']]);
+    if(rs.length){
+        const w=900,h=200,L=54,R=18,T=18,B=30,max=Math.max(...rs.map(r=>r.input),1),x=i=>L+i*(w-L-R)/Math.max(1,rs.length-1),y=v=>h-B-v/max*(h-T-B);
+        let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Input context and cached input for each recorded request">`;
+        for(let i=0;i<3;i++){const value=max*(1-i/2);svg+=`<line x1="${L}" x2="${w-R}" y1="${y(value)}" y2="${y(value)}" stroke="var(--line)"/><text x="${L-7}" y="${y(value)+4}" class="chart-text" text-anchor="end">${compact(value)}</text>`}
+        svg+=`<polyline points="${rs.map((r,i)=>x(i)+','+y(r.input)).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2"/><polyline points="${rs.map((r,i)=>x(i)+','+y(r.cached)).join(' ')}" fill="none" stroke="var(--green)" stroke-width="2"/>`;
+        rs.forEach((r,i)=>{svg+=`<circle cx="${x(i)}" cy="${y(r.input)}" r="3" fill="var(--accent)"><title>${esc('Request '+r.step+' · '+r.date+' · '+integer(r.input)+' input · '+integer(r.cached)+' cached · '+moneyRange(r.cost,r.cost_high))}</title></circle>`;if(i%Math.max(1,Math.ceil(rs.length/10))===0)svg+=`<text x="${x(i)}" y="${h-5}" class="chart-text" text-anchor="middle">${r.step}</text>`});
+        $('session-timeline').innerHTML=svg+'</svg><div class="legend"><span><i class="dot"></i>Total input</span><span><i class="dot" style="background:var(--green)"></i>Cached input</span><span>Horizontal axis: request number in the recorded session</span></div>';
+    }else $('session-timeline').innerHTML='<div class="empty">No request-level telemetry in this snapshot.</div>';
+    findingsList('session-findings',d.findings,'No checks matched this session.');if(!$('session-dialog').open)$('session-dialog').showModal();
+}
+function miniCards(values){return values.map(([label,value,note])=>`<div class="card"><label>${esc(label)}</label><div class="value">${value}</div><small>${esc(note)}</small></div>`).join('')}
+function renderPools(range){
+    // Shared spend must never shrink when a model or provider filter is selected.
+    $('pools').innerHTML=['interactive','managed'].map(pool=>{
+        const rs=records.filter(r=>range&&r.date>=range.from&&r.date<=range.to&&r.pool===pool),a=aggregate(recordRows(rs)),budget=D.budgets?.[pool],ratio=budget&&rs.length?a.cost/budget:null,level=[100,80,50].find(n=>ratio!=null&&ratio*100>=n);
+        return `<div class="pool-card"><div class="tools"><span>${pool==='interactive'?'Shared interactive pool':'Managed agents'}</span><span class="tag">${integer(a.sessions.size)} sessions</span></div><strong>${cost(a)}</strong> <small>${budget?'of '+usd(budget)+' period budget':'No budget configured'}</small>${budget?`<div class="pool-track"><span style="width:${Math.min(100,Math.max(0,ratio*100))}%;${level?'background:var(--orange)':''}"></span></div><span class="nudge">${level?level+'% threshold reached':ratio==null?'No usage records':(ratio*100).toFixed(1)+'% of expected spend'}${a.unpriced?' · partial pricing':''}</span>`:''}<p class="panel-intro">${pool==='interactive'?'All local interactive harnesses share this pool.':'Only explicitly tagged sessions and confirmed descendants.'} ${a.cost_high-a.cost>.005?'Cost range reflects pricing uncertainty.':''}</p></div>`;
+    }).join('');
+}
+function renderAnalysis(rs,ar,a,d){
+    $('recommendation-count').textContent=d.findings.length;$('session-count').textContent=a.sessions.size;
+    const next=d.findings.filter((f,i,fs)=>fs.findIndex(x=>x.rule===f.rule)===i).slice(0,3);
+    $('review-next').innerHTML=next.length?next.map(f=>`<article class="review"><span class="tag">${esc(f.category)}</span><h3>${esc(f.title)}</h3><p>${esc(evidenceText(f))}</p><div class="amount">${f.savings!=null?moneyRange(f.savings,f.savings_high):cost(f)}</div><small>${f.savings!=null?'Scenario savings · validation required':'Associated API estimate · not a saving'}</small><p>${esc(f.action)}</p><button class="text-button" data-session="${esc(f.session)}">Inspect session →</button></article>`).join(''):'<div class="empty">No checks matched. Inspect sessions and telemetry coverage for more detail.</div>';
+    $('analysis-coverage').textContent=`${Object.keys(rules).length} documented checks · ${integer(d.flagged)} flagged sessions · ${integer(d.traceRecords)} of ${integer(ar.length)} usage records have message/tool telemetry. Associated costs overlap; scenario totals use only the largest saving per request.`;
+    findingsList('findings',d.findings.filter(f=>!$('check-filter').value||f.rule===$('check-filter').value));
+    $('context-cards').innerHTML=miniCards([['Largest context',ar.length?compact(a.max_context):'—','Peak input in the selected requests'],['Largest tool result',d.traceRecords?bytes(d.stats.max_tool_bytes||0):'—','Observed local UTF-8 payload'],['Large initial contexts',integer(new Set(d.findings.filter(f=>f.rule==='initial_context').map(f=>f.session)).size),'First observed request ≥ 100K tokens']]);
+    bars('context-chart',groups(rs,'session').sort((a,b)=>b.max_context-a.max_context).slice(0,8).map(g=>({...g,name:sessionLabel(g.name)})),'max_context');
+    const other=Math.max(0,(d.stats.tool_bytes||0)-(d.stats.mcp_bytes||0));
+    $('tool-chart').innerHTML=d.traceRecords?`<div class="mini-grid">${miniCards([['MCP results',bytes(d.stats.mcp_bytes||0),integer(d.stats.mcp_results||0)+' results'],['Other tool results',bytes(other),integer((d.stats.tool_results||0)-(d.stats.mcp_results||0))+' results'],['Polling calls',integer(d.stats.poll_calls||0),'Calls matched by structured name']])}</div>`:'<div class="empty">No message/tool telemetry available.</div>';
+    $('tool-coverage').textContent=`${integer(d.traceRecords)} / ${integer(ar.length)} records have message/tool telemetry. Payloads are associated with the next observed usage event; their exact billed token impact is unavailable.`;
+    findingsList('context-findings',d.findings.filter(f=>['Context','Tool use'].includes(f.category)),'No context or tool checks matched.');
+    $('cache-cards').innerHTML=miniCards([['Cache read share',pct(a.cache),'Cache reads / all input tokens'],['Uncached input estimate',a.requests>a.unpriced?usd(a.parts[0])+(a.unpriced?' + ?':''):'—','Includes fresh input; not all cache misses'],['Possible rebuilds',integer(d.findings.filter(f=>f.rule==='cache_rebuild').reduce((sum,f)=>sum+f.requests,0)),'After ≥ 5 minutes and a cache drop']]);
+    $('cache-table').innerHTML='<thead><tr><th>Model</th><th>Input tokens</th><th>Cached tokens</th><th>Cache share</th><th>Cache writes</th><th>Uncached estimate</th></tr></thead><tbody>'+groups(rs,'model').sort((a,b)=>b.input-a.input).map(g=>`<tr><td>${esc(g.name)}</td><td>${compact(g.input)}</td><td>${compact(g.cached)}</td><td>${pct(g.cache)}</td><td>${compact(g.write)}</td><td>${g.requests>g.unpriced?usd(g.parts[0])+(g.unpriced?' + ?':''):'—'}</td></tr>`).join('')+'</tbody>';
+    findingsList('cache-findings',d.findings.filter(f=>f.rule==='cache_rebuild'),'No cache rebuild signals matched.');
+}
+function render(){
+    const range=selectedRange(),previous=previousRange(range),rs=D.rows.filter(r=>chosen(r,range)),priorRows=D.rows.filter(r=>chosen(r,previous)),ar=selectedRecords(),d=diagnostics(ar),a=aggregate(rs),b=aggregate(priorRows);
+    const values=[
+        ['cost','Estimated API cost',cost(a),'Token-based estimate, not an invoice',usageDelta(a,b,'cost',previous)],
+        ['sessions','Sessions',integer(a.sessions.size),'Distinct recorded sessions',usageDelta(a,b,'sessions',previous)],
+        ['cache','Cache read share',pct(a.cache),'Cache reads / total input',usageDelta(a,b,'cache',previous)],
+        ['uncached','Uncached input cost',a.requests>a.unpriced?usd(a.parts[0])+(a.unpriced?' + ?':''):'—','Includes fresh prompts and prefixes',''],
+        ['savings','Scenario savings',moneyRange(d.scenario,d.scenarioHigh),'Largest single saving per request','Quality and workflow validation required'],
+    ];
+    $('cards').innerHTML=values.map(([id,label,value,note,delta])=>`<div class="card ${id==='savings'?'saving':''}" id="card-${id}"><label>${label}</label><div class="value">${value}</div><small>${note}</small>${delta?`<span class="${id==='savings'?'scenario-note':'delta'}">${esc(delta)}</span>`:''}</div>`).join('');
+    $('usage-strip').innerHTML=`<span><b id="requests-value">${integer(a.requests)}</b> requests</span><span>In <b>${compact(a.input)}</b></span><span>Out <b>${compact(a.output)}</b></span><span><b>${integer(d.findings.length)}</b> findings in ${integer(d.flagged)} sessions</span>${previous?`<span id="requests-delta">Requests: ${esc(usageDelta(a,b,'requests',previous))}</span>`:''}`;
+    $('comparison-note').textContent=comparisonNote(range,previous,rs,priorRows);
+    $('money-note').textContent=`USD · Rates as of ${D.price_as_of}. ${a.unpriced?`${a.unpriced} requests have no matching rate; totals and scenarios are partial. `:''}${a.write_unknown?'Unknown cache TTL is shown as a range. ':''}API-equivalent estimates. Subscription charges are not inferred.`;
+    const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);providersTable(rs,priorRows,previous);
+    bars('parts',['Uncached input','Cache reads','Cache writes','Output','Web search'].map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:a.requests,unpriced:a.unpriced})));
+    modelsTable(rs);sessionsTable(rs);renderPools(range);renderAnalysis(rs,ar,a,d);
+}
+for(const [id,rule] of Object.entries(rules))$('check-filter').insertAdjacentHTML('beforeend',`<option value="${esc(id)}">${esc(rule.title)}</option>`);
+for(const field of ['from','to','provider','model','project','role','pool','chartmetric','check-filter','session-sort'])$(field).addEventListener('change',()=>{if(field==='from'||field==='to')$('period').value='custom';page=0;render()});
+$('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};
+$('reset').onclick=()=>{setPeriod('7');for(const f of ['provider','model','project','role','pool','search','check-filter'])$(f).value='';page=0;render()};
+document.addEventListener('click',event=>{const b=event.target.closest('[data-session]');if(b)openSession(b.dataset.session)});
+const tabs=[...document.querySelectorAll('[data-tab]')];tabs.forEach((button,index)=>{button.onclick=()=>showTab(button.dataset.tab);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;showTab(tabs[next].dataset.tab);tabs[next].focus()}});
+$('all-recommendations').onclick=()=>{showTab('recommendations');$('tab-recommendations').focus()};$('close-session').onclick=()=>$('session-dialog').close();
+$('theme').onclick=()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'light';$('theme').textContent=dark?'Light theme':'Dark theme';$('theme').setAttribute('aria-label','Switch to '+(dark?'light':'dark')+' theme')};
+$('rules').innerHTML=Object.values(rules).map(r=>`<p><b>${esc(r.title)}</b><br>${esc(r.description)}<br><small>Requires: ${esc(r.requirement)}</small></p>`).join('');
+$('method').innerHTML=`<p>AISAD implements eight documented local checks inspired by <a href="https://www.uber.com/by/en/blog/efficient-software-factory/" target="_blank" rel="noreferrer">Uber’s session analysis dashboard</a>. The article names four examples of its 16 checks; the remaining internal definitions are not public. The interface follows the public <a href="https://baseweb.design/" target="_blank" rel="noreferrer">Base Web design system</a>, implemented locally without remote fonts or scripts.</p><p>Associated request costs can overlap between findings. Scenario savings take only the largest single saving per request, at the observed token workload. They are hypotheses, not guaranteed savings. Short sessions do not establish task simplicity; a cache drop after a pause does not establish expiration. First observed context includes all input sources. Tool payload bytes are not converted into billed tokens. Checks are evaluated using full recorded session context, then scoped to the selected dates and filters.</p><p>Tool results and messages are inspected locally to derive sizes and counts; their content and arguments are not exported. Only explicitly tagged managed sessions and confirmed children enter the managed pool. Other local sessions share the interactive pool. Pool totals follow dates but deliberately ignore provider, project, model and role filters. Optional budgets provide visible 50/80/100% nudges, with no enforced caps or remote notifications.</p><p>The collector reads only local Codex sessions/archived_sessions, the state_*.sqlite registry and Claude projects. Missing traces are not reconstructed from cumulative counters. Claude message IDs and repeated Codex usage notifications are deduplicated. Counter resets preserve subsequent requests. Copied Claude requests are assigned to the first main trace in a stable order.</p><p>Claude input = uncached input + cache reads + cache creation. Codex input already includes cache. Reasoning is not added to output twice. Output token counts are taken from traces; some SDK traces may contain intermediate values, which limits estimate accuracy.</p><p>Cost includes uncached input, cache reads, 5m/1h cache writes and output, using recorded tier, speed, geography and long-context thresholds. Missing tiers default to Standard; missing geography defaults to global. Rates as of ${esc(D.price_as_of)}. Built-in rates are a current-rate scenario; historical rates can be supplied in local JSON with valid_from/valid_to. Explicitly recorded server-side web searches are added separately. Other service fees, discounts and taxes are not reconstructed.</p><p>Cost is a rate-based estimate, not a confirmed charge. Even Claude SDK total_cost_usd is an estimate. Found ${D.reports.length} such reports; they are not added to request totals to avoid double counting. Unknown models or modes have missing prices, not zero prices.</p><p>Unknown models or modes: ${esc(D.unknown_models.join(', ')||'none')}. Diagnostics: ${esc(JSON.stringify(D.quality))}.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a> · <a href="https://code.claude.com/docs/en/agent-sdk/cost-tracking" target="_blank" rel="noreferrer">SDK cost tracking limitations</a></p>`;
 $('footer').textContent=`AISAD ${D.version} · Python standard library · Offline HTML · ${D.scan.cached_files||0} files from the local cache.`;render();
 // Only the loopback watcher serves this endpoint; file:// snapshots never request a network resource.
 if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{try{const r=await fetch('/status.json',{cache:'no-store'});if(r.ok&&(await r.json()).generated!==D.generated)location.reload()}catch{}},5000);
@@ -729,8 +1130,8 @@ def serve(output,port):
 
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
-    p.add_argument('command',nargs='?',choices=['dashboard','usage'],default='dashboard',help='Dashboard (default) or text/JSON usage without HTML')
-    p.add_argument('--json',action='store_true',help='Usage: emit a structured JSON report to stdout')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline'],default='dashboard',help='Dashboard, usage summary, session diagnostics or terminal status line')
+    p.add_argument('--json',action='store_true',help='Headless commands: emit JSON to stdout (NDJSON for statusline --watch)')
     p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
     p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
     p.add_argument('--from',dest='date_from',help='Usage: inclusive start date, YYYY-MM-DD')
@@ -739,6 +1140,13 @@ def parser():
     p.add_argument('--model',help='Usage: filter by model ID')
     p.add_argument('--project',help='Usage: filter by exact project name')
     p.add_argument('--role',choices=['main','subagent','review'],help='Usage: filter by agent role')
+    p.add_argument('--pool',choices=['interactive','managed'],help='Filter the report by spend pool')
+    p.add_argument('--managed-session',action='append',default=[],metavar='PROVIDER:ID',help='Tag a managed session and its confirmed descendants; repeat as needed')
+    p.add_argument('--budget',type=float,help='Optional shared interactive budget in USD for the selected period, across providers and projects')
+    p.add_argument('--managed-budget',type=float,help='Optional separate managed-agent budget in USD')
+    p.add_argument('--session',help='Status line: session ID, including provider prefix when ambiguous; defaults to CODEX_THREAD_ID or latest observed')
+    p.add_argument('--stdin',action='store_true',help='Status line: read Claude Code status JSON from stdin and use its session_id')
+    p.add_argument('--no-color',action='store_true',help='Status line: disable ANSI colors')
     p.add_argument('--include-requests',action='store_true',help='Usage JSON: include normalized per-request records; no transcripts')
     p.add_argument('--output',default=str(Path(__file__).resolve().parent/'output'),help='Directory for HTML and the local cache')
     p.add_argument('--home',help='Local profile root (for another user or tests)')
@@ -749,7 +1157,7 @@ def parser():
     p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
     p.add_argument('--include-titles',action='store_true',help='Include shortened session titles; IDs only by default')
     p.add_argument('--write-prices',metavar='FILE',help='Write the built-in price catalog and exit')
-    p.add_argument('--watch',type=float,default=0,metavar='SECONDS',help='Rebuild every N seconds and serve on the loopback interface')
+    p.add_argument('--watch',type=float,default=0,metavar='SECONDS',help='Dashboard: rebuild and serve on loopback; statusline: refresh in the terminal only')
     p.add_argument('--port',type=int,default=0,help='Watcher port: 0 selects an available port')
     p.add_argument('--open',action='store_true',help='Open the HTML or local watcher in a browser')
     p.add_argument('--version',action='version',version=VERSION)
@@ -758,14 +1166,47 @@ def parser():
 def main(argv=None):
     args=parser().parse_args(argv)
     if args.watch and args.watch<5:raise SystemExit('--watch must be at least 5 seconds')
+    for value in [args.budget,args.managed_budget]:
+        if value is not None and (not math.isfinite(value) or value<=0):raise SystemExit('Budgets must be finite positive USD amounts')
+    if args.stdin:
+        if args.command!='statusline' or sys.stdin.isatty():raise SystemExit('--stdin requires statusline and piped Claude status JSON')
+        payload=json.loads(sys.stdin.read(1024*1024))
+        if not isinstance(payload,dict) or not isinstance(payload.get('session_id'),str):raise SystemExit('Claude status JSON must include session_id')
+        args.session=args.session or 'Claude:'+payload['session_id']
     if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
     output=Path(args.output).expanduser().resolve()
-    if args.command=='usage':
-        if args.watch or args.open:raise SystemExit('usage does not open a dashboard or run a watcher')
+    if args.command in ('usage','analyze','statusline'):
+        if args.open or (args.watch and args.command!='statusline'):raise SystemExit(args.command+' does not open a dashboard; only statusline supports terminal watching')
         snap=make_snapshot(args,dashboard=False,include_requests=args.include_requests)
         result=usage_report(snap,args)
         atom_json(output/'usage-report.json',result)
-        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else usage_text(result))
+        if args.command!='statusline':
+            print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else (analysis_text(result) if args.command=='analyze' else usage_text(result)))
+            return
+        def show_status(snapshot,report):
+            status=statusline_report(snapshot,report,args);atom_json(output/'statusline.json',status)
+            if args.json:print(json.dumps(status,ensure_ascii=False,allow_nan=False),flush=True);return
+            line=statusline_text(status)
+            tty=sys.stdout.isatty()
+            if args.watch and tty:line=line[:max(20,shutil.get_terminal_size((160,24)).columns-1)]
+            if tty and not args.no_color and os.environ.get('TERM')!='dumb':
+                level=max(v['nudge_percent'] for v in status['pools'].values())
+                line='\x1b['+('31' if level==100 else '33' if level else '36')+'m'+line+'\x1b[0m'
+            print(('\r\x1b[2K' if args.watch and tty else '')+line,end='' if args.watch and tty else '\n',flush=True)
+        show_status(snap,result)
+        if args.watch:
+            previous=source_fingerprint(args)
+            try:
+                while True:
+                    time.sleep(args.watch)
+                    try:
+                        current=source_fingerprint(args)
+                        if current==previous:continue
+                        snap=make_snapshot(args,dashboard=False);result=usage_report(snap,args)
+                        show_status(snap,result);previous=current
+                    except (OSError,ValueError,KeyError,sqlite3.Error) as error:print('Status refresh failed: '+str(error),file=sys.stderr)
+            except KeyboardInterrupt:
+                if sys.stdout.isatty():print()
         return
     snap=make_snapshot(args)
     def report(s):

@@ -206,6 +206,22 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(report['current']['totals']['requests'], 0)
         self.assertEqual(report['current']['requests'], [])
         self.assertFalse((self.data / 'output/dashboard.html').exists())
+        for command in ['analyze', 'statusline']:
+            run = subprocess.run([sys.executable, '-I', str(helper), command, '--offline', '--json',
+                                  '--data-dir', str(self.data), '--home', str(self.root / 'empty profile'),
+                                  *(['--stdin'] if command == 'statusline' else [])],
+                                 input='{"session_id":"empty"}', capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            result = json.loads(run.stdout)
+            self.assertEqual(result['version'], self.version)
+            if command == 'analyze':
+                self.assertEqual(result['current']['diagnostics']['finding_count'], 0)
+                self.assertEqual(len(result['analysis_rules']), 8)
+            else:
+                self.assertEqual(result['session']['id'], 'Claude:empty')
+                self.assertEqual(result['session']['observed_requests'], 0)
+        self.assertFalse((self.data / 'output/dashboard.html').exists())
+        self.assertFalse((self.data / 'output/status.json').exists())
         run = subprocess.run([sys.executable, '-I', str(helper), 'version'], capture_output=True, text=True)
         self.assertEqual(run.stdout.strip(), 'AISAD ' + self.version)
 

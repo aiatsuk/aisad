@@ -19,6 +19,39 @@ def write_trace(path, records):
     path.write_text(''.join(json.dumps(row) + '\n' for row in records), encoding='utf-8')
 
 
+def diagnostic_examples(profile, start):
+    """Specific workflows exercise every check through the real trace parser."""
+    patterns = {
+        'routing-check': ([20000, 22000, 24000], 'standard'),
+        'large-tool-result': ([40000, 110000, 115000], 'standard'),
+        'growing-context': ([100000, 220000, 240000, 280000, 300000], 'standard'),
+        'cache-after-break': ([150000, 155000, 160000, 165000], 'standard'),
+        'priority-build': ([80000, 90000, 100000, 110000], 'priority'),
+        'managed-pipeline': ([80000, 130000, 200000, 240000], 'standard'),
+    }
+    for number, (sid, (sizes, tier)) in enumerate(patterns.items()):
+        events = [dict(type='session_meta', payload=dict(id=sid, cwd='/demo/projects/atlas-api')),
+                  dict(type='turn_context', payload=dict(model='gpt-6-astra', service_tier=tier))]
+        cumulative = collections.Counter()
+        for index, incoming in enumerate(sizes):
+            moment = start + dt.timedelta(days=22 + number % 5, minutes=index * 15)
+            cached = int(incoming * (.05 if sid == 'cache-after-break' and index % 2 else .8))
+            count = 6 if sid == 'large-tool-result' and index == 1 else 1
+            for call in range(count):
+                key = sid + '-' + str(index) + '-' + str(call)
+                events.append(dict(type='response_item', payload=dict(type='function_call', call_id=key,
+                    name='mcp__build__status' if count == 6 else 'mcp__files__read', arguments='{}')))
+                size = 46000 if sid == 'large-tool-result' and index == 1 and call == 0 else 1200
+                events.append(dict(type='response_item', payload=dict(type='function_call_output', call_id=key,
+                    output='x' * size)))
+            usage = dict(input_tokens=incoming, cached_input_tokens=cached, output_tokens=1000,
+                         total_tokens=incoming + 1000)
+            cumulative.update(usage)
+            events.append(dict(type='event_msg', timestamp=moment.isoformat(), payload=dict(type='token_count',
+                info=dict(last_token_usage=usage, total_token_usage=dict(cumulative)))))
+        write_trace(profile / '.codex/sessions' / (sid + '.jsonl'), events)
+
+
 def build_demo():
     rng = random.Random(42)
     start = dt.datetime(2026, 8, 9, 9, tzinfo=dt.timezone.utc)
@@ -75,6 +108,7 @@ def build_demo():
                                             payload=dict(type='token_count', info=dict(
                                                 last_token_usage=usage, total_token_usage=dict(cumulative)))))
                 write_trace(trace, records)
+        diagnostic_examples(profile, start)
         database = sqlite3.connect(profile / '.codex/state_1.sqlite')
         try:
             database.execute('CREATE TABLE threads(id TEXT, model TEXT, cwd TEXT, agent_path TEXT)')
@@ -83,12 +117,15 @@ def build_demo():
         finally:
             database.close()
         args = app.parser().parse_args(['--home', str(profile), '--output', str(Path(folder) / 'report'),
-                                       '--timezone', 'UTC'])
+                                       '--timezone', 'UTC', '--budget', '600', '--managed-budget', '50',
+                                       '--managed-session', 'Codex:managed-pipeline'])
         snapshot = app.make_snapshot(args)
     snapshot.pop('sources', None)
     snapshot.update(device='demo-device', generated='2026-09-05T12:00:00+00:00', as_of_date='2026-09-05', demo=True)
     destination = ROOT / 'output/demo/dashboard.html'
     app.atom_write(destination, app.render_html(snapshot).encode('utf-8'))
+    args.date_to = '2026-09-05'
+    app.atom_json(destination.with_name('expected-analysis.json'), app.usage_report(snapshot, args))
     print('Synthetic example: ' + str(destination))
 
 

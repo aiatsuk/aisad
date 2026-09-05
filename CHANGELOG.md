@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.4.0 — 2026-09-05
+
+- Rebuild the dashboard with public Uber Base Web design conventions: Overview, Recommendations, Sessions, Context & tools, and Cache health views, global filters, session timelines and a dark theme.
+- Add eight documented local checks for model routing, initial context, tool payloads, sustained context growth, possible cache rebuilds, long-context tariffs, premium modes and polling. Separate associated spend from conditional savings; avoid overlapping savings in the total.
+- Derive numeric tool/MCP statistics from traces without exporting messages, payloads or arguments. Expose telemetry coverage and keep unpriced findings explicit.
+- Add `analyze` text/JSON reports and `statusline` with session/provider/pool estimates, context/cache counters, coaching, terminal watching and Claude Code stdin integration.
+- Support optional shared interactive and separate managed budgets with visible 50/80/100% nudges. Explicitly tagged managed sessions propagate to confirmed descendants.
+- Update the installable skill, synthetic demo, README screenshot and cross-platform/browser regression coverage.
+
 ## 2.3.1 — 2026-09-05
 
 - Lead quick `usage` reports with estimated API cost and compact input/output token counts.
