@@ -2,7 +2,15 @@
 const assert = require('node:assert/strict');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { chromium } = require('playwright');
+
+function readSnapshot(raw) {
+  // Large demos embed gzip-base64. Overrides must apply to the decoded snapshot.
+  const data = JSON.parse(raw);
+  if (data.encoding !== 'gzip-base64') return data;
+  return JSON.parse(zlib.gunzipSync(Buffer.from(data.data, 'base64')).toString('utf8'));
+}
 
 const row = (provider, date, session, input, cached, output, cost, requests, role = 'main') => ({
   provider, date, session, input, cached, output, cost, cost_high: cost, requests, role,
@@ -26,7 +34,7 @@ const rows = [
     '})().catch(error=>{',
     'Object.assign(window,{shiftDate,telemetry,selectedRecords,aggregate,D,chosen});\n})().catch(error=>{');
   const pattern = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
-  const template = JSON.parse(html.match(pattern)[2]);
+  const template = readSnapshot(html.match(pattern)[2]);
   const expected = JSON.parse(await readFile(path.join(__dirname, '../output/demo/expected-usage.json'), 'utf8'));
   const browser = await chromium.launch({ headless: true });
   let passed = 0;
