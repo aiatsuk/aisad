@@ -115,4 +115,4 @@ Clone the repository, then run its helper:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 1.0.1` selects an explicit published version. The repository README documents release and offline installation options.
+`--target claude` installs into the Claude Code skills directory; `--target both` installs both. The defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. `--dest /path/to/skills` selects a custom parent directory. Installation uses the latest stable release; `--version 1.0.7` selects an explicit published version. The repository README documents release and offline installation options.

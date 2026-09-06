@@ -124,7 +124,7 @@ From a clone of this repository:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.1` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.7` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
 
 You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
 
@@ -164,7 +164,7 @@ For offline installation, download the skill ZIP and `SHA256SUMS` from a [releas
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install \
-  --archive aisad-skill-v1.0.1.zip --checksum-file SHA256SUMS --target codex
+  --archive aisad-skill-v1.0.7.zip --checksum-file SHA256SUMS --target codex
 ```
 
 ## What you can explore
@@ -271,7 +271,7 @@ For maintainers, update `VERSION` and the changelog, then test and build:
 
 ```sh
 python3 -m unittest discover -v
-python3 scripts/build_release.py --tag v1.0.1
+python3 scripts/build_release.py --tag v1.0.7
 ```
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
