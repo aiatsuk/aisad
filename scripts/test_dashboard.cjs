@@ -2,7 +2,15 @@
 const assert = require('node:assert/strict');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { chromium } = require('playwright');
+
+function readSnapshot(raw) {
+  // Large demos embed gzip-base64. Overrides must apply to the decoded snapshot.
+  const data = JSON.parse(raw);
+  if (data.encoding !== 'gzip-base64') return data;
+  return JSON.parse(zlib.gunzipSync(Buffer.from(data.data, 'base64')).toString('utf8'));
+}
 
 const row = (provider, date, session, input, cached, output, cost, requests, role = 'main') => ({
   provider, date, session, input, cached, output, cost, cost_high: cost, requests, role,
@@ -21,9 +29,12 @@ const rows = [
   row('Codex', '2026-03-11', 'future', 10000, 0, 0, 99, 99),
 ];
 (async () => {
-  const html = await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8');
+  // Expose lexical helpers only in the synthetic test document, never in shipped HTML.
+  const html = (await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8')).replace(
+    '})().catch(error=>{',
+    'Object.assign(window,{shiftDate,telemetry,selectedRecords,aggregate,D,chosen});\n})().catch(error=>{');
   const pattern = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
-  const template = JSON.parse(html.match(pattern)[2]);
+  const template = readSnapshot(html.match(pattern)[2]);
   const expected = JSON.parse(await readFile(path.join(__dirname, '../output/demo/expected-usage.json'), 'utf8'));
   const browser = await chromium.launch({ headless: true });
   let passed = 0;
@@ -39,6 +50,7 @@ const rows = [
     page.on('request', r => network.push(r.url()));
     try {
       await page.setContent(html.replace(pattern, (_, start, unused, end) => start + json + end));
+      await page.waitForSelector('#interactive-dashboard', {state: 'visible'});
       await run(page);
       passed++;
       console.log('PASS ' + name);
@@ -53,7 +65,7 @@ const rows = [
       assert.equal(await page.locator('#requests-delta').textContent(), 'Requests: +150.0% · prev 2');
       assert.equal(await delta(page, 1), '0.0% · prev 2');
       assert.equal(await delta(page, 2), '+35.4 pp · prev 37.5%');
-      assert.match(await page.locator('#comparison-note').textContent(), /2026-02-25 – 2026-03-03/);
+      assert.match(await page.locator('#comparison-note').textContent(), /Feb 25 – Mar 3/);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 2);
       assert.match(await page.locator('#daily').textContent(), /previous · 2026-02-25/);
       assert.equal(await page.evaluate(() => shiftDate('2024-03-01', -1)), '2024-02-29');
@@ -70,10 +82,12 @@ const rows = [
       assert.equal((await values(page))[0], '$7.00');
     });
     await check('model/project/role filters apply to both periods', {}, async page => {
+      await page.click('#filter-toggle');
       await page.selectOption('#role', 'subagent');
       assert.equal((await values(page))[0], '$4.00');
       assert.equal(await delta(page, 0), '0.0% · prev $4.00');
       await page.click('#reset');
+      await page.click('#filter-toggle');
       await page.selectOption('#model', 'gpt-5.6-sol');
       await page.selectOption('#project', 'api');
       assert.equal((await values(page))[0], '$3.00');
@@ -84,10 +98,11 @@ const rows = [
       assert.equal((await values(page))[0], '$211.00');
       assert.equal(await page.locator('#cards .delta').count(), 0);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 0);
+      await page.selectOption('#period', 'custom');
       await page.fill('#from', '2026-03-04'); await page.locator('#from').dispatchEvent('change');
       await page.fill('#to', '2026-03-06'); await page.locator('#to').dispatchEvent('change');
       assert.equal(await page.locator('#period').inputValue(), 'custom');
-      assert.match(await page.locator('#comparison-note').textContent(), /2026-03-01 – 2026-03-03/);
+      assert.match(await page.locator('#comparison-note').textContent(), /Mar 1 – Mar 3/);
       assert.equal((await values(page))[0], '$5.00');
       await page.click('#reset');
       assert.equal(await page.locator('#period').inputValue(), '7');
@@ -107,12 +122,12 @@ const rows = [
       assert.equal(await page.locator('#daily rect[data-series="current"]').count(), 0);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 2);
     });
-    await check('unknown prices suppress cost delta but retain token comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
-      assert.equal(await delta(page, 0), 'Incomplete pricing · no delta');
+    await check('unknown prices are excluded from cost delta and retain token comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
+      assert.equal(await delta(page, 0), '+75.0% · prev $4.00');
       assert.equal(await page.locator('#requests-delta').textContent(), 'Requests: +150.0% · prev 2');
     });
     await check('cache TTL price ranges suppress false precision', { rows: rows.map(r => r.date === '2026-03-04' ? { ...r, cost_high: 2 } : r) }, async page => {
-      assert.equal(await delta(page, 0), 'Incomplete pricing · no delta');
+      assert.equal(await delta(page, 0), 'Price range · no delta');
     });
     await check('zero cost baseline never produces Infinity', { rows: rows.map(r => r.date < '2026-03-04' ? { ...r, cost: 0, cost_high: 0 } : r) }, async page => {
       assert.equal(await delta(page, 0), 'No nonzero baseline · prev $0.00');
@@ -121,6 +136,7 @@ const rows = [
     await check('empty history and invalid date range are explicit', { rows: [] }, async page => {
       assert.equal(await page.locator('#requests-value').textContent(), '0');
       assert.equal(await delta(page, 0), 'No previous-period data');
+      await page.selectOption('#period', 'custom');
       await page.fill('#from', '2026-03-12'); await page.locator('#from').dispatchEvent('change');
       assert.match(await page.locator('#comparison-note').textContent(), /Choose a valid date range/);
       assert.equal(await page.locator('#daily svg').count(), 0);
@@ -145,6 +161,7 @@ const rows = [
       assert((await page.evaluate(() => selectedRecords())).every(r => r.session.startsWith('Claude:')));
       assert.equal(await page.evaluate(() => telemetry(selectedRecords()).totalRecords), expected.current.by_provider.find(p => p.name === 'Claude').requests);
       await page.click('#reset');
+      await page.click('#filter-toggle');
       await page.selectOption('#pool', 'managed');
       assert.equal(await page.locator('#card-sessions .value').textContent(), '1');
       assert.equal(await page.locator('#pools').textContent(), poolText);

@@ -85,9 +85,34 @@ class TelemetryTests(unittest.TestCase):
             stats = parsed['requests'][0]['trace_stats']
             self.assertEqual((stats['tool_calls'], stats['tool_results'], stats['poll_calls']), (1, 1, 1))
             self.assertEqual(stats['mcp_bytes'], len(payload.encode()))
+            self.assertTrue(parsed['requests'][0]['trace_observed'])
             self.assertNotIn('PRIVATE', json.dumps(parsed))
             merged = app.merge_requests(parsed['requests'] * 2, collections.Counter())
             self.assertEqual(merged[0]['trace_stats']['tool_bytes'], stats['tool_bytes'])
+
+    def test_codex_trace_observed_stays_with_the_session_that_had_telemetry(self):
+        def token(ts, n):
+            return dict(type='event_msg', timestamp=ts, payload=dict(
+                type='token_count', info=dict(last_token_usage=dict(input_tokens=n, output_tokens=1))))
+        call = dict(type='response_item', payload=dict(type='function_call', call_id='c', name='tool'))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'two.jsonl'
+            events = [
+                dict(type='session_meta', payload=dict(id='one', cwd='/demo/a')),
+                dict(type='turn_context', payload=dict(model='gpt-5.6-sol')),
+                call, token('2026-09-05T00:00:00Z', 10),
+                dict(type='session_meta', payload=dict(id='two', cwd='/demo/b')),
+                dict(type='turn_context', payload=dict(model='gpt-5.6-sol')),
+                token('2026-09-05T00:01:00Z', 20),
+            ]
+            path.write_text('\n'.join(json.dumps(e) for e in events), encoding='utf-8')
+            parsed = app.parse_codex(path)
+            by_session = {r['session']: r for r in parsed['requests']}
+            self.assertEqual(set(by_session), {'Codex:one', 'Codex:two'})
+            self.assertTrue(by_session['Codex:one']['trace_observed'])
+            self.assertEqual(by_session['Codex:one']['trace_stats']['tool_calls'], 1)
+            self.assertFalse(by_session['Codex:two']['trace_observed'])
+            self.assertEqual(by_session['Codex:two']['trace_stats'], {})
 
     def test_usage_alias_and_statusline_export_only_statistics_offline(self):
         with tempfile.TemporaryDirectory(prefix='statistics profile ') as directory:

@@ -70,18 +70,34 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.report([self.row()])['changes']['status'], 'no_previous_data')
         self.assertEqual(self.report([self.row('2020-01-01')])['period']['to'], '2026-09-05')
 
-    def test_unknown_prices_and_ranges_suppress_cost_comparisons(self):
+    def test_known_prices_are_compared_and_ranges_remain_explicit(self):
         unknown = self.row(model='future-model', cost=0., cost_high=0., unpriced=1)
         report = self.report([unknown, self.row('2026-08-29')])
         self.assertIsNone(report['current']['totals']['estimated_cost_usd'])
         self.assertEqual(report['unknown_models'], ['future-model'])
-        self.assertEqual(report['changes']['estimated_cost_usd']['status'], 'incomplete_pricing')
+        self.assertEqual(report['changes']['estimated_cost_usd']['status'], 'unavailable')
         report = self.report([unknown, self.row(), self.row('2026-08-29')])
         self.assertEqual(report['current']['totals']['estimated_cost_usd'], 2.)
-        self.assertIn('partial; 1 unpriced requests', app.usage_text(report))
+        self.assertIn('1 requests excluded from cost', app.usage_text(report))
+        self.assertEqual(report['changes']['estimated_cost_usd']['percent'],0)
+        self.assertEqual(report['changes']['estimated_cost_usd']['basis'],'known_priced_requests')
+        self.assertEqual(report['changes']['estimated_cost_usd']['excluded_current_requests'],1)
         report = self.report([self.row(cost_high=3.), self.row('2026-08-29')])
         self.assertIn('$2.00–$3.00', app.usage_text(report))
         self.assertEqual(report['changes']['estimated_cost_usd']['status'], 'incomplete_pricing')
+
+    def test_cost_comparison_excludes_unknowns_in_both_periods(self):
+        missing=lambda date,n:self.row(date,model='codex-auto-review',requests=n,cost=0,cost_high=0,unpriced=n)
+        report=self.report([self.row(cost=6,cost_high=6),missing('2026-09-05',7),
+                            self.row('2026-08-29'),missing('2026-08-29',3)])
+        change=report['changes']['estimated_cost_usd']
+        self.assertEqual(change['percent'],200)
+        self.assertEqual((change['excluded_current_requests'],change['excluded_previous_requests']),(7,3))
+        self.assertEqual(report['current']['totals']['requests'],8)
+        self.assertEqual(report['current']['totals']['input_tokens'],2000)
+        self.assertEqual(report['cost_comparison_basis'],'known_priced_requests')
+        report=self.report([self.row(),missing('2026-08-29',3)])
+        self.assertEqual(report['changes']['estimated_cost_usd']['status'],'unavailable')
 
     def test_zero_baseline_and_cache_percentage_points(self):
         report = self.report([self.row(cached=500), self.row('2026-08-29', cost=0., cost_high=0., cached=100)])
