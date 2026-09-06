@@ -56,5 +56,8 @@ jobs:
       - name: Test weekly comparisons with synthetic data
         run: |
           python3 scripts/make_demo.py
+          node scripts/test_calendar_periods.cjs
+          node scripts/test_pricing_view.cjs
+          node scripts/test_offline_loader.cjs
           node scripts/test_dashboard.cjs
           node scripts/capture_demo.cjs

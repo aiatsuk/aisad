@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.0.7 — Unreleased
+
+- Compare known priced cost subtotals even when other requests lack prices. Remove unknown-cost suffixes, disclose exclusions separately for both periods, and retain all usage/token records. Periods without priced data remain unavailable.
+
+## 1.0.6 — Unreleased
+
+- Exclude replayed parent usage before a fork's first local turn context, restore the fork owner after inherited metadata, and invalidate the parser cache. Preserve uncertain files without a turn boundary and report them in collection diagnostics.
+
+## 1.0.5 — Unreleased
+
+- Show saved usage totals before JavaScript initializes and retain them when scripts are disabled or initialization fails.
+- Compress large embedded snapshots losslessly to reduce offline HTML size; loading uses no external files or network requests.
+
+## 1.0.4 — Unreleased
+
+- Add current calendar week (Monday through the snapshot date) and previous calendar week (Monday–Sunday) dashboard presets. Compare the current partial week with the same weekdays last week.
+
+## 1.0.3 — Unreleased
+
+- Preserve the last explicit Codex model when repeated metadata resumes the same session, and invalidate the parser cache. New sessions and unrecorded models remain unknown.
+- Label current prices as applying to all dates, expose observed history coverage and missing registered traces, and include separate Grok completed-turn statistics with provider-reported costs.
+
+- Compact filters: keep period and provider visible, show dates only for custom ranges, and fold secondary filters behind a counted toggle.
+- Keep overview cards inside their tab so Sessions, Context and Cache open directly below the filters.
+- Shorten period comparison and move coverage explanations and pricing gaps behind details. Reduce the footer to version, update time and concise data notes.
+
+## 1.0.2 — Unreleased
+
+- Add published Standard API rates for GPT-5-Codex, GPT-5.1-Codex, Mini, Max and GPT-5.2-Codex. Internal auto-review, unidentified models and unsupported processing modes remain unpriced.
+- Explain partial estimates with a filtered model/reason/token breakdown and a known-subtotal label. Add pricing coverage to usage JSON and preserve pricing status in request statistics.
+
 ## 1.0.1 — 2026-09-05
 
 - Focus AISAD on collecting and displaying usage statistics. Remove the recommendation engine, findings, hypothetical savings, routing suggestions and status-line coaching.

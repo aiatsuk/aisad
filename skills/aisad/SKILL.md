@@ -36,13 +36,16 @@ JSON stdout is machine-readable; update messages go to stderr. The same report i
 - `current.rows`: joint date/provider/model/session/project/role groups for cross-filtering. Session counts are distinct within each group and must not be added across models or days.
 - `current.requests` and `previous.requests`: optional normalized per-request evidence with `--include-requests`; no conversation text.
 - `current.telemetry`, `previous.telemetry`: message/tool telemetry coverage and measured tool/MCP counts and sizes.
+- `current.pricing_coverage`, `previous.pricing_coverage`: priced/unpriced request counts and unpriced groups by provider, model and reason, with their input/output tokens.
 - `current.request_stats`, `previous.request_stats`: optional per-request context, timing and numeric trace statistics with `--include-requests`.
 - `pools`, `pool_scope`: interactive and managed spend for the selected dates across all providers and projects. These totals intentionally ignore the other filters.
+- `price_basis`, `history_coverage`: current-rate versus custom-rate basis and observed date coverage by provider.
+- `grok_usage`: separate completed-turn statistics from local Grok Build; reported cost, model calls, and incomplete turns for the selected dates across all Grok projects. These totals are not included in the Claude/Codex API estimate and do not use its provider/model filters.
 - `quality`, `scan`, `source_summary`: collection diagnostics across all discovered history, not the selected period. `unknown_models` covers the current filtered period.
 
 Answer the user's question by computing from these fields with local Python or other local tools. For example, rank `by_model` for the most expensive models, compare each model's known cost across periods for cost drivers, or use `by_session` for expensive sessions. Avoid dumping the entire JSON into the conversation. For request-level questions, rerun with `--include-requests`. The full normalized history and price catalog are also saved as `usage.json` and `prices-used.json`.
 
-Preserve null prices, partial totals and cache-TTL ranges. Compare costs only when pricing is complete and exact in both periods; report unavailable comparisons explicitly. Do not invent zero usage for missing records. Costs are API-equivalent estimates, not subscription charges. Token volume does not measure productivity or output quality.
+Preserve null prices and cache-TTL ranges. Exclude unpriced requests from cost totals and compare the known priced subtotals in both periods, disclosing excluded counts separately. Usage counts and tokens include all recorded requests. If a period has no priced requests, its cost comparison is unavailable rather than zero; price ranges still suppress a single percentage delta. Do not invent zero usage for missing records. The default catalog applies current prices to all historical records; it does not reconstruct historical bills. Costs are API-equivalent estimates, not subscription charges. Grok Build persists turn totals: show its provider-reported cost separately, since aggregate turns cannot be repriced reliably per request. Token volume does not measure productivity or output quality.
 
 ## Interpreting statistics
 
@@ -65,6 +68,10 @@ The line shows the lifetime recorded session estimate, provider total for the se
 Claude Code can invoke `statusline --offline --stdin` through its command status-line hook; stdin supplies `session_id`. For a requested integration, preserve other settings and resolve the installed helper's absolute path. The [README](https://github.com/aiatsuk/aisad#claude-code-status-line-integration) includes a `statusLine` example. Use `--offline` in this frequent hook. AISAD also runs beside Codex in a terminal; do not claim its custom line is installed in Codex's native footer.
 
 ## Dashboard
+
+The HTML includes a static usage summary so a script-disabled preview does not show empty statistics. Large snapshots are compressed inside the file and decoded locally in modern browsers. If the host blocks `file://` inspection, state that limitation and use an already available localhost dashboard for interactive checks; do not claim that testing HTTP verifies the file-preview path.
+
+The period selector includes **This week (Mon–today)** and **Last week (Mon–Sun)**, anchored to the snapshot date in the report timezone. The current partial week compares with the same weekdays last week; the previous complete week compares with the week before it. Rolling seven-day, thirty-day, all-time and custom ranges remain available.
 
 For a snapshot:
 
