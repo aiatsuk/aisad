@@ -124,7 +124,7 @@ From a clone of this repository:
 python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
-Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.1` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.7` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
 
 You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
 
@@ -164,21 +164,8 @@ For offline installation, download the skill ZIP and `SHA256SUMS` from a [releas
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install \
-  --archive aisad-skill-v1.0.1.zip --checksum-file SHA256SUMS --target codex
+  --archive aisad-skill-v1.0.7.zip --checksum-file SHA256SUMS --target codex
 ```
-
-### Move an existing 2.x installation to 1.0.0
-
-The earlier 2.x numbers were assigned during implementation. Stable versioning now starts at **1.0.0**. Existing installations need a one-time reinstall because their updater correctly refuses a lower version number.
-
-Run the helper from an updated repository clone:
-
-```sh
-git pull --ff-only
-python3 skills/aisad/scripts/aisad.py install --target codex --version 1.0.0 --allow-downgrade
-```
-
-Use `--target claude` or `--target both` as appropriate. Reports remain in the data directory, and local edits are still protected. After this transition, automatic updates follow the normal 1.0.1, 1.1.0, and later release sequence. The downgrade option is available only for an explicit installation; automatic updates never downgrade.
 
 ## What you can explore
 
@@ -272,7 +259,7 @@ The local server exposes only the dashboard and its update timestamp. Raw export
 
 `python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic release versions. The JSON contracts are versioned separately with `schema_version`; incompatible report changes increment that field. Scripts consuming JSON should check it before reading the report.
 
-**1.0.0 is the stable baseline.** Earlier 2.x tags remain available as historical artifacts. GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
+GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
 
 `VERSION` in `agent_usage.py` is the source of truth. Release tags use `vX.Y.Z` and must match it. See [CHANGELOG.md](CHANGELOG.md) for changes and [GitHub Releases](https://github.com/aiatsuk/aisad/releases) for published assets:
 
@@ -284,7 +271,7 @@ For maintainers, update `VERSION` and the changelog, then test and build:
 
 ```sh
 python3 -m unittest discover -v
-python3 scripts/build_release.py --tag v1.0.1
+python3 scripts/build_release.py --tag v1.0.7
 ```
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
