@@ -28,7 +28,7 @@ import webbrowser
 from urllib.parse import unquote
 
 VERSION = '1.0.7'
-PARSER_VERSION = 6
+PARSER_VERSION = 7
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
 # A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
@@ -195,6 +195,7 @@ def parent_thread(source):
 def parse_codex(path,include_titles=False):
     q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
     signals=TraceSignals();parent=None;fork_owner=None;fork_live=False
+    observed={}
     for x in read_jsonl(path,q):
         p=x.get('payload') or {}
         if not isinstance(p,dict):continue
@@ -217,7 +218,7 @@ def parse_codex(path,include_titles=False):
                 fork_owner=dict(id=sid,project=project,role=role,parent=parent,session=dict(sessions[sid]))
         if not sid:continue
         if typ=='response_item':
-            signals.observed=True
+            signals.observed=True;observed[sid]=True
             if p.get('type') in ['function_call','custom_tool_call']:signals.call(p.get('call_id'),p.get('name'))
             if p.get('type') in ['function_call_output','custom_tool_call_output']:signals.result(p.get('call_id'),p.get('output',''))
             if p.get('type')=='message' and p.get('role')=='user':signals.pending['user_messages']+=1
@@ -232,12 +233,13 @@ def parse_codex(path,include_titles=False):
                 sid=fork_owner['id'];project=fork_owner['project'];role=fork_owner['role'];parent=fork_owner['parent']
                 sessions={sid:fork_owner['session']}
                 model='unknown';effort='unknown';tier='unknown';turn='';fork_live=True
+                observed={sid:True} if signals.observed else {}
             model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
             tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
             if p.get('cwd'):project=project_name(p['cwd'])
         if typ=='event_msg' and p.get('type')=='task_started':
             turn=p.get('turn_id') or turn
-            if fork_owner and not fork_live:signals=TraceSignals()
+            if fork_owner and not fork_live:signals=TraceSignals();observed.pop(sid,None)
         if typ!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
         info=p['info'];u=info.get('last_token_usage');cu=info.get('total_token_usage')
         if not u:q['codex_missing_last_usage']+=1;continue
@@ -257,7 +259,7 @@ def parse_codex(path,include_titles=False):
                              role=role,ts=ts,web_searches=None,parent_session=parent,turn_id=turn or None,
                              trace_stats=signals.take(),**usage))
     if fork_owner and not fork_live:q['codex_fork_without_turn_context']+=1
-    for row in requests:row['trace_observed']=signals.observed
+    for row in requests:row['trace_observed']=observed.get(row['session'].split(':',1)[-1],False)
     return dict(sessions=list(sessions.values()),requests=requests,reports=[],quality=dict(q))
 
 def parse_claude(path,include_titles=False):
@@ -1045,8 +1047,8 @@ function renderStatistics(rs,ar,a,d){
     $('cache-cards').innerHTML=miniCards([['Cache read share',pct(a.cache),'Cache reads / all input tokens'],['Uncached input estimate',a.requests>a.unpriced?usd(a.parts[0]):'—','Includes fresh input; not all cache misses'],['Cache writes',a.requests?compact(a.write):'—','Recorded cache creation tokens']]);
     $('cache-table').innerHTML='<thead><tr><th>Model</th><th>Input tokens</th><th>Cached tokens</th><th>Cache share</th><th>Cache writes</th><th>Uncached estimate</th></tr></thead><tbody>'+groups(rs,'model').sort((a,b)=>b.input-a.input).map(g=>`<tr><td>${esc(g.name)}</td><td>${compact(g.input)}</td><td>${compact(g.cached)}</td><td>${pct(g.cache)}</td><td>${compact(g.write)}</td><td>${g.requests>g.unpriced?usd(g.parts[0]):'—'}</td></tr>`).join('')+'</tbody>';
 }
-function renderPricingGaps(ar,a,previous=null){
-    const missing=ar.filter(r=>r.cost==null),groups=new Map();
+function renderPricingGaps(ar,a,previous=null,priorRecords=[]){
+    const missing=[...ar,...priorRecords].filter(r=>r.cost==null),groups=new Map();
     for(const r of missing){
         const status=r.price_status||'unknown_model';
         const reason=r.model==='unknown'?'Model not recorded in the trace':r.model==='codex-auto-review'&&status==='unknown_model'?'Internal approval-review model; no verified API rate':({unknown_model:'Model absent from the price catalog',unpriced_tier:'No rate for this processing mode',unknown_tier:'Unknown processing mode',unpriced_cache_write:'No cache-write rate',missing_or_overlapping_date_rate:'Missing or overlapping dated rates'}[status]||status);
@@ -1080,7 +1082,7 @@ function render(){
     $('money-note').textContent='Claude + Codex · '+(D.price_basis==='current_rates'?'Current rates ('+D.price_as_of+') for all dates':'Custom rates')+' · Priced requests only for cost and comparison · API estimate, not a bill.'+(a.write_unknown?' Cache-write price shown as a range.':'');
     const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);providersTable(rs,priorRows,previous);
     bars('parts',['Uncached input','Cache reads','Cache writes','Output','Web search'].map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i],requests:a.requests,unpriced:a.unpriced})));
-    modelsTable(rs);sessionsTable(rs);renderPools(range);renderStatistics(rs,ar,a,d);renderPricingGaps(ar,a,previous?b:null);
+    modelsTable(rs);sessionsTable(rs);renderPools(range);renderStatistics(rs,ar,a,d);renderPricingGaps(ar,a,previous?b:null,previous?records.filter(r=>chosen(r,previous)):[]);
 }
 for(const field of ['from','to','provider','model','project','role','pool','chartmetric','session-sort'])$(field).addEventListener('change',()=>{if(field==='from'||field==='to')$('period').value='custom';page=0;render()});
 $('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};

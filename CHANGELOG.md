@@ -3,6 +3,7 @@
 ## 1.0.7 — Unreleased
 
 - Compare known priced cost subtotals even when other requests lack prices. Remove unknown-cost suffixes, disclose exclusions separately for both periods, and retain all usage/token records. Periods without priced data remain unavailable.
+- Keep Codex message/tool coverage on the session that observed telemetry when a file switches sessions. Show previous-period pricing-gap details when the current period is fully priced. Invalidate the parser cache.
 
 ## 1.0.6 — Unreleased
 

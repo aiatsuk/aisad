@@ -50,6 +50,7 @@ class ForkHistoryTests(unittest.TestCase):
                            start,user,context('gpt-5.6-sol'),usage(2)])
         self.assertEqual(len(parsed['requests']),1)
         self.assertEqual(parsed['requests'][0]['trace_stats']['user_messages'],1)
+        self.assertTrue(parsed['requests'][0]['trace_observed'])
 
     def test_no_fork_flag_preserves_usage_before_context(self):
         parsed=self.parse([meta('main'),usage(1),context('gpt-5.6-sol'),usage(2)])
