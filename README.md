@@ -259,7 +259,7 @@ The local server exposes only the dashboard and its update timestamp. Raw export
 
 `python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic release versions. The JSON contracts are versioned separately with `schema_version`; incompatible report changes increment that field. Scripts consuming JSON should check it before reading the report.
 
-**1.0.0 is the stable baseline.** Earlier 2.x tags remain available as historical artifacts. GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
+GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
 
 `VERSION` in `agent_usage.py` is the source of truth. Release tags use `vX.Y.Z` and must match it. See [CHANGELOG.md](CHANGELOG.md) for changes and [GitHub Releases](https://github.com/aiatsuk/aisad/releases) for published assets:
 

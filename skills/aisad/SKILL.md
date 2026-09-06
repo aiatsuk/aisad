@@ -109,8 +109,6 @@ The collector reads only sources on the current device and exposes its dashboard
 
 ## Installation on another device
 
-The stable baseline is 1.0.0; earlier 2.x numbers were assigned during implementation. To move an existing 2.x installation to this baseline, use the helper from an updated repository clone with `install --target codex --version 1.0.0 --allow-downgrade` (or the requested target). Old installed helpers cannot perform that transition themselves. Use the option only for an explicitly requested lower version or version reset; it never bypasses checksum verification or preservation of local edits. Normal automatic updates resume after the reinstall, using the new version sequence.
-
 Clone the repository, then run its helper:
 
 ```sh
