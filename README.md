@@ -167,19 +167,6 @@ python3 skills/aisad/scripts/aisad.py install \
   --archive aisad-skill-v1.0.1.zip --checksum-file SHA256SUMS --target codex
 ```
 
-### Move an existing 2.x installation to 1.0.0
-
-The earlier 2.x numbers were assigned during implementation. Stable versioning now starts at **1.0.0**. Existing installations need a one-time reinstall because their updater correctly refuses a lower version number.
-
-Run the helper from an updated repository clone:
-
-```sh
-git pull --ff-only
-python3 skills/aisad/scripts/aisad.py install --target codex --version 1.0.0 --allow-downgrade
-```
-
-Use `--target claude` or `--target both` as appropriate. Reports remain in the data directory, and local edits are still protected. After this transition, automatic updates follow the normal 1.0.1, 1.1.0, and later release sequence. The downgrade option is available only for an explicit installation; automatic updates never downgrade.
-
 ## What you can explore
 
 - The last seven days by default, compared with the preceding seven days when records exist.
