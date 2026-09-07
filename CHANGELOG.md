@@ -2,6 +2,8 @@
 
 ## 1.1.0 — on-demand session evidence (unreleased)
 
+- Read chronological Codex `thread_settings_applied` tier changes so recorded Fast usage is priced correctly; invalidate cached parser results. Add processing-tier evidence and accounting regression checks.
+- Label the token-weighted metric as Cache rate, expose its percentage in JSON, and prominently identify synthetic demo figures. Document the accounting audit and comparable tools.
 - Replace dashboard spend-pool cards with uncached input, cache-read, cache-write and output token/cost breakdowns. Expose cache-write cost ranges by component in the UI and JSON.
 
 - Add a transactional local SQLite event database with usage observations, session/turn relationships, tool-call metadata, context observations and file/line provenance.

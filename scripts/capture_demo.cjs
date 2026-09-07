@@ -19,6 +19,8 @@ const { chromium } = require('playwright');
     await page.waitForSelector('#cards .value');
     assert.equal(await page.locator('html').getAttribute('lang'), 'en');
     assert.equal(await page.locator('.badge').textContent(), 'Synthetic demo');
+    assert.equal(await page.locator('#demo-notice').isVisible(), true);
+    assert.equal(await page.locator('#card-cache label').textContent(), 'Cache rate');
     assert(!/[\u0400-\u04ff]/.test(await page.locator('body').textContent()));
     const base = await page.locator('#cards .value').allTextContents();
     assert.equal(base.length, 4);

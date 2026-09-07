@@ -34,6 +34,7 @@ class ReportTests(unittest.TestCase):
         totals=report['current']['totals']
         self.assertEqual(totals['uncached_input_tokens'],550)
         self.assertEqual(totals['cached_input_tokens'],850)
+        self.assertAlmostEqual(totals['cache_read_rate_percent'],850/1500*100)
         self.assertEqual(totals['cache_write_tokens'],100)
         self.assertEqual(sum(totals[k] for k in ['uncached_input_tokens','cached_input_tokens','cache_write_tokens']),totals['input_tokens'])
         self.assertEqual(sum(totals['cost_parts_usd'].values()),totals['estimated_cost_usd'])

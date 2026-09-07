@@ -24,7 +24,7 @@ import webbrowser
 from urllib.parse import unquote
 
 VERSION = '1.1.0'
-PARSER_VERSION = 8
+PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
 # A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
@@ -198,6 +198,10 @@ class Evidence:
             if typ in ('compacted','context_compacted') or (typ=='event_msg' and sub in ('context_compacted','compaction')):
                 return add('compaction')
             if typ=='event_msg':
+                if sub=='thread_settings_applied':
+                    settings=p.get('thread_settings')
+                    value=settings.get('service_tier') if isinstance(settings,dict) else None
+                    return add('settings',service_tier=trace_identifier(value) if isinstance(value,str) else None)
                 kind={'task_started':'turn_started','task_complete':'turn_completed',
                       'task_completed':'turn_completed','turn_aborted':'turn_aborted',
                       'error':'error','token_count':'usage'}.get(sub)
@@ -315,6 +319,11 @@ def parse_codex(path,include_titles=False):
             model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
             tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
             if p.get('cwd'):project=project_name(p['cwd'])
+        if typ=='event_msg' and p.get('type')=='thread_settings_applied':
+            settings=p.get('thread_settings')
+            if isinstance(settings,dict) and isinstance(settings.get('service_tier'),str):
+                # Chronological trace evidence, never today's global config.
+                tier=settings['service_tier'];q['codex_recorded_tier_events']+=1
         if typ=='event_msg' and p.get('type')=='task_started':
             turn=p.get('turn_id') or turn
             if fork_owner and not fork_live:signals=TraceSignals();observed.pop(sid,None)
@@ -461,7 +470,7 @@ def price_request(row,catalog):
     if mode!='standard':
         if mode+'_multiplier' not in rule:return dict(cost=None,cost_high=None,cost_parts=None,price_status='unpriced_tier',assumptions=[])
         mult*=d(rule[mode+'_multiplier'])
-    elif tier in ['unknown','default',None]:assumptions.append('Standard tier assumed')
+    elif tier in ['unknown',None]:assumptions.append('Standard tier assumed')
     if row.get('geo')=='us':mult*=Decimal('1.1')
     elif row.get('geo') not in ['global']:assumptions.append('Global routing assumed')
     if row['provider']=='Claude':
@@ -493,7 +502,7 @@ def request_statistics(rows,managed_sessions=()):
         previous=None
         for index,row in enumerate(observations):
             row['pool']='managed' if session in managed else 'interactive'
-            fields=['id','session','provider','model','project','role','date','ts','input','output','cached','write','uncached','cost','cost_high','pool']
+            fields=['id','session','provider','model','project','role','date','ts','input','output','cached','write','uncached','cost','cost_high','pool','tier']
             record={key:row[key] for key in fields}
             record.update(step=index+1,gap_seconds=max(0.,row['ts']-previous['ts']) if previous else None,
                 trace_stats=row.get('trace_stats',{}),trace_observed=row.get('trace_observed',False),
@@ -863,6 +872,7 @@ def usage_totals(rows):
                   unknown_cache_ttl_tokens=sum(row['write_unknown'] for row in rows),
                   max_input_tokens=max((row['max_context'] for row in rows),default=0),
                   cache_share=result['cached_input_tokens']/result['input_tokens'] if result['input_tokens'] else None,
+                  cache_read_rate_percent=100*result['cached_input_tokens']/result['input_tokens'] if result['input_tokens'] else None,
                   cost_parts_usd=dict(zip(['uncached_input','cache_reads','cache_writes','output','web_search'],
                                          [sum(row['parts'][i] for row in rows) for i in range(5)])))
     result['uncached_input_tokens']=result['input_tokens']-result['cached_input_tokens']-result['cache_write_tokens']
@@ -1142,6 +1152,7 @@ footer{justify-content:flex-start;align-items:baseline;gap:6px 16px;margin-top:1
 <header><div class="brand"><span class="wordmark">AISAD</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
 <section id="saved-summary" class="panel wide">__SAVED_SUMMARY__</section>
 <div id="interactive-dashboard" hidden>
+<p id="demo-notice" class="panel-intro" hidden><strong>Synthetic demo data.</strong> These sample figures are for the README preview. Run AISAD locally to see this device’s usage.</p>
 <nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button></nav>
 <div class="filters">
 <div class="filter-bar"><label>Period<select id="period"><option value="7">Last 7 days</option><option value="this-week">This week (Mon–today)</option><option value="last-week">Last week (Mon–Sun)</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom dates</option></select></label>
@@ -1218,7 +1229,7 @@ for(const field of ['provider','model','project']){
 setPeriod('7');
 let generatedLabel;try{generatedLabel=new Date(D.generated).toLocaleString('en-US',{timeZone:D.timezone==='System local timezone'?undefined:D.timezone})}catch{generatedLabel=D.generated}
 $('subtitle').textContent='Updated '+generatedLabel;
-if(D.demo)document.querySelector('.badge').textContent='Synthetic demo';
+if(D.demo){document.querySelector('.badge').textContent='Synthetic demo';$('demo-notice').hidden=false;document.querySelector('h1').textContent='Demo usage statistics'}
 $('coverage').textContent=Object.entries(D.history_coverage||{}).map(([provider,h])=>provider+': '+(h.first_date?h.first_date+' – '+h.last_date:'no records')).join(' · ')+(D.quality.registry_without_trace?' · '+integer(D.quality.registry_without_trace)+' registered Codex sessions have no trace. ':' · ')+(D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.');
 function chosen(r,range=selectedRange()){
     return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(!$('role').value||r.role===$('role').value)&&(!$('pool').value||(r.pool||'interactive')===$('pool').value));
@@ -1332,7 +1343,7 @@ function showTab(name){
 function openSession(id){
     const rs=selectedRecords().filter(r=>r.session===id).sort((a,b)=>a.ts-b.ts||a.step-b.step),a=aggregate(recordRows(rs)),d=telemetry(rs);
     $('session-title').textContent=sessionLabel(id);$('session-caption').textContent=`${rangeLabel(selectedRange())} · Selected filters · ${[...new Set(rs.map(r=>r.model))].join(', ')} · ${integer(d.traceRecords)} of ${integer(rs.length)} usage records have message/tool telemetry.`;
-    $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak input',rs.length?compact(a.max_context):'—','Measured request input, including cache'],['Cache read share',pct(a.cache),'Weighted by input tokens']]);
+    $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak input',rs.length?compact(a.max_context):'—','Measured request input, including cache'],['Cache rate',pct(a.cache),'Weighted by input tokens']]);
     if(rs.length){
         const w=900,h=200,L=54,R=18,T=18,B=30,max=Math.max(...rs.map(r=>r.input),1),x=i=>L+i*(w-L-R)/Math.max(1,rs.length-1),y=v=>h-B-v/max*(h-T-B);
         let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Input context and cached input for each recorded request">`;
@@ -1358,7 +1369,7 @@ function renderStatistics(rs,ar,a,d){
     bars('context-chart',groups(rs,'session').sort((a,b)=>b.max_context-a.max_context).slice(0,8).map(g=>({...g,label:sessionLabel(g.name)})),'max_context');
     $('tool-chart').innerHTML=d.traceRecords?`<div class="mini-grid">${miniCards([['Recorded tool results',bytes(d.stats.tool_bytes||0),integer(d.stats.tool_results||0)+' results'],['Tool calls',integer(d.stats.tool_calls||0),'Structured calls before usage observations']])}</div>`:'<div class="empty">No message/tool telemetry available.</div>';
     $('tool-coverage').textContent=`${integer(d.traceRecords)} / ${integer(ar.length)} records have message/tool telemetry. Payloads are associated with the next observed usage event; their exact billed token impact is unavailable.`;
-    $('cache-cards').innerHTML=miniCards([['Cache reads',a.requests?compact(a.cached):'—',componentCost(a,1)+' estimated API cost'],['Cache writes',a.requests?compact(a.write):'—',componentCost(a,2)+' estimated API cost'],['Uncached input',a.requests?compact(a.input-a.cached-a.write):'—',componentCost(a,0)+' estimated API cost'],['Cache read share',pct(a.cache),'Cache reads / all input tokens']]);
+    $('cache-cards').innerHTML=miniCards([['Cache reads',a.requests?compact(a.cached):'—',componentCost(a,1)+' estimated API cost'],['Cache writes',a.requests?compact(a.write):'—',componentCost(a,2)+' estimated API cost'],['Uncached input',a.requests?compact(a.input-a.cached-a.write):'—',componentCost(a,0)+' estimated API cost'],['Cache rate',pct(a.cache),'Cached input / total input · token-weighted']]);
     $('cache-table').innerHTML='<thead><tr><th>Model</th><th>Total input</th><th>Uncached input</th><th>Cache reads</th><th>Cache writes</th><th>Read share</th><th>Uncached cost</th><th>Read cost</th><th>Write cost</th></tr></thead><tbody>'+groups(rs,'model').sort((a,b)=>b.input-a.input).map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.input)}</td><td>${integer(g.input-g.cached-g.write)}</td><td>${integer(g.cached)}</td><td>${integer(g.write)}</td><td>${pct(g.cache)}</td><td>${componentCost(g,0)}</td><td>${componentCost(g,1)}</td><td>${componentCost(g,2)}</td></tr>`).join('')+'</tbody>';
 
 }
@@ -1381,7 +1392,7 @@ function render(){
     const values=[
         ['cost','API cost · priced requests',cost(a),'Known prices only · compared on the same basis',usageDelta(a,b,'cost',previous)],
         ['sessions','Sessions',integer(a.sessions.size),'Distinct recorded sessions',usageDelta(a,b,'sessions',previous)],
-        ['cache','Cache read share',pct(a.cache),'Cache reads / total input',usageDelta(a,b,'cache',previous)],
+        ['cache','Cache rate',pct(a.cache),'Cached input / total input · token-weighted',usageDelta(a,b,'cache',previous)],
         ['uncached','Uncached input cost',a.requests>a.unpriced?usd(a.parts[0]):'—','Includes fresh prompts and prefixes',''],
     ];
     $('cards').innerHTML=values.map(([id,label,value,note,delta])=>`<div class="card" id="card-${id}"><label>${label}</label><div class="value">${value}</div><small>${note}</small>${delta?`<span class="delta">${esc(delta)}</span>`:''}</div>`).join('');
@@ -1422,11 +1433,11 @@ function renderSessionEvidence(id,rs){
     }else $('session-lifecycle').textContent='No lifecycle evidence in this snapshot.';
     const preview=D.event_previews?.[id]||[],events=preview.filter(e=>e.date&&range&&e.date>=range.from&&e.date<=range.to&&(!$('model').value||!e.model||e.model===$('model').value));
     $('events-note').textContent=`${integer(events.length)} events shown for these dates from the latest ${integer(preview.length)} retained in this session’s offline preview. Full history and pagination: session --session ${id} --json. The database contains ${integer(meta?.event_count||preview.length)} lifetime events. Missing timestamps cannot be placed in this date range.`;
-    $('events-table').innerHTML='<thead><tr><th>Observed time</th><th>Event</th><th>Recorded details</th><th>Evidence</th></tr></thead><tbody>'+events.map(e=>`<tr><td>${esc(observedTime(e.ts))}</td><td>${esc(e.kind.replaceAll('_',' '))}</td><td>${esc(e.tool||e.role||e.model||'')}${e.result_bytes!=null?' · '+bytes(e.result_bytes):e.kind==='tool_result'?' · size unavailable':''}${e.error===true?' · error recorded':''}</td><td><details><summary>Source ${integer(e.evidence[0]?.line||0)}</summary>${sourceReferences(e.evidence)}</details></td></tr>`).join('')+'</tbody>';
+    $('events-table').innerHTML='<thead><tr><th>Observed time</th><th>Event</th><th>Recorded details</th><th>Evidence</th></tr></thead><tbody>'+events.map(e=>`<tr><td>${esc(observedTime(e.ts))}</td><td>${esc(e.kind.replaceAll('_',' '))}</td><td>${esc(e.tool||e.role||e.service_tier||e.model||'')}${e.result_bytes!=null?' · '+bytes(e.result_bytes):e.kind==='tool_result'?' · size unavailable':''}${e.error===true?' · error recorded':''}</td><td><details><summary>Source ${integer(e.evidence[0]?.line||0)}</summary>${sourceReferences(e.evidence)}</details></td></tr>`).join('')+'</tbody>';
 }
 function inspectObservation(id){
     const r=records.find(r=>r.id===id);if(!r)return;
-    $('observation-detail').innerHTML=`<h3>Usage observation ${integer(r.step)}</h3><p>${esc(observedTime(r.ts))} · ${esc(r.model)}</p><p>Measured input: ${integer(r.input)} · cache reads: ${integer(r.cached)} · output: ${integer(r.output)}.</p><p>Estimated API cost: ${moneyRange(r.cost,r.cost_high)}. Price status: ${esc(r.price_status||'unknown')}.</p><p>Context composition and billed tool attribution: unavailable.</p><h3>Source records</h3>${sourceReferences(r.evidence||[])}<small>File paths are available in the local session JSON and sessions.sqlite. Conversation text and tool payloads are not copied into this report.</small>`;
+    $('observation-detail').innerHTML=`<h3>Usage observation ${integer(r.step)}</h3><p>${esc(observedTime(r.ts))} · ${esc(r.model)} · Processing tier: ${esc(r.tier||'unknown')}</p><p>Measured input: ${integer(r.input)} · cache reads: ${integer(r.cached)} · output: ${integer(r.output)}.</p><p>Estimated API cost: ${moneyRange(r.cost,r.cost_high)}. Price status: ${esc(r.price_status||'unknown')}.</p><p>Context composition and billed tool attribution: unavailable.</p><h3>Source records</h3>${sourceReferences(r.evidence||[])}<small>File paths are available in the local session JSON and sessions.sqlite. Conversation text and tool payloads are not copied into this report.</small>`;
     $('observation-detail').hidden=false;$('observation-detail').scrollIntoView({block:'nearest'});
 }
 function navigateEvidence(target){
@@ -1459,6 +1470,7 @@ def saved_summary(snapshot):
     rows=snapshot.get('rows',[])
     today=snapshot.get('as_of_date') or snapshot.get('generated','')[:10]
     intro='<h2>Saved usage summary</h2><p id="startup-note" class="panel-intro">Interactive charts require JavaScript. These saved totals are available without it.</p>'
+    if snapshot.get('demo'):intro='<p><strong>Synthetic demo data.</strong> Sample figures for the README preview.</p>'+intro
     if not today:
         return intro+'<p>No usage snapshot is available.</p>'
     end=dt.date.fromisoformat(today);monday=end-dt.timedelta(days=end.weekday())

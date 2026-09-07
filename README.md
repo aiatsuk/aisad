@@ -8,6 +8,8 @@ An independent, on-demand analyzer of local Claude Code and Codex session files.
 
 *Example dashboard with synthetic sessions. The screenshot contains no personal usage data.*
 
+For the exact token formulas, cache-rate definition, pricing assumptions and comparisons with ccusage and Token Use, see [Usage accounting](docs/ACCOUNTING.md).
+
 ## Quick start
 
 Clone into a writable directory and build a snapshot:
