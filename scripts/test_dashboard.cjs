@@ -130,11 +130,12 @@ const rows = [
       assert.equal(await delta(page, 0), 'Price range · no delta');
     });
     await check('cache token and cost components reconcile and follow provider filters', { rows: [
-      {...row('Claude','2026-03-10','cache-claude',1000,600,50,10,1),write:100,write_unknown:100,cost_high:11,parts:[1,2,3,4,0]},
+      {...row('Claude','2026-03-10','cache-claude',1000,600,50,10,1),write:100,write_unknown:100,cost:10.5,cost_high:11.5,parts:[1,2,3,4,.5]},
       {...row('Codex','2026-03-10','cache-codex',500,250,100,5,1),parts:[1,1,0,3,0]},
     ] }, async page => {
       assert.equal(await page.locator('#pools').count(), 0);
       assert.deepEqual(await page.locator('#token-cards .value').allTextContents(), ['550','850','100','150']);
+      assert.match(await page.locator('#search-cost').textContent(), /Web search: \$0.50/);
       assert.match(await page.locator('[data-component="cache_writes"] .component-cost').textContent(), /\$3.00–\$4.00/);
       assert.match(await page.locator('#parts').textContent(), /\$3.00–\$4.00/);
       await page.selectOption('#provider','Claude');
@@ -143,6 +144,7 @@ const rows = [
       assert.deepEqual(await page.locator('#cache-table tbody td').allTextContents(), ['claude-opus-5','1,000','300','600','100','60.0%','$1.00','$2.00','$3.00–$4.00']);
       await page.selectOption('#provider','Codex');
       assert.match(await page.locator('#cache-table tbody').textContent(), /\$0.00/);
+      assert.equal(await page.locator('#search-cost').isHidden(), true);
     });
     await check('zero cost baseline never produces Infinity', { rows: rows.map(r => r.date < '2026-03-04' ? { ...r, cost: 0, cost_high: 0 } : r) }, async page => {
       assert.equal(await delta(page, 0), 'No nonzero baseline · prev $0.00');
