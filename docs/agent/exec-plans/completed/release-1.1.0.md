@@ -1,6 +1,6 @@
 # Release AISAD 1.1.0
 
-- Status: active
+- Status: completed
 - Source: maintainer request to publish a new release from main
 - Last updated: 2026-09-07
 
@@ -28,10 +28,12 @@ Verify release tag ancestry, assets and SHA256SUMS after publication.
 New features, installing the release locally, modifying user data.
 
 ## Current status
-Release metadata prepared; main CI passed all six jobs. Local unittest suite passed 77 tests. The v1.1.0 asset build passed.
+Published stable Latest v1.1.0 at ddda466558c7b301e0b1f45ab69fdf9478d9169a. Local unittest suite passed 77 tests; release CI 34093315186 passed all seven jobs. Downloaded assets match the local build byte-for-byte; SHA256SUMS and every manifest entry verified.
+
+Release: https://github.com/aiatsuk/aisad/releases/tag/v1.1.0
 
 ## Next step
-Push verified release metadata to main and tag v1.1.0; verify publication and assets.
+None; release and verification are complete.
 
 ## Open risks
-Version 1.1.0 removes --watch and --stdin; disclose this in release notes.
+Version 1.1.0 removes --watch and --stdin; disclosed in published release notes.
