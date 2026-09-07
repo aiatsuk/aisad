@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 — on-demand session evidence (unreleased)
+## 1.1.0 — 2026-09-07
 
 - Read chronological Codex `thread_settings_applied` tier changes so recorded Fast usage is priced correctly; invalidate cached parser results. Add processing-tier evidence and accounting regression checks.
 - Label the token-weighted metric as Cache rate, expose its percentage in JSON, and prominently identify synthetic demo figures. Document the accounting audit and comparable tools.
