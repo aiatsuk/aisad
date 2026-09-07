@@ -129,6 +129,21 @@ const rows = [
     await check('cache TTL price ranges suppress false precision', { rows: rows.map(r => r.date === '2026-03-04' ? { ...r, cost_high: 2 } : r) }, async page => {
       assert.equal(await delta(page, 0), 'Price range · no delta');
     });
+    await check('cache token and cost components reconcile and follow provider filters', { rows: [
+      {...row('Claude','2026-03-10','cache-claude',1000,600,50,10,1),write:100,write_unknown:100,cost_high:11,parts:[1,2,3,4,0]},
+      {...row('Codex','2026-03-10','cache-codex',500,250,100,5,1),parts:[1,1,0,3,0]},
+    ] }, async page => {
+      assert.equal(await page.locator('#pools').count(), 0);
+      assert.deepEqual(await page.locator('#token-cards .value').allTextContents(), ['550','850','100','150']);
+      assert.match(await page.locator('[data-component="cache_writes"] .component-cost').textContent(), /\$3.00–\$4.00/);
+      assert.match(await page.locator('#parts').textContent(), /\$3.00–\$4.00/);
+      await page.selectOption('#provider','Claude');
+      assert.deepEqual(await page.locator('#token-cards .value').allTextContents(), ['300','600','100','50']);
+      await page.click('#tab-cache');
+      assert.deepEqual(await page.locator('#cache-table tbody td').allTextContents(), ['claude-opus-5','1,000','300','600','100','60.0%','$1.00','$2.00','$3.00–$4.00']);
+      await page.selectOption('#provider','Codex');
+      assert.match(await page.locator('#cache-table tbody').textContent(), /\$0.00/);
+    });
     await check('zero cost baseline never produces Infinity', { rows: rows.map(r => r.date < '2026-03-04' ? { ...r, cost: 0, cost_high: 0 } : r) }, async page => {
       assert.equal(await delta(page, 0), 'No nonzero baseline · prev $0.00');
       assert(!/Infinity|NaN/.test(await page.locator('body').textContent()));
@@ -155,16 +170,16 @@ const rows = [
       assert.equal(totals.input, expected.current.totals.input_tokens);
       assert.equal(totals.output, expected.current.totals.output_tokens);
       assert(Math.abs(totals.cost - expected.current.totals.known_cost_usd) < 1e-9);
-      const poolText = await page.locator('#pools').textContent();
+      assert.equal(await page.locator('#pools').count(), 0);
       await page.selectOption('#provider', 'Claude');
-      assert.equal(await page.locator('#pools').textContent(), poolText);
+      assert.equal(await page.locator('#token-cards .card').count(), 4);
       assert((await page.evaluate(() => selectedRecords())).every(r => r.session.startsWith('Claude:')));
       assert.equal(await page.evaluate(() => telemetry(selectedRecords()).totalRecords), expected.current.by_provider.find(p => p.name === 'Claude').requests);
       await page.click('#reset');
       await page.click('#filter-toggle');
       await page.selectOption('#pool', 'managed');
       assert.equal(await page.locator('#card-sessions .value').textContent(), '1');
-      assert.equal(await page.locator('#pools').textContent(), poolText);
+      assert.equal(await page.locator('#token-cards .card').count(), 4);
     });
     await check('statistics-only views, session drilldown, keyboard and dark theme', template, async page => {
       assert.equal(await page.locator('[data-tab]').count(), 4);

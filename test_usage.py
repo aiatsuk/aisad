@@ -25,6 +25,24 @@ class ReportTests(unittest.TestCase):
                         timezone='UTC', price_as_of='2026-09-05', quality={}, scan={}, summary={})
         return app.usage_report(snapshot, app.parser().parse_args(['usage', *options]))
 
+    def test_cache_components_reconcile_tokens_and_cost_ranges(self):
+        rows=[self.row(provider='Claude',input=1000,cached=600,write=100,output=50,total=1050,
+                       cost=10,cost_high=11,parts=[1,2,3,4,0],write_unknown=100),
+              self.row(provider='Codex',input=500,cached=250,output=100,total=600,
+                       cost=5,cost_high=5,parts=[1,1,0,3,0])]
+        report=self.report(rows)
+        totals=report['current']['totals']
+        self.assertEqual(totals['uncached_input_tokens'],550)
+        self.assertEqual(totals['cached_input_tokens'],850)
+        self.assertEqual(totals['cache_write_tokens'],100)
+        self.assertEqual(sum(totals[k] for k in ['uncached_input_tokens','cached_input_tokens','cache_write_tokens']),totals['input_tokens'])
+        self.assertEqual(sum(totals['cost_parts_usd'].values()),totals['estimated_cost_usd'])
+        self.assertEqual(sum(totals['cost_parts_high_usd'].values()),totals['estimated_cost_high_usd'])
+        self.assertEqual(totals['cost_parts_high_usd']['cache_writes'],4)
+        claude=self.report(rows,'--provider','claude')['current']['totals']
+        self.assertEqual(claude['uncached_input_tokens'],300)
+        self.assertEqual(claude['cost_parts_usd']['cache_reads'],2)
+
     def test_default_week_and_exact_summary_format(self):
         rows = [self.row(session='Codex:' + str(i), requests=4596 if i == 0 else 1,
                          input=29_000_123 - 34_000 if i == 0 else 1000,

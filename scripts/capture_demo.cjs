@@ -40,7 +40,7 @@ const { chromium } = require('playwright');
     assert.equal(await page.locator('#daily svg').getAttribute('aria-label'), 'Requests by day');
     await page.selectOption('#chartmetric', 'cost');
     await page.locator('#chartmetric').blur();
-    const height = await page.locator('#pools').evaluate(element => Math.ceil(element.getBoundingClientRect().bottom + 24));
+    const height = await page.locator('#token-breakdown').evaluate(element => Math.ceil(element.getBoundingClientRect().bottom + 24));
     await page.setViewportSize({ width: 1440, height });
     await mkdir(path.join(root, 'docs'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'docs/dashboard.png') });

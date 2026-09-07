@@ -2,6 +2,8 @@
 
 ## 1.1.0 — on-demand session evidence (unreleased)
 
+- Replace dashboard spend-pool cards with uncached input, cache-read, cache-write and output token/cost breakdowns. Expose cache-write cost ranges by component in the UI and JSON.
+
 - Add a transactional local SQLite event database with usage observations, session/turn relationships, tool-call metadata, context observations and file/line provenance.
 - Add one-shot `collect`, `sessions` and `session` commands with JSON, date/provider/model filters, descendant scope and timeline pagination.
 - Add chart-to-session drill-down, request evidence, recorded lifecycle/compaction events and measured/estimated/unavailable definitions to offline reports.

@@ -68,7 +68,7 @@ python3 agent_usage.py usage --json --all-time --include-requests
 | `current.request_stats`, `previous.request_stats` | Per-request context, timing and numeric trace statistics with `--include-requests` |
 | `pools`, `pool_scope` | Shared interactive and managed spend across all providers/projects for the selected dates |
 
-`estimated_cost_usd` and `estimated_cost_high_usd` are null when no requests can be priced. With partial pricing they contain the known subtotal; check `unpriced_requests` before interpreting them as a complete total. `known_cost_usd` always names that known subtotal explicitly. A nonzero range reflects unknown cache TTLs. `cache_share` is a fraction; its delta uses percentage points. Session counts are distinct within each group, so adding sessions across models or dates double-counts shared sessions. Missing dates are absent from the breakdown, not proof of zero usage.
+`estimated_cost_usd` and `estimated_cost_high_usd` are null when no requests can be priced. With partial pricing they contain the known subtotal; check `unpriced_requests` before interpreting them as a complete total. `known_cost_usd` always names that known subtotal explicitly. `uncached_input_tokens + cached_input_tokens + cache_write_tokens` equals `input_tokens`. `cost_parts_usd` and `cost_parts_high_usd` give the lower and upper priced subtotals for each component. A nonzero range reflects unknown cache TTLs. `cache_share` is a fraction; its delta uses percentage points. Session counts are distinct within each group, so adding sessions across models or dates double-counts shared sessions. Missing dates are absent from the breakdown, not proof of zero usage.
 
 ## Session statistics
 
@@ -193,7 +193,7 @@ python3 skills/aisad/scripts/aisad.py install \
 - Uncached input, output, cache reads and 5-minute/1-hour cache writes.
 - Main threads, subagents and auto-review where roles are recorded.
 - Global period, date, provider, model, project, role and pool filters; a searchable, sortable session table with request timelines.
-- Context and tool/MCP footprints, cache usage, shared spend pools and optional budget counters.
+- Context and tool footprints, cache usage, and a token/cost breakdown for uncached input, cache reads, cache writes and output.
 - Trace coverage, parsing diagnostics and requests with unknown prices.
 
 Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export.
