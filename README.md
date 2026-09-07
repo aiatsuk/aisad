@@ -1,8 +1,8 @@
 # AISAD — AI Session Analysis Dashboard
 
-A portable, local-only usage dashboard for Claude Code and Codex. Track tokens, requests, estimated API costs, context and cache statistics, and keep a live spend counter in your terminal. Install the optional skill to ask questions about usage directly in Codex or Claude Code.
+An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Every command runs once and exits. The optional skill invokes the same standalone commands.
 
-**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The collector makes no outbound network requests; watch mode serves the dashboard on `127.0.0.1`. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
+**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The collector opens no network connections or listening sockets. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
 
@@ -10,27 +10,19 @@ A portable, local-only usage dashboard for Claude Code and Codex. Track tokens, 
 
 ## Quick start
 
-Clone into a writable directory and start collecting:
+Clone into a writable directory and build a snapshot:
 
 ```sh
 git clone https://github.com/aiatsuk/aisad.git
 cd aisad
-python3 agent_usage.py --watch 60 --open
+python3 agent_usage.py dashboard --open
 ```
 
-The dashboard opens in your browser and checks for local changes every minute. An available port is selected automatically. Press `Ctrl+C` to stop.
+The command reads existing local files, updates `output/sessions.sqlite`, writes a self-contained HTML file, opens it and exits. Rerun the command when you want fresh data. Opening or interacting with the dashboard does not collect anything.
 
-On macOS, you can also open `Run.command` from the repository folder. On Windows, use `py -3` instead of `python3`. If needed, install Python 3.9+ from [python.org](https://www.python.org/downloads/).
+On macOS, `Run.command` performs the same one-shot action. On Windows, use `py -3` instead of `python3`. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
 
-For a one-time snapshot without a running server:
-
-```sh
-python3 agent_usage.py --open
-```
-
-The generated HTML works offline. It includes a saved summary that remains readable before charts load, when JavaScript is disabled, or if initialization fails. Large snapshots use lossless embedded gzip compression; interactive views need a current browser with the [Compression Streams API](https://developer.mozilla.org/en-US/docs/Web/API/DecompressionStream). No data files are fetched. You can also copy just `agent_usage.py` to another device: the dashboard and price catalog are embedded in this one file.
-
-Watch mode runs while its process is open. It does not install a system service or configure startup. Restart it after a reboot. If a refresh fails, the previous HTML stays available and the process retries on the next interval. To update the code, run `git pull --ff-only`, then restart the script.
+To update a clone, run `git pull --ff-only`. Existing snapshots remain usable offline.
 
 ## Quick usage without a dashboard
 
@@ -86,35 +78,54 @@ Use `usage --json --include-requests` to inspect request timing, input/output to
 
 Usage and status-line JSON now use `schema_version: 2`. Usage reports replace `diagnostics` with `telemetry` and `analysis_records` with `request_stats`; `analysis_rules` is removed. Status-line reports omit coaching fields. Token and cost totals, breakdowns, periods and comparisons keep their existing field names. The full `usage.json` snapshot exposes numeric request statistics in `request_stats`.
 
-## Live terminal status line
+## Collect and inspect session evidence
 
 ```sh
-python3 agent_usage.py statusline
-python3 agent_usage.py statusline --watch 5 --budget 500
-python3 agent_usage.py statusline --json --session Codex:SESSION_ID
+python3 agent_usage.py collect --json
+python3 agent_usage.py sessions --json
+python3 agent_usage.py session --session Codex:SESSION_ID --json
+python3 agent_usage.py session --session Claude:SESSION_ID --tree --all-time --json
+python3 agent_usage.py session --session Codex:SESSION_ID --json --offset 200 --limit 200
+python3 agent_usage.py usage --json --include-requests --include-events
 ```
 
-The line shows the recorded session lifetime estimate, provider spend for the selected period, the shared interactive pool, and context/cache counters. `--session` selects a session; otherwise AISAD uses `CODEX_THREAD_ID` when present or clearly labels the latest observed session. This is local trace telemetry, so the counter updates when the harness writes usage records. `--watch` runs in the terminal without HTTP or HTML; press `Ctrl+C` to stop. `--json --watch 5` emits NDJSON, one object per change.
+Each command gathers existing files when invoked. `collect` returns a database summary. `sessions` and `session` return date-scoped own/tree costs, tool statistics and a paginated event timeline. They share usage's date, provider, model, project, role and pool options. Seven days is the default; use `--all-time` for the complete observed history. `--tree` includes confirmed descendants. Timeline pages default to 200 events and support up to 10,000; follow `next_offset` until it is null. Events without timestamps remain in SQLite but cannot be placed in a date-filtered report; `undated_events` reports their count for the selected sessions. Tool result sizes remain unknown when payloads are absent; `results_without_size` identifies this coverage gap.
 
-`--budget USD` sets expected spend for the selected period across all local interactive harnesses. The counter marks the 50/80/100% thresholds of that amount. Provider/model/project/role filters never reduce this shared pool. `--managed-budget USD` sets a separate budget, and repeated `--managed-session PROVIDER:ID` options tag managed roots and their confirmed descendants. Ordinary subagents remain in the interactive pool. `--pool managed` or `--pool interactive` filters statistics.
+`own` counts a session's observations; `tree` includes its confirmed descendants once. Tree totals overlap and must not be added together. Lifecycle and explicitly named `lifetime` fields use all observed history. A completed turn is not proof that a session is currently completed: state stays `unknown`, with `last_seen` and the last recorded lifecycle event. Elapsed time includes idle periods; active time remains unavailable.
 
-Budgets are optional CLI inputs, not enforced limits or inferred subscription allowances. The same amount applies to whichever period you select. There are no Slack notifications, approval flows, remote collection, or automatic model changes.
+The dashboard contains Charts, Sessions, Context and Cache usage. Select a daily bar, model or project to narrow the session list. Open a session and select a point on its input chart to inspect the usage record and source references. The offline HTML contains at most the latest 200 metadata events per session; use the CLI or SQLite for complete history. Recommendations and hypothetical savings remain disabled.
 
-### Claude Code status-line integration
+### Local event database
 
-After installing the skill for Claude Code, merge this entry into `~/.claude/settings.json`, preserving your other settings. Replace the helper path if your installation differs:
+`sessions.sqlite` contains `source_files`, `sessions`, `turns`, `events`, `event_sources`, `usage_observations`, `observation_events`, `tool_calls`, `context_snapshots` and `metadata`. Event schema version 1 is stored in `PRAGMA user_version`. Existing usage JSON remains schema version 2 with additive evidence fields.
 
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "python3 \"$HOME/.claude/skills/aisad/scripts/aisad.py\" statusline --offline --stdin",
-    "refreshInterval": 5
-  }
-}
+For example, open the database read-only from Python:
+
+```python
+import sqlite3
+from pathlib import Path
+
+path = Path('output/sessions.sqlite').resolve()
+connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+try:
+    print(connection.execute('SELECT model, SUM(input_tokens), SUM(estimated_cost_usd) FROM usage_observations GROUP BY model').fetchall())
+finally:
+    connection.close()
 ```
 
-Claude supplies its `session_id` as JSON on stdin. Add `--budget 500` to the command only if that is your chosen period budget. `--offline` skips update checks in this frequent hook. See [Claude Code's status-line documentation](https://code.claude.com/docs/en/statusline). For Codex, run the terminal command alongside your session; AISAD does not modify Codex's native footer.
+`event_sources` provides the source-file ID, line, byte offset and parsed-record SHA-256 fingerprint. Resolve paths through `source_files`. The fingerprint is SHA-256 of AISAD's canonical JSON representation (`evidence_id(raw_record)`), not a hash of the raw line bytes. Request records link to events through `observation_events`; `request_stats.evidence` exposes those references in JSON and HTML. The selected price catalog is saved in database metadata and `prices-used.json`.
+
+The database is a derived snapshot, rebuilt transactionally from discovered sources and the parse cache. Repeated collection does not add usage. Copied records are deduplicated; removed source files disappear from the next snapshot. An interrupted database transaction preserves its previous complete state. Files can continue growing while they are read: each read stops at its initial size, tolerates an incomplete final line, and reports collection issues in `quality`. Different files are not an atomic snapshot of the running applications.
+
+Only allowlisted metadata is retained. Prompts, replies, reasoning, tool arguments, result bodies and compaction summaries are not copied. There is no transcript-recording mode. Source references let you inspect originals locally while they still exist; they do not preserve deleted conversation content.
+
+### Measurement limits
+
+Usage and session JSON expose `measurement_basis`: tokens and logged result bytes are measured; API cost is estimated; active time, exact context composition, loaded tool definitions, repeated tool-result input and invoices are unavailable. Logged result size does not establish how much reached a model or remained after compaction. Cache reads still consume context. The most recent request's input is a historical observation, not live context utilization.
+
+### Migration from monitoring modes
+
+`--watch` and `--stdin` are rejected before collecting. No dashboard server or browser polling remains. `statusline` is retained only as a manually invoked one-shot text/JSON snapshot. If you previously configured an external status hook or scheduler, remove that configuration yourself; AISAD does not edit other tools' settings.
 
 ## Install the skill
 
@@ -135,9 +146,16 @@ In a new turn, invoke `$aisad usage` in Codex or `/aisad usage` in Claude Code. 
 - “Which sessions explain the increase in estimated cost?”
 - “Show cache usage for this project over the last 30 days.”
 - “Show the largest recorded context and tool payloads by session.”
-- “Show a live shared spend counter for Claude and Codex.”
+- “Inspect this session’s recorded events and tool calls.”
 
 The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/aisad/SKILL.md](skills/aisad/SKILL.md).
+
+For this unreleased source version, build and install the local bundle without contacting GitHub:
+
+```sh
+python3 scripts/build_release.py --tag v1.1.0
+python3 skills/aisad/scripts/aisad.py install --archive dist/aisad-skill-v1.1.0.zip --checksum-file dist/SHA256SUMS --target codex
+```
 
 ### Updates and offline use
 
@@ -150,11 +168,11 @@ python3 ~/.codex/skills/aisad/scripts/aisad.py update
 python3 ~/.codex/skills/aisad/scripts/aisad.py usage --json
 python3 ~/.codex/skills/aisad/scripts/aisad.py usage --offline
 python3 ~/.codex/skills/aisad/scripts/aisad.py analyze --json
-python3 ~/.codex/skills/aisad/scripts/aisad.py statusline --offline --watch 5
-python3 ~/.codex/skills/aisad/scripts/aisad.py run -- --watch 60 --open
+python3 ~/.codex/skills/aisad/scripts/aisad.py sessions --offline --json
+python3 ~/.codex/skills/aisad/scripts/aisad.py run -- --open
 ```
 
-Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline` and `run` check for a newer stable release at most once every 24 hours when invoked. They update the skill, launcher and collector together before running. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Running dashboard processes retain their loaded code until restarted.
+Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline` and `run` check for a newer stable release at most once every 24 hours when invoked. They update the skill, launcher and collector together before running. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Existing HTML files remain fixed until another dashboard command generates a new snapshot.
 
 Checks and downloads contact only the public GitHub repository for release metadata and code. They transmit no traces, metrics or device identifiers. `--offline` skips those requests. Set `AISAD_AUTO_UPDATE=0` to disable automatic checks persistently in your environment; explicit `check-update` and `update` still work. If an automatic check fails, the installed version remains usable. No scheduler or startup service is installed.
 
@@ -182,7 +200,7 @@ Session titles are excluded by default; the dashboard uses session IDs and proje
 
 ## Periods and comparisons
 
-The default **Last 7 days** includes the snapshot date and the six preceding calendar days, using the report's timezone. For example, a September 5 snapshot shows August 30–September 5 against August 23–29. An old trace does not move the window backward. Watch mode refreshes at local midnight even when source files have not changed.
+The default **Last 7 days** includes the snapshot date and the six preceding calendar days, using the report's timezone. For example, a September 5 snapshot shows August 30–September 5 against August 23–29. An old trace does not move the window backward. The window advances when you next run the collector.
 
 Choose **This week (Mon–today)** for the current calendar week so far, compared with the same weekdays last week. **Last week (Mon–Sun)** shows the previous complete calendar week, compared with the calendar week before it. Both use the snapshot date in the report's timezone.
 
@@ -247,9 +265,11 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files |
 | `prices-used.json` | Price catalog used for the snapshot |
-| `status.json` | Snapshot timestamp for automatic refresh |
+| `status.json` | Saved snapshot timestamp; no polling |
+| `sessions.sqlite` | Transactional event metadata, usage and provenance database |
+| `session-report.json` | Last paginated session query |
 
-The local server exposes only the dashboard and its update timestamp. Raw exports and the parse cache are not served.
+The dashboard opens as a saved file. No local server or background process is started.
 
 **Clone the code on each device; keep its reports local.** Default output, JSONL traces, databases, local data exports and price overrides are excluded through `.gitignore`. If you use a custom `--output` directory, place it outside the repository or add it to your local Git exclusions. Reports still contain session and project metadata; publishing them is not required to use AISAD.
 
@@ -271,7 +291,7 @@ For maintainers, update `VERSION` and the changelog, then test and build:
 
 ```sh
 python3 -m unittest discover -v
-python3 scripts/build_release.py --tag v1.0.7
+python3 scripts/build_release.py --tag v1.1.0
 ```
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
@@ -282,7 +302,7 @@ The builder uses an explicit source-file list and deterministic ZIP metadata. Lo
 python3 -m unittest discover -v
 ```
 
-Tests use synthetic profiles only. They cover parsing, pricing, weekly JSON/text reports, filters, missing data, offline operation, release integrity, installation, updates, rollback, preservation of local edits, paths with spaces and loopback refresh. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
+Tests use synthetic profiles only. They cover parsing, pricing, weekly JSON/text reports, filters, missing data, offline operation, release integrity, installation, updates, rollback, preservation of local edits, paths with spaces, event provenance, source deletion and one-shot collection. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
 
 To generate the example dashboard without reading your sessions:
 
@@ -299,6 +319,7 @@ npm install --no-save --package-lock=false playwright@1.62.1
 npx --no-install playwright install chromium
 python3 scripts/make_demo.py
 node scripts/test_dashboard.cjs
+node scripts/test_session_evidence.cjs
 node scripts/capture_demo.cjs
 ```
 

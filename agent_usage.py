@@ -11,24 +11,20 @@ import collections
 import datetime as dt
 from decimal import Decimal
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
 import os
 from pathlib import Path
 import re
-import shutil
 import socket
 import sqlite3
 import sys
 import tempfile
-import threading
-import time
 import webbrowser
 from urllib.parse import unquote
 
-VERSION = '1.0.7'
-PARSER_VERSION = 7
+VERSION = '1.1.0'
+PARSER_VERSION = 8
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
 # A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
@@ -90,10 +86,15 @@ def atom_write(path, data):
 
 def timestamp(value):
     try:
-        if isinstance(value,(float,int)): return float(value)/1000 if value>1e11 else float(value)
+        if isinstance(value,bool):return None
+        if isinstance(value,(float,int)):
+            value=float(value)/1000 if value>1e11 else float(value)
+            if not math.isfinite(value):return None
+            dt.datetime.fromtimestamp(value,dt.timezone.utc) # Validate the representable range.
+            return value
         d=dt.datetime.fromisoformat(str(value).replace('Z','+00:00'))
         return (d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)).timestamp()
-    except (ValueError,TypeError,OverflowError): return None
+    except (ValueError,TypeError,OverflowError,OSError): return None
 
 def canonical_model(model):
     # Only known date suffix formats; arbitrary unknown aliases must remain unknown.
@@ -142,21 +143,98 @@ def normalize_usage(u,provider):
                 output=output,total=incoming+output,write_1h=one,write_5m=five,
                 write_unknown=unknown,ttl_conflict=conflict)
 
-def read_jsonl(path,quality):
+def read_jsonl(path,quality,locations=False):
     """Bound reads to the initial file size; tolerate an active/incomplete final record."""
     try:
         with path.open('rb') as f:
             end=os.fstat(f.fileno()).st_size
+            line_number=0
             while f.tell()<end:
+                offset=f.tell();line_number+=1
                 line=f.readline(end-f.tell())
                 if not line.strip():continue
                 try:
                     obj=json.loads(line)
-                    if isinstance(obj,dict):yield obj
+                    if isinstance(obj,dict):yield (obj,line_number,offset) if locations else obj
                 except (ValueError,UnicodeError):
                     quality['partial_tail' if f.tell()==end and not line.endswith(b'\n') else 'malformed_lines']+=1
     except OSError:
         quality['unreadable_files']+=1
+
+def evidence_id(*values):
+    return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+
+def trace_identifier(value):
+    """Identifiers only; never use an arbitrary event field as display text."""
+    value=str(value or '')
+    return value if re.fullmatch(r'[A-Za-z0-9_.:/-]{1,160}',value) else 'unknown'
+
+class Evidence:
+    """An allowlisted projection. Original content stays in the source file."""
+    def __init__(self,path,provider):
+        self.source=evidence_id(str(path.resolve()));self.provider=provider;self.events=[];self.occurrences=collections.Counter()
+    def add(self,raw,line,offset,session,turn,kind,model=None,identity=None,**values):
+        digest=evidence_id(raw)
+        # Native call/message identifiers deduplicate copied and streamed items.
+        if not identity:
+            self.occurrences[(kind,digest)]+=1
+            identity=[digest,self.occurrences[(kind,digest)]] if timestamp(raw.get('timestamp')) is None else [digest]
+        owner=None if self.provider=='Claude' and not isinstance(identity,list) else session
+        event=dict(id=evidence_id(self.provider,owner,kind,identity),session=session,
+                   provider=self.provider,turn_id=turn or None,kind=kind,
+                   ts=timestamp(raw.get('timestamp')),model=model,
+                   evidence=[dict(source_id=self.source,line=line,byte_offset=offset,record_sha256=digest)],
+                   **values)
+        self.events.append(event);return event['id']
+    def capture(self,raw,line,offset,session,turn,model):
+        provider=self.provider
+        p=raw.get('payload') if provider=='Codex' else raw
+        if not isinstance(p,dict):return None
+        typ=raw.get('type');sub=p.get('type')
+        add=lambda kind,**kw:self.add(raw,line,offset,session,turn,kind,model,**kw)
+        if provider=='Codex':
+            if typ=='session_meta':return add('session_metadata')
+            if typ=='turn_context':return add('turn_context')
+            if typ in ('compacted','context_compacted') or (typ=='event_msg' and sub in ('context_compacted','compaction')):
+                return add('compaction')
+            if typ=='event_msg':
+                kind={'task_started':'turn_started','task_complete':'turn_completed',
+                      'task_completed':'turn_completed','turn_aborted':'turn_aborted',
+                      'error':'error','token_count':'usage'}.get(sub)
+                if kind:
+                    info=p.get('info') or {};limit=info.get('model_context_window') if isinstance(info,dict) else None
+                    return add(kind,context_limit=limit if isinstance(limit,int) and not isinstance(limit,bool) and limit>0 else None)
+            if typ!='response_item':return None
+            if sub in ('function_call','custom_tool_call'):
+                call=trace_identifier(p.get('call_id'))
+                return add('tool_call',identity=call if call!='unknown' else None,call_id=call,tool=trace_identifier(p.get('name')))
+            if sub in ('function_call_output','custom_tool_call_output'):
+                call=trace_identifier(p.get('call_id'));value=p.get('output')
+                size=None if value is None else len((value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,separators=(',',':'))).encode())
+                return add('tool_result',identity=call if call!='unknown' else None,call_id=call,result_bytes=size,
+                           error=p.get('is_error') if isinstance(p.get('is_error'),bool) else None)
+            if sub=='message':return add('message',role=p.get('role') if p.get('role') in ('user','assistant','system','developer') else 'unknown')
+        else:
+            if typ=='system' and p.get('subtype')=='compact_boundary':return add('compaction')
+            if typ=='result':return add('run_result',error=p.get('is_error') if isinstance(p.get('is_error'),bool) else None)
+            m=p.get('message') or {}
+            if not isinstance(m,dict):return None
+            mid=m.get('id') or p.get('uuid');content=m.get('content')
+            if typ not in ('assistant','user'):return None
+            if isinstance(content,(str,list)):
+                add('message',identity=mid,role=typ)
+            for item in content if isinstance(content,list) else []:
+                if not isinstance(item,dict):continue
+                if item.get('type')=='tool_use':
+                    call=trace_identifier(item.get('id'))
+                    add('tool_call',identity=call if call!='unknown' else None,call_id=call,tool=trace_identifier(item.get('name')))
+                elif item.get('type')=='tool_result':
+                    call=trace_identifier(item.get('tool_use_id'));value=item.get('content')
+                    size=None if value is None else len((value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,separators=(',',':'))).encode())
+                    add('tool_result',identity=call if call!='unknown' else None,call_id=call,result_bytes=size,
+                        error=item.get('is_error') if isinstance(item.get('is_error'),bool) else None)
+            if typ=='assistant' and m.get('usage'):return add('usage',identity=mid)
+        return None
 
 class TraceSignals:
     """Keep sizes and counts, never tool payloads, arguments or message text."""
@@ -195,8 +273,8 @@ def parent_thread(source):
 def parse_codex(path,include_titles=False):
     q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
     signals=TraceSignals();parent=None;fork_owner=None;fork_live=False
-    observed={}
-    for x in read_jsonl(path,q):
+    observed={};evidence=Evidence(path,'Codex')
+    for x,line,offset in read_jsonl(path,q,locations=True):
         p=x.get('payload') or {}
         if not isinstance(p,dict):continue
         typ=x.get('type');ts=timestamp(x.get('timestamp'))
@@ -213,7 +291,7 @@ def parse_codex(path,include_titles=False):
             project=project_name(p.get('cwd'));model=p.get('model') or model
             role='subagent' if 'subagent' in json.dumps(p.get('source',{})).lower() or p.get('agent_path','/root') not in ['/root',None,''] else 'main'
             parent=parent_thread(p.get('source'))
-            sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True))
+            sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True,parent_session=parent))
             if is_fork_owner:
                 fork_owner=dict(id=sid,project=project,role=role,parent=parent,session=dict(sessions[sid]))
         if not sid:continue
@@ -228,7 +306,7 @@ def parse_codex(path,include_titles=False):
                 # and parent session_meta records. The first local turn_context
                 # ends that prefix; only subsequent usage belongs to this fork.
                 q['codex_fork_history_requests']+=len(requests)
-                requests=[];seen={}
+                requests=[];seen={};evidence.events=[]
                 if not turn or turn!=p.get('turn_id'):signals=TraceSignals()
                 sid=fork_owner['id'];project=fork_owner['project'];role=fork_owner['role'];parent=fork_owner['parent']
                 sessions={sid:fork_owner['session']}
@@ -240,6 +318,7 @@ def parse_codex(path,include_titles=False):
         if typ=='event_msg' and p.get('type')=='task_started':
             turn=p.get('turn_id') or turn
             if fork_owner and not fork_live:signals=TraceSignals();observed.pop(sid,None)
+        event_id=evidence.capture(x,line,offset,'Codex:'+sid,turn,model)
         if typ!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
         info=p['info'];u=info.get('last_token_usage');cu=info.get('total_token_usage')
         if not u:q['codex_missing_last_usage']+=1;continue
@@ -257,10 +336,11 @@ def parse_codex(path,include_titles=False):
         requests.append(dict(id='cx:'+key,session='Codex:'+sid,provider='Codex',model=model,
                              effort=effort,tier=tier,speed='unknown',geo='unknown',project=project,
                              role=role,ts=ts,web_searches=None,parent_session=parent,turn_id=turn or None,
-                             trace_stats=signals.take(),**usage))
-    if fork_owner and not fork_live:q['codex_fork_without_turn_context']+=1
+                             trace_stats=signals.take(),event_ids=[event_id] if event_id else [],**usage))
+    if fork_owner and not fork_live:
+        q['codex_fork_without_turn_context']+=1
     for row in requests:row['trace_observed']=observed.get(row['session'].split(':',1)[-1],False)
-    return dict(sessions=list(sessions.values()),requests=requests,reports=[],quality=dict(q))
+    return dict(sessions=list(sessions.values()),requests=requests,reports=[],events=evidence.events,quality=dict(q))
 
 def parse_claude(path,include_titles=False):
     q=collections.Counter();requests=[];sessions={};reports=[]
@@ -268,7 +348,8 @@ def parse_claude(path,include_titles=False):
     sub='subagents' in path.parts
     sid=(path.parent.parent.name+'/'+path.stem) if sub else path.parent.name if path.name=='audit.jsonl' else path.stem
     skey='Claude:'+sid;project='unknown';role='subagent' if sub else 'main';title=sid[:12]
-    for x in read_jsonl(path,q):
+    evidence=Evidence(path,'Claude')
+    for x,line,offset in read_jsonl(path,q,locations=True):
         ts=timestamp(x.get('timestamp'));typ=x.get('type')
         if x.get('cwd'):project=project_name(x['cwd'])
         if typ=='result' and isinstance(x.get('total_cost_usd'),(int,float)) and ts is not None:
@@ -287,9 +368,12 @@ def parse_claude(path,include_titles=False):
                 if item.get('type')=='tool_result':
                     tool_result=True;signals.result(item.get('tool_use_id'),item.get('content',''),item.get('is_error',False))
             if typ=='user' and not tool_result and not x.get('isMeta'):
-                signals.pending['user_messages']+=1;turn=str(x.get('uuid') or ts)
+                signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
         elif isinstance(content,str) and typ=='user' and not x.get('isMeta'):
-            signals.observed=True;signals.pending['user_messages']+=1;turn=str(x.get('uuid') or ts)
+            signals.observed=True;signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
+        event_id=evidence.capture(x,line,offset,skey,turn,m.get('model'))
+        # A session with only user/tool/lifecycle events is still observable.
+        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
         if include_titles and typ=='user' and title==sid[:12] and not x.get('isMeta'):
             content=m.get('content','');texts=content if isinstance(content,str) else ' '.join(a.get('text','') for a in content if isinstance(a,dict))
             if texts and not texts.startswith(('/', '<local-command','<command-name')):title=title_text(texts)
@@ -300,7 +384,7 @@ def parse_claude(path,include_titles=False):
         u=m['usage']
         try:usage=normalize_usage(u,'Claude')
         except (ValueError,TypeError,OverflowError):q['invalid_usage']+=1;continue
-        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True)
+        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
         searches=(u.get('server_tool_use') or {}).get('web_search_requests')
         try: searches=None if searches is None else number(searches)
         except (ValueError,TypeError): searches=None
@@ -309,9 +393,9 @@ def parse_claude(path,include_titles=False):
                              speed=u.get('speed') or 'unknown',geo=u.get('inference_geo') or 'unknown',
                              project=project,role=role,ts=ts,web_searches=searches,turn_id=turn,
                              parent_session='Claude:'+path.parent.parent.name if sub else None,
-                             trace_stats=signals.take(),**usage))
+                             trace_stats=signals.take(),event_ids=[event_id] if event_id else [],**usage))
     for row in requests:row['trace_observed']=signals.observed
-    return dict(sessions=list(sessions.values()),requests=requests,reports=reports,quality=dict(q))
+    return dict(sessions=list(sessions.values()),requests=requests,reports=reports,events=evidence.events,quality=dict(q))
 
 def merge_requests(rows,quality):
     merged={}
@@ -332,6 +416,7 @@ def merge_requests(rows,quality):
                                for key in set(old.get('trace_stats',{}))|set(r.get('trace_stats',{}))}
         searches=[v for v in [old.get('web_searches'),r.get('web_searches')] if v is not None]
         result['web_searches']=max(searches) if searches else None
+        result['event_ids']=sorted(set(old.get('event_ids',[]))|set(r.get('event_ids',[])))
         merged[r['id']]=result
     return list(merged.values())
 
@@ -413,7 +498,8 @@ def request_statistics(rows,managed_sessions=()):
             record.update(step=index+1,gap_seconds=max(0.,row['ts']-previous['ts']) if previous else None,
                 trace_stats=row.get('trace_stats',{}),trace_observed=row.get('trace_observed',False),
                 parts=row.get('cost_parts'),effort=row.get('effort','unknown'),
-                price_status=row.get('price_status','unknown_model' if row['cost'] is None else 'priced'))
+                price_status=row.get('price_status','unknown_model' if row['cost'] is None else 'priced'),
+                event_ids=row.get('event_ids',[]),turn_id=row.get('turn_id'),parent_session=row.get('parent_session'))
             records.append(record);previous=row
     return records
 
@@ -425,6 +511,143 @@ def telemetry_summary(records):
             else:stats[key]+=value
     return dict(trace_records=sum(r['trace_observed'] for r in records),
                 total_records=len(records),tool_stats=dict(stats))
+
+EVIDENCE_SCHEMA = 1
+MEASUREMENT_BASIS = {
+    'tokens': {'kind':'measured','basis':'Usage fields recorded in local traces; coverage may be incomplete.'},
+    'requests': {'kind':'measured','basis':'Deduplicated usage observations, not independently verified network requests.'},
+    'cost': {'kind':'estimated','basis':'Recorded usage multiplied by the selected offline price catalog.'},
+    'tool_bytes': {'kind':'measured','basis':'UTF-8 bytes of the logged result, or compact JSON for structured results; not billed tokens.'},
+    'elapsed': {'kind':'measured','basis':'Time between first and last timestamped observations; includes idle time.'},
+    'active_time': {'kind':'unavailable','basis':'Local traces do not establish complete active/idle intervals.'},
+    'context_composition': {'kind':'unavailable','basis':'No complete model-input snapshots are recorded by this collector.'},
+    'tool_definitions': {'kind':'unavailable','basis':'Installed tools do not establish which definitions reached a request.'},
+    'repeated_tool_input': {'kind':'unavailable','basis':'A logged tool result does not prove later inclusion in model input.'},
+    'invoice': {'kind':'unavailable','basis':'Session traces do not establish subscription charges or invoices.'},
+}
+
+def merge_events(events):
+    merged={}
+    for event in events:
+        old=merged.get(event['id'])
+        if old is None:merged[event['id']]=dict(event);continue
+        refs={json.dumps(ref,sort_keys=True):ref for ref in old['evidence']+event['evidence']}
+        old['evidence']=list(refs.values())
+        if event.get('result_bytes') is not None and (old.get('result_bytes') is None or event['result_bytes']>old['result_bytes']):old['result_bytes']=event['result_bytes']
+        if event.get('error') is True:old['error']=True
+    return sorted(merged.values(),key=lambda e:(e['ts'] is None,e['ts'] or 0,e['evidence'][0]['line'],e['id']))
+
+def recorded_cost(rows):
+    missing=sum(r['cost'] is None for r in rows)
+    return dict(known_cost_usd=sum(r['cost'] or 0 for r in rows),
+                estimated_cost_usd=sum(r['cost'] or 0 for r in rows) if len(rows)>missing else None,
+                estimated_cost_high_usd=sum(r['cost_high'] or 0 for r in rows) if len(rows)>missing else None,
+                unpriced_requests=missing,requests=len(rows),
+                input_tokens=sum(r['input'] for r in rows),output_tokens=sum(r['output'] for r in rows))
+
+def session_evidence(events,requests,sessions):
+    by_session=collections.defaultdict(list);observations=collections.defaultdict(list)
+    for event in events:by_session[event['session']].append(event)
+    children=collections.defaultdict(set);parents={}
+    for sid,meta in sessions.items():
+        if meta.get('parent_session') and meta['parent_session']!=sid:
+            parents[sid]=meta['parent_session'];children[meta['parent_session']].add(sid)
+    for row in requests:
+        observations[row['session']].append(row)
+        if row.get('parent_session') and row['parent_session']!=row['session']:
+            parents[row['session']]=row['parent_session'];children[row['parent_session']].add(row['session'])
+    details=[];calls=[];turns=[]
+    for sid in sorted(set(by_session)|set(observations)):
+        local=by_session[sid];rows=sorted(observations[sid],key=lambda r:(r['ts'],r['id']))
+        meta=sessions.get(sid,{})
+        stamps=[e['ts'] for e in local if e['ts'] is not None]+[r['ts'] for r in rows]
+        starts={};ends={}
+        for event in local:
+            key=event.get('call_id') if event.get('call_id') not in (None,'unknown') else event['id']
+            if event['kind']=='tool_call':starts.setdefault(key,event)
+            if event['kind']=='tool_result':ends.setdefault(key,event)
+        own_calls=[]
+        for call in sorted(set(starts)|set(ends)):
+            start=starts.get(call);end=ends.get(call)
+            first=start['ts'] if start else None;last=end['ts'] if end else None
+            own_calls.append(dict(id=evidence_id(sid,call),session=sid,call_id=call,
+                turn_id=(start or end).get('turn_id'),tool=(start or {}).get('tool','unknown'),
+                started_at=first,finished_at=last,
+                observed_latency_seconds=last-first if first is not None and last is not None and last>=first else None,
+                result_bytes=end.get('result_bytes') if end else None,error=end.get('error') if end else None,
+                status='result_recorded' if end else 'unknown',
+                event_ids=[e['id'] for e in (start,end) if e]))
+        calls.extend(own_calls)
+        local_turns=collections.defaultdict(list)
+        for event in local:
+            if event.get('turn_id'):local_turns[event['turn_id']].append(event)
+        for turn,items in local_turns.items():
+            times=[e['ts'] for e in items if e['ts'] is not None]
+            turns.append(dict(id=evidence_id(sid,turn),session=sid,turn_id=turn,
+                              first_seen=min(times) if times else None,last_seen=max(times) if times else None,
+                              event_ids=[e['id'] for e in items]))
+        # Reachable sets prevent both duplicate descendants and malformed cycles.
+        tree={sid};queue=collections.deque([sid])
+        while queue:
+            for child in children[queue.popleft()]-tree:tree.add(child);queue.append(child)
+        tree_rows=[r for child in tree for r in observations[child]]
+        latest=rows[-1] if rows else None
+        compact=[e for e in local if e['kind']=='compaction']
+        after=not latest or bool(compact and any(e['ts'] is None or e['ts']>=latest['ts'] for e in compact))
+        lifecycle=[e for e in local if e['kind'] in ('turn_started','turn_completed','turn_aborted','run_result')]
+        details.append(dict(id=sid,provider=meta.get('provider',sid.split(':')[0]),project=meta.get('project','unknown'),
+            role=meta.get('role','main'),parent_session=parents.get(sid),children=sorted(children[sid]),
+            first_seen=min(stamps) if stamps else None,last_seen=max(stamps) if stamps else None,
+            elapsed_seconds=max(stamps)-min(stamps) if stamps else None,active_seconds=None,status='unknown',
+            last_recorded_lifecycle=lifecycle[-1]['kind'] if lifecycle else None,
+            own=recorded_cost(rows),tree=recorded_cost(tree_rows),tree_sessions=sorted(tree),
+            observed_dates=sorted({e['date'] for e in local if e.get('date')}),
+            event_count=len(local),turn_count=len(local_turns),tool_calls=len(starts),tool_results=len(ends),
+            result_bytes=sum(c['result_bytes'] or 0 for c in own_calls),
+            tool_errors=sum(c['error'] is True for c in own_calls),compactions=len(compact),
+            max_request_input_tokens=max((r['input'] for r in rows),default=None),
+            latest_request_input_tokens=latest['input'] if latest else None,
+            latest_usage_at=latest['ts'] if latest else None,context_since_compaction='unavailable' if after else 'last_recorded_input',
+            usage_event_ids=sorted({event for r in rows for event in r.get('event_ids',[])})))
+    return details,calls,turns
+
+def write_event_store(path,sources,events,requests,sessions,calls,turns,catalog,generated):
+    """Replace derived tables in one transaction. Readers see a coherent snapshot."""
+    connection=sqlite3.connect(path,timeout=30)
+    try:
+        connection.execute('PRAGMA foreign_keys=ON')
+        version=connection.execute('PRAGMA user_version').fetchone()[0]
+        if version not in (0,EVIDENCE_SCHEMA):raise ValueError('Unsupported evidence database schema; preserve this file and use a compatible version.')
+        connection.executescript('''
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS source_files (id TEXT PRIMARY KEY,path TEXT NOT NULL,size INTEGER,mtime_ns INTEGER);
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY,parent_session TEXT,provider TEXT,project TEXT,record_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),turn_id TEXT,kind TEXT NOT NULL,ts REAL,record_json TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS events_session_time ON events(session_id,ts);
+        CREATE TABLE IF NOT EXISTS event_sources (event_id TEXT REFERENCES events(id),source_id TEXT REFERENCES source_files(id),line INTEGER,byte_offset INTEGER,record_sha256 TEXT,PRIMARY KEY(event_id,source_id,line));
+        CREATE TABLE IF NOT EXISTS usage_observations (id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),turn_id TEXT,ts REAL,model TEXT,input_tokens INTEGER,output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,estimated_cost_usd REAL,record_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS observation_events (observation_id TEXT REFERENCES usage_observations(id),event_id TEXT REFERENCES events(id),PRIMARY KEY(observation_id,event_id));
+        CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),tool TEXT,result_bytes INTEGER,record_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),turn_id TEXT,record_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS context_snapshots (observation_id TEXT PRIMARY KEY REFERENCES usage_observations(id),input_tokens INTEGER,cache_read_tokens INTEGER,context_limit INTEGER,composition TEXT NOT NULL);
+        ''')
+        encode=lambda value:json.dumps(value,ensure_ascii=False,separators=(',',':'),allow_nan=False)
+        with connection:
+            for table in ('observation_events','context_snapshots','usage_observations','event_sources','tool_calls','turns','events','sessions','source_files','metadata'):
+                connection.execute('DELETE FROM '+table)
+            connection.executemany('INSERT INTO source_files VALUES (?,?,?,?)',[(s['id'],s['path'],s['size'],s['mtime_ns']) for s in sources])
+            connection.executemany('INSERT INTO sessions VALUES (?,?,?,?,?)',[(s['id'],s['parent_session'],s['provider'],s['project'],encode(s)) for s in sessions])
+            connection.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)',[(e['id'],e['session'],e.get('turn_id'),e['kind'],e['ts'],encode(e)) for e in events])
+            connection.executemany('INSERT INTO event_sources VALUES (?,?,?,?,?)',[(e['id'],r['source_id'],r['line'],r['byte_offset'],r['record_sha256']) for e in events for r in e['evidence']])
+            connection.executemany('INSERT INTO usage_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)',[(r['id'],r['session'],r.get('turn_id'),r['ts'],r['model'],r['input'],r['output'],r['cached'],r['write'],r['cost'],encode(r)) for r in requests])
+            event_map={e['id']:e for e in events}
+            connection.executemany('INSERT INTO observation_events VALUES (?,?)',[(r['id'],event) for r in requests for event in r.get('event_ids',[]) if event in event_map])
+            connection.executemany('INSERT INTO context_snapshots VALUES (?,?,?,?,?)',[(r['id'],r['input'],r['cached'],next((event_map[e].get('context_limit') for e in r.get('event_ids',[]) if e in event_map and event_map[e].get('context_limit')),None),'unavailable') for r in requests])
+            connection.executemany('INSERT INTO tool_calls VALUES (?,?,?,?,?)',[(c['id'],c['session'],c['tool'],c['result_bytes'],encode(c)) for c in calls])
+            connection.executemany('INSERT INTO turns VALUES (?,?,?,?)',[(t['id'],t['session'],t['turn_id'],encode(t)) for t in turns])
+            connection.executemany('INSERT INTO metadata VALUES (?,?)',[(k,encode(v)) for k,v in dict(schema_version=EVIDENCE_SCHEMA,version=VERSION,generated=generated,price_catalog=catalog,measurement_basis=MEASUREMENT_BASIS).items()])
+            connection.execute('PRAGMA user_version='+str(EVIDENCE_SCHEMA))
+    finally:connection.close()
 
 def budget_status(records,budget):
     if budget is not None and (not math.isfinite(budget) or budget<=0):raise ValueError('Budgets must be finite positive USD amounts')
@@ -524,26 +747,20 @@ def report_timezone(name):
     from zoneinfo import ZoneInfo
     return ZoneInfo(name)
 
-def source_fingerprint(args):
-    codex,files,_=discover(args)
-    paths=[p for _,p in files]+list(codex.glob('state_*.sqlite*'))
-    home=Path(args.home).expanduser() if args.home else Path.home()
-    paths+=list((home/'.grok/sessions').rglob('updates.jsonl'))
-    if args.prices:paths.append(Path(args.prices))
-    day=dt.datetime.now(dt.timezone.utc).astimezone(report_timezone(args.timezone)).date().isoformat()
-    return day,tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
-
 def make_snapshot(args, dashboard=True, include_requests=False):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
-    sessions=registry(codex,args.include_titles,q);rows=[];reports={}
+    sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[]
     cache=ParseCache(output/'parse-cache.sqlite')
     try:
         for provider,path in files:
-            try:r=cache.parse(provider,path,args.include_titles,stats)
+            try:
+                st=path.stat();r=cache.parse(provider,path,args.include_titles,stats)
             except (OSError,ValueError,TypeError,AttributeError,sqlite3.Error):q['failed_files']+=1;continue
             q.update(r['quality']);rows.extend(r['requests'])
+            source_files.append(dict(id=evidence_id(str(path.resolve())),path=str(path),size=st.st_size,mtime_ns=st.st_mtime_ns))
+            events.extend(r.get('events',[]))
             for s in r['sessions']:
                 previous=sessions.get(s['id'],{})
                 # Registry title and role enrich legacy traces; model remains per-request.
@@ -563,6 +780,13 @@ def make_snapshot(args, dashboard=True, include_requests=False):
         moment=dt.datetime.fromtimestamp(r['ts'],dt.timezone.utc).astimezone(tz)
         r['date']=moment.date().isoformat()
     request_stats=request_statistics(rows,getattr(args,'managed_session',[]))
+    events=merge_events(events)
+    event_refs={e['id']:e['evidence'] for e in events}
+    for record in request_stats:
+        record['evidence']=[ref for event in record['event_ids'] for ref in event_refs.get(event,[])]
+    for event in events:
+        event['date']=dt.datetime.fromtimestamp(event['ts'],dt.timezone.utc).astimezone(tz).date().isoformat() if event['ts'] is not None else None
+    session_details,tool_calls,turns=session_evidence(events,rows,sessions)
     # Dashboard rows: one date × model × session × project × role, preserving filter correctness.
     grouped={}
     for r in rows:
@@ -602,15 +826,23 @@ def make_snapshot(args, dashboard=True, include_requests=False):
                   titles={s['id']:s['title'] for s in sessions.values() if s['id'] in measured} if args.include_titles else {},
                   unknown_models=sorted({r['model'] for r in rows if r['cost'] is None}),
                   reports=list(reports.values()),request_stats=request_stats,
+                  evidence_schema_version=EVIDENCE_SCHEMA,measurement_basis=MEASUREMENT_BASIS,
+                  session_details=session_details,
                   budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)))
+    write_event_store(output/'sessions.sqlite',source_files,events,rows,session_details,tool_calls,turns,catalog,snapshot['generated'])
     # Private evidence stays local. Requests are normalized fields only.
     atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
     atom_json(output/'prices-used.json',catalog)
     if dashboard:
+        previews=collections.defaultdict(lambda:collections.deque(maxlen=200))
+        for event in events:previews[event['session']].append(event)
+        snapshot['event_previews']={sid:list(items) for sid,items in previews.items()}
         public={k:v for k,v in snapshot.items() if k!='sources'}
         body=render_html(public)
         atom_write(output/'dashboard.html',body.encode())
         atom_json(output/'status.json',{'generated':snapshot['generated'],'version':VERSION})
+    if getattr(args,'include_events',False) or args.command in ('collect','sessions','session'):
+        snapshot.update(events=events,tool_calls=tool_calls,turns=turns,source_files=source_files)
     return dict(snapshot,requests=rows) if include_requests else snapshot
 
 def usage_totals(rows):
@@ -734,7 +966,78 @@ def usage_report(snapshot,args):
     grok_records=[r for r in snapshot.get('grok_records',[]) if start.isoformat()<=r['date']<=end.isoformat()]
     report['grok_usage']=dict(grok_totals(grok_records),scope='Selected dates, all Grok models/projects; separate from Claude/Codex filters.',records=grok_records)
     report['pool_scope']='Selected dates, all providers and projects. Managed sessions are explicitly tagged; confirmed children inherit the pool.'
+    report['measurement_basis']=MEASUREMENT_BASIS
+    report['evidence_store']={'file':'sessions.sqlite','schema_version':EVIDENCE_SCHEMA,'generated':snapshot['generated']}
+    if getattr(args,'include_events',False):report['session_evidence']=evidence_report(snapshot,args,report)
     return report
+
+def evidence_report(snapshot,args,usage=None):
+    """Bounded metadata queries over this invocation's freshly collected snapshot."""
+    if usage is None:
+        query=argparse.Namespace(**vars(args));query.include_events=False
+        usage=usage_report(snapshot,query)
+    period=dict(usage['period']);filters=usage['filters'];wanted=getattr(args,'session',None)
+    if args.all_time:
+        dates=[e['date'] for e in snapshot.get('events',[]) if e['date']]+[r['date'] for r in snapshot['rows']]
+        if dates:
+            period={'from':min(dates),'to':max(dates),'days':(dt.date.fromisoformat(max(dates))-dt.date.fromisoformat(min(dates))).days+1}
+    details=snapshot.get('session_details',[])
+    if wanted:
+        matched=[s for s in details if s['id']==wanted or s['id'].split(':',1)[-1]==wanted]
+        if len(matched)!=1:raise ValueError('Session not found or ambiguous; use the full provider-prefixed ID from sessions --json.')
+        ids=set(matched[0]['tree_sessions'] if getattr(args,'tree',False) else [matched[0]['id']])
+    else:ids={s['id'] for s in details}
+    ids &= {s['id'] for s in details if (not filters['provider'] or s['provider']==filters['provider']) and
+            (not filters['project'] or s['project']==filters['project']) and (not filters['role'] or s['role']==filters['role'])}
+    def in_period(value):return value is not None and period['from']<=value<=period['to']
+    all_rows=snapshot.get('requests',[])
+    scoped=[r for r in all_rows if in_period(r['date']) and
+            (not filters['model'] or canonical_model(r['model'])==filters['model']) and
+            (not filters['pool'] or r.get('pool','interactive')==filters['pool'])]
+    metadata={s['id']:s for s in details}
+    pool_sessions={r['session'] for r in scoped}
+    selected_events=[e for e in snapshot.get('events',[]) if e['session'] in ids and in_period(e['date']) and
+                     (not filters['model'] or not e.get('model') or canonical_model(e['model'])==filters['model']) and
+                     (not filters['pool'] or e['session'] in pool_sessions)]
+    observed_ids={r['session'] for r in scoped}|{e['session'] for e in selected_events}
+    ids &= observed_ids if not wanted else ids
+    rows_by_session=collections.defaultdict(list);events_by_session=collections.defaultdict(list)
+    for row in scoped:rows_by_session[row['session']].append(row)
+    for event in selected_events:events_by_session[event['session']].append(event)
+    results=[]
+    for sid in sorted(ids):
+        source=metadata[sid];tree=set(source['tree_sessions'])
+        local=events_by_session[sid]
+        results.append(dict(id=sid,provider=source['provider'],project=source['project'],role=source['role'],
+            parent_session=source['parent_session'],children=source['children'],
+            own=recorded_cost(rows_by_session[sid]),
+            tree=recorded_cost([r for child in tree for r in rows_by_session[child]]),event_count=len(local),
+            lifecycle={'status':'unknown','last_recorded':source['last_recorded_lifecycle'],'last_seen':source['last_seen']},
+            lifetime={'first_seen':source['first_seen'],'last_seen':source['last_seen'],'elapsed_seconds':source['elapsed_seconds'],
+                      'active_seconds':None,'max_request_input_tokens':source['max_request_input_tokens'],
+                      'context_since_compaction':source['context_since_compaction']}))
+    results.sort(key=lambda s:(-s['own']['known_cost_usd'],s['id']))
+    event_ids={e['id'] for e in selected_events}
+    calls=[c for c in snapshot.get('tool_calls',[]) if c['session'] in ids and event_ids.intersection(c['event_ids'])]
+    tools={};kinds={e['id']:e['kind'] for e in selected_events}
+    for call in calls:
+        group=tools.setdefault(call['tool'],dict(tool=call['tool'],calls=0,results=0,result_bytes=0,results_without_size=0,known_errors=0,unknown_error_status=0,observed_latency_seconds=0.,timed_calls=0))
+        present={kinds[e] for e in call['event_ids'] if e in kinds};started='tool_call' in present;finished='tool_result' in present
+        group['calls']+=started;group['results']+=finished;group['result_bytes']+=(call['result_bytes'] or 0) if finished else 0
+        group['results_without_size']+=finished and call['result_bytes'] is None
+        group['known_errors']+=finished and call['error'] is True;group['unknown_error_status']+=not finished or call['error'] is None
+        if started and finished and call['observed_latency_seconds'] is not None:
+            group['timed_calls']+=1;group['observed_latency_seconds']+=call['observed_latency_seconds']
+    offset=getattr(args,'offset',0);limit=getattr(args,'limit',200)
+    if offset<0 or not 1<=limit<=10000:raise ValueError('--offset must be nonnegative and --limit must be between 1 and 10000')
+    page=selected_events[offset:offset+limit]
+    return dict(schema_version=EVIDENCE_SCHEMA,version=VERSION,generated=snapshot['generated'],period=period,filters=filters,
+        scope='Own/tree costs use selected dates and model/pool filters. Lifecycle and lifetime fields use all observed history. Tree totals overlap: do not sum them.',
+        sessions=results,tools=sorted(tools.values(),key=lambda t:(-t['result_bytes'],t['tool'])),
+        events=page,events_total=len(selected_events),undated_events=sum(e['session'] in ids and e['date'] is None for e in snapshot.get('events',[])),offset=offset,limit=limit,
+        next_offset=offset+limit if offset+limit<len(selected_events) else None,
+        source_files=[s for s in snapshot.get('source_files',[]) if s['id'] in {r['source_id'] for e in page for r in e['evidence']}],
+        measurement_basis=MEASUREMENT_BASIS)
 
 def compact_tokens(value):
     units=('', 'K', 'M', 'B', 'T');unit=0
@@ -813,7 +1116,7 @@ def statusline_text(result,color=False):
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
 <title>AISAD · Usage statistics</title><style>
 :root{color-scheme:light;--bg:#fff;--card:#fff;--ink:#000;--muted:#6b6b6b;--line:#e2e2e2;--accent:#000;--shade:#f6f6f6;--previous:#afafaf;--green:#0e8345;--green-bg:#eaf6ed;--orange:#9f6402;--red:#de1135;--focus:#276ef1}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#141414;--card:#1f1f1f;--ink:#fff;--muted:#afafaf;--line:#3d3d3d;--accent:#eee;--shade:#292929;--previous:#6b6b6b;--green:#66d19e;--green-bg:#163526;--orange:#ffc043;--red:#ff8f9e;--focus:#a0bff8}
@@ -836,7 +1139,7 @@ footer{justify-content:flex-start;align-items:baseline;gap:6px 16px;margin-top:1
 <header><div class="brand"><span class="wordmark">AISAD</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
 <section id="saved-summary" class="panel wide">__SAVED_SUMMARY__</section>
 <div id="interactive-dashboard" hidden>
-<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Overview</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context &amp; tools</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button></nav>
+<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button></nav>
 <div class="filters">
 <div class="filter-bar"><label>Period<select id="period"><option value="7">Last 7 days</option><option value="this-week">This week (Mon–today)</option><option value="last-week">Last week (Mon–Sun)</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom dates</option></select></label>
 <div id="custom-dates" class="date-fields" hidden><label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label></div>
@@ -851,12 +1154,12 @@ footer{justify-content:flex-start;align-items:baseline;gap:6px 16px;margin-top:1
 <section class="panel wide"><div class="tools"><h2>Usage by provider</h2><small>Select a provider to filter every view</small></div><div class="table-wrap"><table id="providers-table"></table></div></section>
 <div class="grid equal"><section class="panel"><h2>What the estimate pays for</h2><p class="panel-intro">Known priced components; cache write uncertainty is shown in the total.</p><div id="parts"></div></section><section class="panel"><h2>Top projects</h2><div id="projects-chart"></div></section></div>
 <section class="panel wide"><div class="tools"><h2>Usage by model</h2><small>Select a heading to sort</small></div><div class="table-wrap"><table id="models-table"></table></div></section></div>
-<section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions" class="panel" hidden><div class="tools"><h2>Sessions</h2><div><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"> <select id="session-sort" aria-label="Sort sessions"><option value="cost">Highest cost</option><option value="max_context">Largest context</option><option value="requests">Most requests</option></select></div></div><p class="panel-intro">Open a session to inspect its usage and request timeline within the selected filters.</p><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:16px"><small id="page-info"></small><div><button id="prev" aria-label="Previous sessions page">←</button> <button id="next" aria-label="Next sessions page">→</button></div></div></section>
-<section id="view-context" role="tabpanel" aria-labelledby="tab-context" hidden><div class="mini-grid" id="context-cards"></div><div class="grid equal"><section class="panel"><h2>Largest observed context</h2><p class="panel-intro">Peak input per session, including cached input.</p><div id="context-chart"></div></section><section class="panel"><h2>Tool payload footprint</h2><p class="panel-intro">UTF-8 bytes measured from local tool results. These are not token counts.</p><div id="tool-chart"></div><p class="panel-intro" id="tool-coverage"></p></section></div></section>
+<section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions" class="panel" hidden><div class="tools"><h2>Sessions</h2><div><input id="search" type="search" placeholder="Search sessions" aria-label="Search the sessions table only"> <select id="session-sort" aria-label="Sort sessions"><option value="cost">Highest cost</option><option value="max_context">Largest input</option><option value="requests">Most requests</option></select></div></div><p class="panel-intro">Open a session to inspect its usage and request timeline within the selected filters.</p><div class="table-wrap"><table id="sessions-table"></table></div><div class="tools" style="margin-top:16px"><small id="page-info"></small><div><button id="prev" aria-label="Previous sessions page">←</button> <button id="next" aria-label="Next sessions page">→</button></div></div></section>
+<section id="view-context" role="tabpanel" aria-labelledby="tab-context" hidden><div class="mini-grid" id="context-cards"></div><section class="panel"><h2>What these traces establish</h2><div id="measurement-basis"></div><p class="panel-intro">Input includes cached tokens. A cache hit changes price, not context size. Compaction does not establish which original blocks survive in the summary.</p></section><div class="grid equal"><section class="panel"><h2>Largest recorded input</h2><p class="panel-intro">Peak input per session, including cached input.</p><div id="context-chart"></div></section><section class="panel"><h2>Tool payload footprint</h2><p class="panel-intro">Result bytes recorded in local logs. Billed tokens and repeated inclusion are unavailable.</p><div id="tool-chart"></div><p class="panel-intro" id="tool-coverage"></p></section></div></section>
 <section id="view-cache" role="tabpanel" aria-labelledby="tab-cache" hidden><div class="mini-grid" id="cache-cards"></div><section class="panel"><h2>Cache by model</h2><p class="panel-intro">Weighted cache reads / total input. Uncached input includes new prompts and changed prefixes.</p><div class="table-wrap"><table id="cache-table"></table></div></section></section>
 <details class="pricing-details" id="grok-usage" hidden><summary id="grok-title">Grok reported usage</summary><p id="grok-note"></p></details>
 <footer><span id="footer"></span><span id="subtitle"></span><details class="method-details"><summary>About the data</summary><div id="method"></div><p class="coverage" id="coverage"></p></details></footer></div></main>
-<dialog id="session-dialog" aria-labelledby="session-title"><div class="tools"><div><div class="eyebrow">Session detail</div><h2 id="session-title"></h2></div><button id="close-session" aria-label="Close session detail">Close ×</button></div><p class="panel-intro" id="session-caption"></p><div class="mini-grid" id="session-cards"></div><h3>Context per request</h3><div id="session-timeline"></div></dialog>
+<dialog id="session-dialog" aria-labelledby="session-title"><div class="tools"><div><div class="eyebrow">Session detail</div><h2 id="session-title"></h2></div><button id="close-session" aria-label="Close session detail">Close ×</button></div><p class="panel-intro" id="session-caption"></p><div class="mini-grid" id="session-cards"></div><div id="session-lifecycle" class="panel-intro"></div><h3>Input per usage observation</h3><div id="session-timeline"></div><section id="observation-detail" class="panel" hidden></section><h3 style="margin-top:24px">Recorded events</h3><p id="events-note" class="panel-intro"></p><div class="table-wrap"><table id="events-table"></table></div></dialog>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';
 async function loadSnapshot(node){
@@ -877,7 +1180,7 @@ const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{mo
 const rangeLabel=range=>range?range.from+' – '+range.to:'';
 const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
 let page=0,modelSort='cost',ascending=false;
-const allDates=[...D.rows,...(D.grok_records||[])].map(r=>r.date).sort();
+const allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
 const today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
 function setPeriod(value){
     $('period').value=value;
@@ -906,7 +1209,7 @@ function previousRange(range){
     return {from:shiftDate(range.from,-offset),to:shiftDate(range.to,-offset),days:range.days};
 }
 for(const field of ['provider','model','project']){
-    const values=[...new Set(D.rows.map(r=>r[field]))].sort();
+    const values=[...new Set([...D.rows,...(field==='model'?[]:D.session_details||[])].map(r=>r[field]).filter(Boolean))].sort();
     $(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(field==='provider'?providerLabel(v):v)+'</option>').join('');
 }
 setPeriod('7');
@@ -920,7 +1223,7 @@ function chosen(r,range=selectedRange()){
 function aggregate(rows){const a={requests:0,input:0,cached:0,write:0,output:0,total:0,cost:0,cost_high:0,unpriced:0,max_context:0,parts:[0,0,0,0,0],assumed:0,write_unknown:0,sessions:new Set()};for(const r of rows){for(const f of ['requests','input','cached','write','output','total','cost','cost_high','unpriced','assumed','write_unknown'])a[f]+=r[f]||0;a.max_context=Math.max(a.max_context,r.max_context||0);a.parts=a.parts.map((v,i)=>v+(r.parts?.[i]||0));a.sessions.add(r.session)}a.cache=a.input?a.cached/a.input:null;return a}
 function groups(rows,field){const m=new Map();for(const r of rows){if(!m.has(r[field]))m.set(r[field],[]);m.get(r[field]).push(r)}return [...m].map(([name,rs])=>({name,...aggregate(rs)}))}
 function cost(a){if(a.requests===a.unpriced)return '—';return usd(a.cost)+(a.cost_high-a.cost>.005?'–'+usd(a.cost_high):'')}
-function bars(id,items,metric='cost'){const entries=[...items].sort((a,b)=>b[metric]-a[metric]);const max=Math.max(...entries.map(x=>x[metric]),1e-9);$(id).innerHTML=entries.length?entries.map((x,i)=>`<div class="barrow"><span class="barlabel" title="${esc(x.name)}">${esc(x.name)}</span><div class="bartrack"><div class="barfill" style="width:${Math.max(0,x[metric]/max*100)}%;opacity:${Math.max(.45,1-i*.06)}"></div></div><span class="barvalue">${metric==='cost'?cost(x):compact(x[metric])}</span></div>`).join(''):'<div class="empty">No data in the selected period</div>'}
+function bars(id,items,metric='cost'){const entries=[...items].sort((a,b)=>b[metric]-a[metric]);const max=Math.max(...entries.map(x=>x[metric]),1e-9);$(id).innerHTML=entries.length?entries.map((x,i)=>`<div class="barrow"><span class="barlabel" title="${esc(x.name)}">${['models-chart','projects-chart','context-chart'].includes(id)?`<button data-breakdown="${id}" data-value="${esc(x.name)}">${esc(x.label||x.name)}</button>`:esc(x.name)}</span><div class="bartrack"><div class="barfill" style="width:${Math.max(0,x[metric]/max*100)}%;opacity:${Math.max(.45,1-i*.06)}"></div></div><span class="barvalue">${metric==='cost'?cost(x):compact(x[metric])}</span></div>`).join(''):'<div class="empty">No data in the selected period</div>'}
 function numericDelta(current,previous,format,points=false){
     if(current==null||previous==null)return 'No comparable value';
     const difference=current-previous;
@@ -984,11 +1287,11 @@ function daily(rows,priorRows,metric,range,previous){
         for(const [series,date,g] of [['current',p.date,p.current],...(compare?[['previous',p.priorDate,p.previous]]:[])]){
             if(!usable(g))continue;
             const width=compare?step*.36:step*.72,x=L+i*step+(series==='previous'?step*.54:step*.1),hh=(h-T-B)*g[metric]/max;
-            svg+=`<rect data-series="${series}" x="${x}" y="${h-B-hh}" width="${Math.max(.2,width)}" height="${hh}" rx="2" fill="var(--${series==='previous'?'previous':'accent'})"><title>${esc(series+' · '+date+': '+(metric==='cost'?cost(g):integer(g[metric])))}</title></rect>`;
+            svg+=`<rect tabindex="0" role="button" data-day="${date}" aria-label="Show sessions for ${date}" data-series="${series}" x="${x}" y="${h-B-hh}" width="${Math.max(.2,width)}" height="${hh}" rx="2" fill="var(--${series==='previous'?'previous':'accent'})"><title>${esc(series+' · '+date+': '+(metric==='cost'?cost(g):integer(g[metric])))}</title></rect>`;
         }
         if(i%Math.max(1,Math.ceil(points.length/8))===0)svg+=`<text x="${L+(i+.5)*step}" y="${h-10}" text-anchor="middle" class="chart-text">${shortDate(p.date)}</text>`;
     });
-    $('daily').innerHTML=svg+'</svg>'+`<div class="legend"><span><i class="dot"></i>Selected period</span>${compare?'<span><i class="dot previous"></i>Previous period, aligned by day</span>':''}</div><small>Missing bars mean no observations${metric==='cost'?' or unavailable prices':''}; today may be incomplete. Hover for the actual date and value.</small>`;
+    $('daily').innerHTML=svg+'</svg>'+`<div class="legend"><span><i class="dot"></i>Selected period</span>${compare?'<span><i class="dot previous"></i>Previous period, aligned by day</span>':''}</div><small>Missing bars mean no observations${metric==='cost'?' or unavailable prices':''}; today may be incomplete. Hover for the value; select a bar to inspect its sessions.</small>`;
 }
 function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[modelSort])*(ascending?1:-1));$('models-table').innerHTML='<thead><tr><th>Model</th>'+[['requests','Requests'],['total','Tokens'],['output','Output'],['cached','Cache'],['cost','Cost, USD']].map(([f,l])=>`<th><button data-sort="${f}">${l}${modelSort===f?(ascending?' ↑':' ↓'):''}</button></th>`).join('')+'<th>Unpriced</th></tr></thead><tbody>'+gs.map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${compact(g.output)}</td><td>${pct(g.cache)}</td><td>${cost(g)}</td><td>${g.unpriced||'—'}</td></tr>`).join('')+'</tbody>';document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{ascending=modelSort===b.dataset.sort?!ascending:false;modelSort=b.dataset.sort;modelsTable(rs)})}
 const records=D.request_stats||[];
@@ -1007,9 +1310,17 @@ function telemetry(rs){
 function sessionLabel(id){return D.titles?.[id]||id}
 function sessionsTable(rs){
     const search=$('search').value.toLowerCase(),metric=$('session-sort').value;
-    let gs=groups(rs,'session').filter(g=>(g.name+' '+(D.titles?.[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b[metric]-a[metric]);
+    const grouped=groups(rs,'session'),seen=new Set(grouped.map(g=>g.name)),range=selectedRange();
+    for(const meta of D.session_details||[]){
+        if(seen.has(meta.id)||!range||$('model').value||$('pool').value)continue;
+        if(['provider','project','role'].some(f=>$(f).value&&meta[f]!==$(f).value))continue;
+        const observed=(meta.observed_dates||[]).some(date=>date>=range.from&&date<=range.to);
+        if(observed)grouped.push({name:meta.id,...aggregate([])});
+    }
+    $('session-count').textContent=grouped.length;
+    let gs=grouped.filter(g=>(g.name+' '+(D.titles?.[g.name]||'')).toLowerCase().includes(search)).sort((a,b)=>b[metric]-a[metric]);
     page=Math.min(page,Math.max(0,Math.ceil(gs.length/25)-1));const show=gs.slice(page*25,(page+1)*25);
-    $('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Input + output</th><th>Cache</th><th>Peak context</th><th>API estimate</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}"><button class="session-button" data-session="${esc(g.name)}">${esc(sessionLabel(g.name))}</button></td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${compact(g.max_context)}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';
+    $('sessions-table').innerHTML='<thead><tr><th>Session</th><th>Requests</th><th>Input + output</th><th>Cache</th><th>Peak input</th><th>API estimate</th></tr></thead><tbody>'+show.map(g=>`<tr><td title="${esc(g.name)}"><button class="session-button" data-session="${esc(g.name)}">${esc(sessionLabel(g.name))}</button></td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${pct(g.cache)}</td><td>${g.requests?compact(g.max_context):'—'}</td><td>${cost(g)}</td></tr>`).join('')+'</tbody>';
     $('page-info').textContent=`${gs.length?page*25+1:0}–${Math.min((page+1)*25,gs.length)} of ${gs.length} sessions`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=gs.length;
 }
 function showTab(name){
@@ -1018,15 +1329,16 @@ function showTab(name){
 function openSession(id){
     const rs=selectedRecords().filter(r=>r.session===id).sort((a,b)=>a.ts-b.ts||a.step-b.step),a=aggregate(recordRows(rs)),d=telemetry(rs);
     $('session-title').textContent=sessionLabel(id);$('session-caption').textContent=`${rangeLabel(selectedRange())} · Selected filters · ${[...new Set(rs.map(r=>r.model))].join(', ')} · ${integer(d.traceRecords)} of ${integer(rs.length)} usage records have message/tool telemetry.`;
-    $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak context',compact(a.max_context),'Input tokens, including cache'],['Cache read share',pct(a.cache),'Weighted by input tokens']]);
+    $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak input',rs.length?compact(a.max_context):'—','Measured request input, including cache'],['Cache read share',pct(a.cache),'Weighted by input tokens']]);
     if(rs.length){
         const w=900,h=200,L=54,R=18,T=18,B=30,max=Math.max(...rs.map(r=>r.input),1),x=i=>L+i*(w-L-R)/Math.max(1,rs.length-1),y=v=>h-B-v/max*(h-T-B);
         let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Input context and cached input for each recorded request">`;
         for(let i=0;i<3;i++){const value=max*(1-i/2);svg+=`<line x1="${L}" x2="${w-R}" y1="${y(value)}" y2="${y(value)}" stroke="var(--line)"/><text x="${L-7}" y="${y(value)+4}" class="chart-text" text-anchor="end">${compact(value)}</text>`}
         svg+=`<polyline points="${rs.map((r,i)=>x(i)+','+y(r.input)).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2"/><polyline points="${rs.map((r,i)=>x(i)+','+y(r.cached)).join(' ')}" fill="none" stroke="var(--green)" stroke-width="2"/>`;
-        rs.forEach((r,i)=>{svg+=`<circle cx="${x(i)}" cy="${y(r.input)}" r="3" fill="var(--accent)"><title>${esc('Request '+r.step+' · '+r.date+' · '+integer(r.input)+' input · '+integer(r.cached)+' cached · '+moneyRange(r.cost,r.cost_high))}</title></circle>`;if(i%Math.max(1,Math.ceil(rs.length/10))===0)svg+=`<text x="${x(i)}" y="${h-5}" class="chart-text" text-anchor="middle">${r.step}</text>`});
+        rs.forEach((r,i)=>{svg+=`<circle tabindex="0" role="button" aria-label="Inspect usage observation ${r.step}" data-observation="${esc(r.id)}" cx="${x(i)}" cy="${y(r.input)}" r="3" fill="var(--accent)"><title>${esc('Request '+r.step+' · '+r.date+' · '+integer(r.input)+' input · '+integer(r.cached)+' cached · '+moneyRange(r.cost,r.cost_high))}</title></circle>`;if(i%Math.max(1,Math.ceil(rs.length/10))===0)svg+=`<text x="${x(i)}" y="${h-5}" class="chart-text" text-anchor="middle">${r.step}</text>`});
         $('session-timeline').innerHTML=svg+'</svg><div class="legend"><span><i class="dot"></i>Total input</span><span><i class="dot" style="background:var(--green)"></i>Cached input</span><span>Horizontal axis: request number in the recorded session</span></div>';
-    }else $('session-timeline').innerHTML='<div class="empty">No request-level telemetry in this snapshot.</div>';
+    }else $('session-timeline').innerHTML='<div class="empty">No usage observations within the selected filters.</div>';
+    renderSessionEvidence(id,rs);
     if(!$('session-dialog').open)$('session-dialog').showModal();
 }
 function miniCards(values){return values.map(([label,value,note])=>`<div class="card"><label>${esc(label)}</label><div class="value">${value}</div><small>${esc(note)}</small></div>`).join('')}
@@ -1038,11 +1350,9 @@ function renderPools(range){
     }).join('');
 }
 function renderStatistics(rs,ar,a,d){
-    $('session-count').textContent=a.sessions.size;
-    $('context-cards').innerHTML=miniCards([['Largest context',ar.length?compact(a.max_context):'—','Peak input in the selected requests'],['Largest tool result',d.traceRecords?bytes(d.stats.max_tool_bytes||0):'—','Observed local UTF-8 payload'],['Tool calls',d.traceRecords?integer(d.stats.tool_calls||0):'—','Recorded structured calls']]);
-    bars('context-chart',groups(rs,'session').sort((a,b)=>b.max_context-a.max_context).slice(0,8).map(g=>({...g,name:sessionLabel(g.name)})),'max_context');
-    const other=Math.max(0,(d.stats.tool_bytes||0)-(d.stats.mcp_bytes||0));
-    $('tool-chart').innerHTML=d.traceRecords?`<div class="mini-grid">${miniCards([['MCP results',bytes(d.stats.mcp_bytes||0),integer(d.stats.mcp_results||0)+' results'],['Other tool results',bytes(other),integer((d.stats.tool_results||0)-(d.stats.mcp_results||0))+' results'],['Polling calls',integer(d.stats.poll_calls||0),'Calls matched by structured name']])}</div>`:'<div class="empty">No message/tool telemetry available.</div>';
+    $('context-cards').innerHTML=miniCards([['Largest input',ar.length?compact(a.max_context):'—','Peak input in the selected requests'],['Largest tool result',d.traceRecords?bytes(d.stats.max_tool_bytes||0):'—','Observed local UTF-8 payload'],['Tool calls',d.traceRecords?integer(d.stats.tool_calls||0):'—','Recorded structured calls']]);
+    bars('context-chart',groups(rs,'session').sort((a,b)=>b.max_context-a.max_context).slice(0,8).map(g=>({...g,label:sessionLabel(g.name)})),'max_context');
+    $('tool-chart').innerHTML=d.traceRecords?`<div class="mini-grid">${miniCards([['Recorded tool results',bytes(d.stats.tool_bytes||0),integer(d.stats.tool_results||0)+' results'],['Tool calls',integer(d.stats.tool_calls||0),'Structured calls before usage observations']])}</div>`:'<div class="empty">No message/tool telemetry available.</div>';
     $('tool-coverage').textContent=`${integer(d.traceRecords)} / ${integer(ar.length)} records have message/tool telemetry. Payloads are associated with the next observed usage event; their exact billed token impact is unavailable.`;
     $('cache-cards').innerHTML=miniCards([['Cache read share',pct(a.cache),'Cache reads / all input tokens'],['Uncached input estimate',a.requests>a.unpriced?usd(a.parts[0]):'—','Includes fresh input; not all cache misses'],['Cache writes',a.requests?compact(a.write):'—','Recorded cache creation tokens']]);
     $('cache-table').innerHTML='<thead><tr><th>Model</th><th>Input tokens</th><th>Cached tokens</th><th>Cache share</th><th>Cache writes</th><th>Uncached estimate</th></tr></thead><tbody>'+groups(rs,'model').sort((a,b)=>b.input-a.input).map(g=>`<tr><td>${esc(g.name)}</td><td>${compact(g.input)}</td><td>${compact(g.cached)}</td><td>${pct(g.cache)}</td><td>${compact(g.write)}</td><td>${g.requests>g.unpriced?usd(g.parts[0]):'—'}</td></tr>`).join('')+'</tbody>';
@@ -1090,15 +1400,49 @@ $('filter-toggle').onclick=()=>{const expanded=$('extra-filters').hidden;$('extr
 $('reset').onclick=()=>{setPeriod('7');for(const f of ['provider','model','project','role','pool','search'])$(f).value='';$('extra-filters').hidden=true;$('filter-toggle').setAttribute('aria-expanded','false');page=0;render()};
 document.addEventListener('click',event=>{const b=event.target.closest('[data-session]');if(b)openSession(b.dataset.session)});
 const tabs=[...document.querySelectorAll('[data-tab]')];tabs.forEach((button,index)=>{button.onclick=()=>showTab(button.dataset.tab);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;showTab(tabs[next].dataset.tab);tabs[next].focus()}});
+
+const sessionMetadata=new Map((D.session_details||[]).map(s=>[s.id,s]));
+const observedTime=ts=>ts==null?'Not recorded':new Date(ts*1000).toISOString().replace('T',' ').replace('.000Z',' UTC');
+function sourceReferences(refs){
+    return refs.length?'<ul>'+refs.map(ref=>`<li><code>${esc(ref.source_id.slice(0,12))}</code> · line ${integer(ref.line)} · byte ${integer(ref.byte_offset)}<details><summary>Record fingerprint</summary><code style="overflow-wrap:anywhere">${esc(ref.record_sha256)}</code></details></li>`).join('')+'</ul>':'<p>No source reference recorded.</p>';
+}
+function renderSessionEvidence(id,rs){
+    const meta=sessionMetadata.get(id),range=selectedRange();
+    $('observation-detail').hidden=true;
+    if(meta){
+        const tree=new Set(meta.tree_sessions),total=aggregate(recordRows(selectedRecords().filter(r=>tree.has(r.session))));
+        $('session-cards').innerHTML+=miniCards([['Tree API estimate',cost(total),'Session + confirmed descendants; selected filters'],['Last seen',observedTime(meta.last_seen),'Lifetime observation; current state unknown'],['Recorded compactions',integer(meta.compactions),'Lifetime events; composition unavailable']]);
+        const links=[...(meta.parent_session?[['Parent',meta.parent_session]]:[]),...meta.children.map(child=>['Child',child])];
+        $('session-lifecycle').innerHTML=`<p>Observed span: ${meta.elapsed_seconds==null?'unavailable':integer(meta.elapsed_seconds)+' seconds'}, including idle time. Active time is unavailable. Last lifecycle event: ${esc(meta.last_recorded_lifecycle||'not recorded')}. ${meta.context_since_compaction==='unavailable'?(meta.compactions?'No fresh input observation after the latest compaction.':'No recorded input observation.'):''}</p>`+links.map(([label,sid])=>`<span>${label}: <button data-session="${esc(sid)}">${esc(sessionLabel(sid))}</button></span>`).join(' ');
+    }else $('session-lifecycle').textContent='No lifecycle evidence in this snapshot.';
+    const preview=D.event_previews?.[id]||[],events=preview.filter(e=>e.date&&range&&e.date>=range.from&&e.date<=range.to&&(!$('model').value||!e.model||e.model===$('model').value));
+    $('events-note').textContent=`${integer(events.length)} events shown for these dates from the latest ${integer(preview.length)} retained in this session’s offline preview. Full history and pagination: session --session ${id} --json. The database contains ${integer(meta?.event_count||preview.length)} lifetime events. Missing timestamps cannot be placed in this date range.`;
+    $('events-table').innerHTML='<thead><tr><th>Observed time</th><th>Event</th><th>Recorded details</th><th>Evidence</th></tr></thead><tbody>'+events.map(e=>`<tr><td>${esc(observedTime(e.ts))}</td><td>${esc(e.kind.replaceAll('_',' '))}</td><td>${esc(e.tool||e.role||e.model||'')}${e.result_bytes!=null?' · '+bytes(e.result_bytes):e.kind==='tool_result'?' · size unavailable':''}${e.error===true?' · error recorded':''}</td><td><details><summary>Source ${integer(e.evidence[0]?.line||0)}</summary>${sourceReferences(e.evidence)}</details></td></tr>`).join('')+'</tbody>';
+}
+function inspectObservation(id){
+    const r=records.find(r=>r.id===id);if(!r)return;
+    $('observation-detail').innerHTML=`<h3>Usage observation ${integer(r.step)}</h3><p>${esc(observedTime(r.ts))} · ${esc(r.model)}</p><p>Measured input: ${integer(r.input)} · cache reads: ${integer(r.cached)} · output: ${integer(r.output)}.</p><p>Estimated API cost: ${moneyRange(r.cost,r.cost_high)}. Price status: ${esc(r.price_status||'unknown')}.</p><p>Context composition and billed tool attribution: unavailable.</p><h3>Source records</h3>${sourceReferences(r.evidence||[])}<small>File paths are available in the local session JSON and sessions.sqlite. Conversation text and tool payloads are not copied into this report.</small>`;
+    $('observation-detail').hidden=false;$('observation-detail').scrollIntoView({block:'nearest'});
+}
+function navigateEvidence(target){
+    if(target.dataset.day){$('from').value=target.dataset.day;$('to').value=target.dataset.day;$('period').value='custom';page=0;render();showTab('sessions')}
+    else if(target.dataset.observation)inspectObservation(target.dataset.observation);
+    else if(target.dataset.breakdown){
+        if(target.dataset.breakdown==='context-chart'){openSession(target.dataset.value);return}
+        const name=target.dataset.breakdown==='models-chart'?'model':'project';$(name).value=target.dataset.value;page=0;render();showTab('sessions');
+    }
+}
+document.addEventListener('click',event=>{const target=event.target.closest('[data-day],[data-observation],[data-breakdown]');if(target)navigateEvidence(target)});
+document.addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key)||event.target.tagName.toLowerCase()==='button')return;const target=event.target.closest('[data-day],[data-observation]');if(target){event.preventDefault();navigateEvidence(target)}});
+$('measurement-basis').innerHTML=Object.entries(D.measurement_basis||{}).map(([name,value])=>`<p><span class="tag">${esc(value.kind)}</span> <b>${esc(name.replaceAll('_',' '))}</b> — ${esc(value.basis)}</p>`).join('');
 $('close-session').onclick=()=>$('session-dialog').close();
 $('theme').onclick=()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'light';$('theme').textContent=dark?'Light theme':'Dark theme';$('theme').setAttribute('aria-label','Switch to '+(dark?'light':'dark')+' theme')};
 $('method').innerHTML=`<p>Local Claude and Codex traces. Duplicate usage records are removed. Missing traces cannot be recovered; chat contents stay on this device.</p><p>API-equivalent prices as of ${esc(D.price_as_of)}, not subscription charges. Unknown prices stay unknown; cache-write uncertainty is shown as a range. Input includes cached tokens.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a></p>`;
-$('footer').textContent=`AISAD ${D.version} · Local data`;render();
+$('footer').textContent=`AISAD ${D.version} · On-demand snapshot · Rerun the command to update`;render();
 $('interactive-dashboard').hidden=false;$('saved-summary').hidden=true;
 // Release the serialized copy after the interactive report is ready.
 $('snapshot').textContent='';
-// Only the loopback watcher serves this endpoint; file:// snapshots never request a network resource.
-if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{try{const r=await fetch('/status.json',{cache:'no-store'});if(r.ok&&(await r.json()).generated!==D.generated)location.reload()}catch{}},5000);
+// A saved snapshot makes no polling or collection requests.
 })().catch(error=>{
     console.error('AISAD report could not initialize',error);
     document.getElementById('startup-note').textContent='Interactive charts could not load. The saved totals below remain available. Try reopening this file in an up-to-date browser.';
@@ -1142,28 +1486,10 @@ def render_html(snapshot):
     payload=payload.replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
     return HTML.replace('__SAVED_SUMMARY__',saved_summary(snapshot)).replace('__DATA__',payload)
 
-def serve(output,port):
-    output=Path(output).resolve()
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            route=self.path.split('?')[0]
-            name={'/':'dashboard.html','/dashboard.html':'dashboard.html','/status.json':'status.json'}.get(route)
-            if not name:self.send_error(404);return
-            try:body=(output/name).read_bytes()
-            except OSError:self.send_error(503);return
-            self.send_response(200);self.send_header('Content-Type','application/json' if name.endswith('json') else 'text/html; charset=utf-8')
-            self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)));self.end_headers()
-            try:self.wfile.write(body)
-            except (BrokenPipeError,ConnectionResetError):pass
-        def log_message(self,*args):pass
-    server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
-    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-    return server
-
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
-    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline'],default='dashboard',help='Dashboard, usage summary or terminal status line; analyze is an alias for usage')
-    p.add_argument('--json',action='store_true',help='Headless commands: emit JSON to stdout (NDJSON for statusline --watch)')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session'],default='dashboard',help='One-shot dashboard, usage, collection, or session evidence; analyze aliases usage')
+    p.add_argument('--json',action='store_true',help='Emit one JSON object to stdout')
     p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
     p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
     p.add_argument('--from',dest='date_from',help='Usage: inclusive start date, YYYY-MM-DD')
@@ -1176,9 +1502,13 @@ def parser():
     p.add_argument('--managed-session',action='append',default=[],metavar='PROVIDER:ID',help='Tag a managed session and its confirmed descendants; repeat as needed')
     p.add_argument('--budget',type=float,help='Optional shared interactive budget in USD for the selected period, across providers and projects')
     p.add_argument('--managed-budget',type=float,help='Optional separate managed-agent budget in USD')
-    p.add_argument('--session',help='Status line: session ID, including provider prefix when ambiguous; defaults to CODEX_THREAD_ID or latest observed')
-    p.add_argument('--stdin',action='store_true',help='Status line: read Claude Code status JSON from stdin and use its session_id')
+    p.add_argument('--session',help='Session detail or one-shot status: provider-prefixed session ID')
+    p.add_argument('--stdin',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--no-color',action='store_true',help='Status line: disable ANSI colors')
+    p.add_argument('--include-events',action='store_true',help='Include a paginated metadata timeline and source references in usage JSON')
+    p.add_argument('--tree',action='store_true',help='Session detail: include confirmed descendants')
+    p.add_argument('--limit',type=int,default=200,help='Maximum timeline events returned, 1–10000')
+    p.add_argument('--offset',type=int,default=0,help='Timeline pagination offset')
     p.add_argument('--include-requests',action='store_true',help='Usage JSON: include normalized per-request records; no transcripts')
     p.add_argument('--output',default=str(Path(__file__).resolve().parent/'output'),help='Directory for HTML and the local cache')
     p.add_argument('--home',help='Local profile root (for another user or tests)')
@@ -1189,78 +1519,52 @@ def parser():
     p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
     p.add_argument('--include-titles',action='store_true',help='Include shortened session titles; IDs only by default')
     p.add_argument('--write-prices',metavar='FILE',help='Write the built-in price catalog and exit')
-    p.add_argument('--watch',type=float,default=0,metavar='SECONDS',help='Dashboard: rebuild and serve on loopback; statusline: refresh in the terminal only')
-    p.add_argument('--port',type=int,default=0,help='Watcher port: 0 selects an available port')
-    p.add_argument('--open',action='store_true',help='Open the HTML or local watcher in a browser')
+    p.add_argument('--watch',type=float,default=None,metavar='SECONDS',help=argparse.SUPPRESS)
+    p.add_argument('--open',action='store_true',help='Open the saved offline HTML in a browser; the collector exits')
     p.add_argument('--version',action='version',version=VERSION)
     return p
 
 def main(argv=None):
     args=parser().parse_args(argv)
-    if args.watch and args.watch<5:raise SystemExit('--watch must be at least 5 seconds')
+    if args.watch is not None or args.stdin:
+        raise SystemExit('AISAD runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
     for value in [args.budget,args.managed_budget]:
         if value is not None and (not math.isfinite(value) or value<=0):raise SystemExit('Budgets must be finite positive USD amounts')
-    if args.stdin:
-        if args.command!='statusline' or sys.stdin.isatty():raise SystemExit('--stdin requires statusline and piped Claude status JSON')
-        payload=json.loads(sys.stdin.read(1024*1024))
-        if not isinstance(payload,dict) or not isinstance(payload.get('session_id'),str):raise SystemExit('Claude status JSON must include session_id')
-        args.session=args.session or 'Claude:'+payload['session_id']
+    if args.offset<0 or not 1<=args.limit<=10000:raise SystemExit('--offset must be nonnegative and --limit must be between 1 and 10000')
+    if args.command=='session' and not args.session:raise SystemExit('session requires --session PROVIDER:ID; use sessions --json to find an ID')
+    if args.open and args.command!='dashboard':raise SystemExit('--open is available only for dashboard')
     if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
     output=Path(args.output).expanduser().resolve()
-    if args.command in ('usage','analyze','statusline'):
-        if args.open or (args.watch and args.command!='statusline'):raise SystemExit(args.command+' does not open a dashboard; only statusline supports terminal watching')
-        snap=make_snapshot(args,dashboard=False,include_requests=args.include_requests)
-        result=usage_report(snap,args)
-        atom_json(output/'usage-report.json',result)
-        if args.command!='statusline':
-            print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else usage_text(result))
-            return
-        def show_status(snapshot,report):
-            status=statusline_report(snapshot,report,args);atom_json(output/'statusline.json',status)
-            if args.json:print(json.dumps(status,ensure_ascii=False,allow_nan=False),flush=True);return
-            line=statusline_text(status)
-            tty=sys.stdout.isatty()
-            if args.watch and tty:line=line[:max(20,shutil.get_terminal_size((160,24)).columns-1)]
-            if tty and not args.no_color and os.environ.get('TERM')!='dumb':
-                level=max(v['nudge_percent'] for v in status['pools'].values())
-                line='\x1b['+('31' if level==100 else '33' if level else '36')+'m'+line+'\x1b[0m'
-            print(('\r\x1b[2K' if args.watch and tty else '')+line,end='' if args.watch and tty else '\n',flush=True)
-        show_status(snap,result)
-        if args.watch:
-            previous=source_fingerprint(args)
-            try:
-                while True:
-                    time.sleep(args.watch)
-                    try:
-                        current=source_fingerprint(args)
-                        if current==previous:continue
-                        snap=make_snapshot(args,dashboard=False);result=usage_report(snap,args)
-                        show_status(snap,result);previous=current
-                    except (OSError,ValueError,KeyError,sqlite3.Error) as error:print('Status refresh failed: '+str(error),file=sys.stderr)
-            except KeyboardInterrupt:
-                if sys.stdout.isatty():print()
-        return
-    snap=make_snapshot(args)
-    def report(s):
-        t=s['summary'];print(f"{s['generated']} | {t['requests']:,} requests | {t['sessions']} sessions | API estimate ${t['cost']:.2f}–${t['cost_high']:.2f} | unpriced {t['unpriced']} | parsed {s['scan'].get('parsed_files',0)}, cached {s['scan'].get('cached_files',0)}",flush=True)
-    report(snap);print(str(output/'dashboard.html'),flush=True)
-    if not args.watch:
+    snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
+    if args.command=='dashboard':
+        t=snap['summary']
+        print(f"{snap['generated']} | {t['requests']:,} usage observations | {t['sessions']} sessions | API estimate ${t['cost']:.2f}–${t['cost_high']:.2f} | unpriced {t['unpriced']}")
+        print(str(output/'dashboard.html'))
         if args.open:webbrowser.open((output/'dashboard.html').as_uri())
         return
-    server=serve(output,args.port);url=f'http://127.0.0.1:{server.server_address[1]}/';print(url+' (Ctrl+C to stop)',flush=True)
-    if args.open:webbrowser.open(url)
-    previous=source_fingerprint(args)
-    try:
-        while True:
-            time.sleep(args.watch)
-            try:
-                current=source_fingerprint(args)
-                if current==previous:continue
-                report(make_snapshot(args));previous=current
-            except (OSError,ValueError,KeyError,sqlite3.Error) as e:
-                print('Refresh failed; previous HTML kept: '+str(e),file=sys.stderr,flush=True)
-    except KeyboardInterrupt:print('\nStopped.',flush=True)
-    finally:server.shutdown();server.server_close()
+    if args.command=='collect':
+        result=dict(schema_version=EVIDENCE_SCHEMA,version=VERSION,generated=snap['generated'],
+                    database=str(output/'sessions.sqlite'),events=len(snap['events']),sessions=len(snap['session_details']),
+                    usage_observations=len(snap['requests']),sources=len(snap['source_files']),quality=snap['quality'],scan=snap['scan'])
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else
+              f"Collected {result['events']:,} events, {result['usage_observations']:,} usage observations and {result['sessions']:,} sessions. Database: {result['database']}")
+        return
+    if args.command in ('sessions','session'):
+        result=evidence_report(snap,args);atom_json(output/'session-report.json',result)
+        if args.json:print(json.dumps(result,ensure_ascii=False,allow_nan=False))
+        else:
+            print('Recorded sessions for '+result['period']['from']+'–'+result['period']['to']+':')
+            for item in result['sessions']:
+                value=item['own']['estimated_cost_usd'];cost='unpriced' if value is None else f'${value:,.2f}'
+                if item['own']['unpriced_requests']:cost+=' + unpriced observations'
+                print(f"{item['id']} | {item['project']} | {item['own']['requests']} usage observations | {cost} estimated API cost | {item['event_count']} events")
+            print(f"Timeline: {result['events_total']} events. Use --json for source references and --offset/--limit for pagination.")
+        return
+    result=usage_report(snap,args);atom_json(output/'usage-report.json',result)
+    if args.command=='statusline':
+        result=statusline_report(snap,result,args);atom_json(output/'statusline.json',result)
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else statusline_text(result))
+    else:print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else usage_text(result))
 
 if __name__=='__main__':
     try:main()

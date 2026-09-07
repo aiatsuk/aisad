@@ -126,7 +126,7 @@ class TelemetryTests(unittest.TestCase):
             for command in ['usage', 'analyze', 'statusline']:
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout), patch('socket.socket', side_effect=AssertionError('Network used')), patch('sys.stdin', io.StringIO('{"session_id":"one"}')):
-                    app.main([command, *common, *(['--stdin', '--provider', 'Codex'] if command == 'statusline' else ['--include-requests'])])
+                    app.main([command, *common, *(['--session', 'Claude:one', '--provider', 'Codex'] if command == 'statusline' else ['--include-requests'])])
                 result = json.loads(stdout.getvalue())
                 self.assertNotIn('SECRET', stdout.getvalue());self.assertNotIn('PRIVATE', stdout.getvalue())
                 self.assertEqual(result['schema_version'], 2)
@@ -155,17 +155,10 @@ class TelemetryTests(unittest.TestCase):
                         for child in value: assert_statistics(child)
                 assert_statistics(json.loads(path.read_text()))
 
-    def test_statusline_watch_retries_source_errors_without_a_server(self):
-        with tempfile.TemporaryDirectory() as directory:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with patch.dict(os.environ, {'CODEX_THREAD_ID': ''}), patch('socket.socket', side_effect=AssertionError('Network used')), \
-                 patch.object(app, 'source_fingerprint', side_effect=['initial', OSError('temporary source error')]), \
-                 patch.object(app.time, 'sleep', side_effect=[None, KeyboardInterrupt]), \
-                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                app.main(['statusline', '--watch', '5', '--home', directory, '--output', directory])
-            self.assertIn('Status refresh failed', stderr.getvalue())
-            self.assertIn('unavailable', stdout.getvalue())
-            self.assertNotIn('\x1b', stdout.getvalue())
+    def test_watch_and_hook_modes_are_rejected_before_collecting(self):
+        for args in [['--watch', '60'], ['statusline', '--watch', '5'], ['statusline', '--stdin']]:
+            with patch.object(app, 'make_snapshot', side_effect=AssertionError('Unexpected collection')), self.assertRaisesRegex(SystemExit, 'on demand'):
+                app.main(args)
 
 
 if __name__ == '__main__':

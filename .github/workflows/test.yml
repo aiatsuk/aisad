@@ -60,4 +60,5 @@ jobs:
           node scripts/test_pricing_view.cjs
           node scripts/test_offline_loader.cjs
           node scripts/test_dashboard.cjs
+          node scripts/test_session_evidence.cjs
           node scripts/capture_demo.cjs

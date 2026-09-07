@@ -5,4 +5,4 @@ if ! command -v python3 >/dev/null 2>&1; then
   read -r answer
   exit 1
 fi
-python3 agent_usage.py --watch 60 --open
+python3 agent_usage.py --open

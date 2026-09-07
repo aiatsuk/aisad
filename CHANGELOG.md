@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 — on-demand session evidence (unreleased)
+
+- Add a transactional local SQLite event database with usage observations, session/turn relationships, tool-call metadata, context observations and file/line provenance.
+- Add one-shot `collect`, `sessions` and `session` commands with JSON, date/provider/model filters, descendant scope and timeline pagination.
+- Add chart-to-session drill-down, request evidence, recorded lifecycle/compaction events and measured/estimated/unavailable definitions to offline reports.
+- Preserve existing usage and pricing fixes from 1.0.7. Usage JSON stays schema 2; the additive evidence database/report uses schema 1.
+- Remove continuous collection, the HTTP watcher, browser polling and status-hook input. `--watch` and `--stdin` now fail before collection; `statusline` remains a manual one-shot command. Existing external hooks/schedulers are not modified.
+- Keep recommendations, raw conversation storage and tool instrumentation disabled. The optional skill invokes the standalone collector on demand.
+
+
 ## 1.0.7 — 2026-09-06
 
 - Compare known priced cost subtotals even when other requests lack prices. Remove unknown-cost suffixes, disclose exclusions separately for both periods, and retain all usage/token records. Periods without priced data remain unavailable.
