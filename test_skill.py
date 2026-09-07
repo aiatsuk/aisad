@@ -245,10 +245,10 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(report['current']['totals']['requests'], 0)
         self.assertEqual(report['current']['requests'], [])
         self.assertFalse((self.data / 'output/dashboard.html').exists())
-        for command in ['analyze', 'statusline']:
+        for command in ['analyze', 'statusline', 'collect', 'sessions']:
             run = subprocess.run([sys.executable, '-I', str(helper), command, '--offline', '--json',
                                   '--data-dir', str(self.data), '--home', str(self.root / 'empty profile'),
-                                  *(['--stdin'] if command == 'statusline' else [])],
+                                  *(['--session', 'Claude:empty'] if command == 'statusline' else [])],
                                  input='{"session_id":"empty"}', capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             result = json.loads(run.stdout)
@@ -257,7 +257,7 @@ class SkillTests(unittest.TestCase):
                 self.assertEqual(result['schema_version'], 2)
                 self.assertEqual(result['current']['telemetry']['total_records'], 0)
                 self.assertNotIn('analysis_rules', result)
-            else:
+            elif command == 'statusline':
                 self.assertEqual(result['session']['id'], 'Claude:empty')
                 self.assertEqual(result['session']['observed_requests'], 0)
         self.assertFalse((self.data / 'output/dashboard.html').exists())

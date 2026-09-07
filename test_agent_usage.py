@@ -65,19 +65,16 @@ class UsageTests(unittest.TestCase):
   with patch('socket.socket',side_effect=AssertionError('network used')):
    d=app.make_snapshot(args)
   self.assertEqual(d['summary']['requests'],0);self.assertTrue((self.root/'out folder/dashboard.html').exists())
- def test_snapshot_date_and_midnight_refresh_use_report_timezone(self):
+ def test_on_demand_snapshot_dates_use_report_timezone(self):
   args=app.parser().parse_args(['--home',str(self.root/'empty'),'--output',str(self.root/'out')])
   instant=dt.datetime(2026,3,11,6,59,tzinfo=dt.timezone.utc)
   class Clock(dt.datetime):
    @classmethod
    def now(cls,tz=None):return instant.astimezone(tz)
   with patch.object(app.dt,'datetime',Clock),patch.object(app,'report_timezone',return_value=dt.timezone(dt.timedelta(hours=-7))):
-   before=app.source_fingerprint(args)
    self.assertEqual(app.make_snapshot(args)['as_of_date'],'2026-03-10')
    instant=dt.datetime(2026,3,11,7,1,tzinfo=dt.timezone.utc)
-   after=app.source_fingerprint(args)
    self.assertEqual(app.make_snapshot(args)['as_of_date'],'2026-03-11')
-  self.assertNotEqual(before,after);self.assertEqual(before[1],after[1])
  def test_cache_reuse_append_and_deletion(self):
   msg=dict(type='assistant',timestamp='2026-09-01T00:00:00Z',message=dict(id='first',model='claude-opus-5',usage=dict(input_tokens=100,output_tokens=10)))
   p=self.file('fresh/.claude/projects/project/one.jsonl',[msg]);args=app.parser().parse_args(['--home',str(self.root/'fresh'),'--output',str(self.root/'out')])
@@ -100,29 +97,16 @@ class UsageTests(unittest.TestCase):
   copied=self.root/'tool folder'/'agent_usage.py';copied.parent.mkdir();copied.write_text(Path(app.__file__).read_text(encoding='utf-8'),encoding='utf-8')
   run=subprocess.run([sys.executable,'-I',str(copied),'--home',str(self.root/'empty'),'--output',str(self.root/'out')],capture_output=True,text=True)
   self.assertEqual(run.returncode,0,run.stderr);self.assertTrue((self.root/'out/dashboard.html').is_file())
- def test_loopback_watcher_updates_and_hides_evidence(self):
+ def test_snapshot_changes_only_after_an_explicit_invocation(self):
   msg=dict(type='assistant',timestamp='2026-09-01T00:00:00Z',message=dict(id='a',model='claude-opus-5',usage=dict(input_tokens=10,output_tokens=2)))
-  trace=self.file('profile/.claude/projects/p/s.jsonl',[msg]);out=self.root/'watch out'
-  process=subprocess.Popen([sys.executable,str(Path(app.__file__).resolve()),'--home',str(self.root/'profile'),'--output',str(out),'--watch','5'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-  try:
-   url=None
-   for _ in range(4):
-    line=process.stdout.readline()
-    if line.startswith('http://127.0.0.1:'):url=line.split(' ')[0];break
-   self.assertIsNotNone(url)
-   def status():
-    with urllib.request.urlopen(url+'status.json',timeout=3) as response:return json.load(response)['generated']
-   initial=status()
-   with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(url+'usage.json')
-   self.assertEqual(error.exception.code,404)
-   error.exception.close()
-   msg['message']['id']='b';trace.write_text(trace.read_text()+json.dumps(msg)+'\n')
-   deadline=time.monotonic()+12;updated=False
-   while time.monotonic()<deadline:
-    time.sleep(.25)
-    if status()!=initial:updated=True;break
-   self.assertTrue(updated);self.assertEqual(json.loads((out/'usage.json').read_text(encoding='utf-8'))['summary']['requests'],2)
-  finally:
-   process.terminate();process.communicate(timeout=5)
+  trace=self.file('profile/.claude/projects/p/s.jsonl',[msg]);out=self.root/'on demand'
+  args=app.parser().parse_args(['--home',str(self.root/'profile'),'--output',str(out)])
+  app.make_snapshot(args)
+  initial=(out/'dashboard.html').read_bytes()
+  msg['message']['id']='b';trace.write_text(trace.read_text()+json.dumps(msg)+'\n')
+  self.assertEqual((out/'dashboard.html').read_bytes(),initial)
+  refreshed=app.make_snapshot(args)
+  self.assertEqual(refreshed['summary']['requests'],2)
+  self.assertNotEqual((out/'dashboard.html').read_bytes(),initial)
 
 if __name__=='__main__':unittest.main()
