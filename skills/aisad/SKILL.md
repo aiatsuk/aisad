@@ -35,6 +35,8 @@ Usage JSON remains `schema_version: 2`. Read `period`, `previous_period`, `filte
 
 Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Read the installed version's comparison status and pricing coverage: current versions may compare priced subtotals while reporting excluded observations. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled.
 
+A usage answer is computed from usage observations alone, so `usage`, `analyze` and `statusline` do not refresh `sessions.sqlite` or `usage.json`. Their totals cover every discovered trace either way. Run `collect` when the evidence database itself must be current.
+
 ## Session evidence and custom analysis
 
 ```sh
@@ -46,7 +48,7 @@ python3 <skill-directory>/scripts/aisad.py session --session Codex:SESSION_ID --
 python3 <skill-directory>/scripts/aisad.py usage --json --include-requests --include-events
 ```
 
-These commands collect on request; none keeps observing the tools afterward. Find a real provider-prefixed session ID from `sessions`, rather than guessing it. Session reports and the SQLite event database use evidence schema version 1, separate from usage schema version 2. `--from`, `--to`, `--days`, `--all-time`, provider/model/project/role/pool filters work on these reports. Follow `next_offset` for additional events; default pages contain 200 and the maximum is 10,000.
+These commands collect on request; none keeps observing the tools afterward. They publish the evidence database, rewriting only the sessions whose traces changed since the last collection, so a repeat run costs a fraction of the first. Find a real provider-prefixed session ID from `sessions`, rather than guessing it. Session reports and the SQLite event database use evidence schema version 1, separate from usage schema version 2. `--from`, `--to`, `--days`, `--all-time`, provider/model/project/role/pool filters work on these reports. Follow `next_offset` for additional events; default pages contain 200 and the maximum is 10,000.
 
 - `sessions[].own` covers that session's observations within the selected dates/model/pool. `tree` includes confirmed descendants once; tree totals overlap and must not be summed.
 - `lifecycle` and explicitly named `lifetime` fields describe all observed history. Last seen and a completed turn do not prove a session's current state. State stays unknown; elapsed time includes idle time, and active time is unavailable.

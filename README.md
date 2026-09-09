@@ -53,7 +53,7 @@ python3 agent_usage.py usage --json --all-time --include-requests
 
 `--provider` accepts Codex/OpenAI or Claude/Anthropic, case-insensitively. `--model`, `--project` and `--role main|subagent|review` filter both periods. `--from` and `--to` are inclusive report-timezone dates. `--days` defaults to 7; `--to` can anchor a historical window. `--all-time` includes all observed dates with no comparison. Existing source, pricing, timezone and output options work with `usage` too.
 
-`--json` writes one JSON object to stdout. Every usage run also saves `output/usage-report.json`; full normalized evidence remains in `output/usage.json`.
+`--json` writes one JSON object to stdout. Every usage run also saves `output/usage-report.json`. A usage answer needs only usage observations, so `usage`, `analyze` and `statusline` skip the event timeline entirely: they neither publish `output/sessions.sqlite` nor rewrite `output/usage.json`, which keeps a report to seconds on a multi-gigabyte history. `collect`, `sessions`, `session`, `dashboard` and `--include-events` publish both.
 
 | JSON field | Contents |
 | --- | --- |
@@ -100,6 +100,8 @@ The dashboard contains Charts, Sessions, Context and Cache usage. Select a daily
 ### Local event database
 
 `sessions.sqlite` contains `source_files`, `sessions`, `turns`, `events`, `event_sources`, `usage_observations`, `observation_events`, `tool_calls`, `context_snapshots` and `metadata`. Event schema version 1 is stored in `PRAGMA user_version`. Existing usage JSON remains schema version 2 with additive evidence fields.
+
+A collection updates the database in place: `source_files` records each trace's size and mtime, and only the sessions whose traces moved are rewritten, inside one transaction. `metadata.build_signature` covers the collector version, parser and price catalog, so changing any of them rebuilds every row rather than leaving stale costs behind.
 
 For example, open the database read-only from Python:
 
@@ -262,10 +264,10 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | File | Purpose |
 | --- | --- |
 | `dashboard.html` | Self-contained offline dashboard |
-| `usage.json` | Normalized usage evidence and local source metadata |
+| `usage.json` | Normalized usage evidence and local source metadata, written by evidence commands |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
 | `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
-| `parse-cache.sqlite` | Local cache of parsed files |
+| `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |
 | `prices-used.json` | Price catalog used for the snapshot |
 | `status.json` | Saved snapshot timestamp; no polling |
 | `sessions.sqlite` | Transactional event metadata, usage and provenance database |

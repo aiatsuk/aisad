@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-09-09
+
+- Answer `usage`, `analyze` and `statusline` from usage observations alone. They no longer merge the event timeline, derive session evidence, republish `sessions.sqlite` or rewrite `usage.json`; on a 7GB local history one report drops from about 3.5 minutes to under 10 seconds. Reported totals, breakdowns, comparisons and diagnostics are unchanged.
+- Update `sessions.sqlite` incrementally: only sessions whose traces changed size or mtime are rewritten, while a different collector version, parser or price catalog still rebuilds every row. Add the missing index on each foreign key, without which deleting one session scanned whole child tables.
+- Split cached parse results so a usage run loads observations without decoding event payloads. Rows written by 1.1.0 are split on first read rather than reparsed; the parser is unchanged, so no trace is read again.
+- `collect`, `sessions`, `session`, `dashboard` and `--include-events` still publish the evidence database and `usage.json`. Refresh evidence with `collect` when usage runs are the only thing that has run.
+
 ## 1.1.0 — 2026-09-07
 
 - Read chronological Codex `thread_settings_applied` tier changes so recorded Fast usage is priced correctly; invalidate cached parser results. Add processing-tier evidence and accounting regression checks.

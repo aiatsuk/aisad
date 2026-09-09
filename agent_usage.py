@@ -23,7 +23,7 @@ import tempfile
 import webbrowser
 from urllib.parse import unquote
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -620,8 +620,22 @@ def session_evidence(events,requests,sessions):
             usage_event_ids=sorted({event for r in rows for event in r.get('event_ids',[])})))
     return details,calls,turns
 
+def store_signature(catalog):
+    """Everything outside the traces that changes a stored row's contents."""
+    material=json.dumps([VERSION,PARSER_VERSION,EVIDENCE_SCHEMA,catalog],sort_keys=True,default=str)
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()
+
 def write_event_store(path,sources,events,requests,sessions,calls,turns,catalog,generated):
-    """Replace derived tables in one transaction. Readers see a coherent snapshot."""
+    """Update derived tables in one transaction. Readers see a coherent snapshot.
+
+    Replacing every row costs minutes once local history reaches a few gigabytes,
+    so only the sessions whose traces moved are rewritten. A trace counts as
+    unchanged when its recorded size and mtime still match -- the identity the
+    parse cache already trusts -- and an affected session is rewritten whole, so
+    one spanning several files stays internally consistent. A different collector
+    version, parser or price catalog rewrites everything, since those change rows
+    the traces alone would not.
+    """
     connection=sqlite3.connect(path,timeout=30)
     try:
         connection.execute('PRAGMA foreign_keys=ON')
@@ -639,22 +653,77 @@ def write_event_store(path,sources,events,requests,sessions,calls,turns,catalog,
         CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),tool TEXT,result_bytes INTEGER,record_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),turn_id TEXT,record_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS context_snapshots (observation_id TEXT PRIMARY KEY REFERENCES usage_observations(id),input_tokens INTEGER,cache_read_tokens INTEGER,context_limit INTEGER,composition TEXT NOT NULL);
+        -- Every foreign key needs an index on the referencing side: without one,
+        -- deleting a parent row makes SQLite scan the whole child table, which turns
+        -- rewriting a handful of sessions into minutes of scanning. They also serve
+        -- the documented per-session queries against this database.
+        CREATE INDEX IF NOT EXISTS event_sources_source ON event_sources(source_id);
+        CREATE INDEX IF NOT EXISTS observation_events_event ON observation_events(event_id);
+        CREATE INDEX IF NOT EXISTS usage_observations_session ON usage_observations(session_id);
+        CREATE INDEX IF NOT EXISTS tool_calls_session ON tool_calls(session_id);
+        CREATE INDEX IF NOT EXISTS turns_session ON turns(session_id);
         ''')
         encode=lambda value:json.dumps(value,ensure_ascii=False,separators=(',',':'),allow_nan=False)
+        signature=store_signature(catalog)
+        recorded=connection.execute("SELECT value FROM metadata WHERE key='build_signature'").fetchone()
+        stored={row[0]:(row[1],row[2]) for row in connection.execute('SELECT id,size,mtime_ns FROM source_files')}
+        known={row[0] for row in connection.execute('SELECT id FROM sessions')}
+        full=not stored or recorded is None or json.loads(recorded[0])!=signature
+        current={s['id']:(s['size'],s['mtime_ns']) for s in sources}
+        moved={sid for sid,fingerprint in current.items() if stored.get(sid)!=fingerprint}
+        gone=set(stored)-set(current)
+        present={s['id'] for s in sessions}
+        if full:rewrite=present|known;refresh=present
+        else:
+            # A moved trace can carry sessions this snapshot no longer sees, so the
+            # database is asked which sessions its own rows attribute to those files.
+            linked=set();affected=sorted(moved|gone)
+            for start in range(0,len(affected),400):
+                chunk=affected[start:start+400]
+                linked|={row[0] for row in connection.execute(
+                    'SELECT DISTINCT e.session_id FROM events e JOIN event_sources s ON s.event_id=e.id '
+                    'WHERE s.source_id IN ('+','.join('?'*len(chunk))+')',chunk)}
+            touched={e['session'] for e in events if any(ref['source_id'] in moved for ref in e['evidence'])}
+            touched|={sid for sid in present if sid not in known}
+            refresh=(touched|linked)&present
+            rewrite=refresh|(known-present)
+        # A row whose session is missing from the snapshot is still offered to the
+        # database, so a malformed batch fails the foreign key and rolls back
+        # instead of quietly disappearing.
+        keep=lambda sid:sid in refresh or sid not in present
         with connection:
-            for table in ('observation_events','context_snapshots','usage_observations','event_sources','tool_calls','turns','events','sessions','source_files','metadata'):
-                connection.execute('DELETE FROM '+table)
-            connection.executemany('INSERT INTO source_files VALUES (?,?,?,?)',[(s['id'],s['path'],s['size'],s['mtime_ns']) for s in sources])
-            connection.executemany('INSERT INTO sessions VALUES (?,?,?,?,?)',[(s['id'],s['parent_session'],s['provider'],s['project'],encode(s)) for s in sessions])
-            connection.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)',[(e['id'],e['session'],e.get('turn_id'),e['kind'],e['ts'],encode(e)) for e in events])
-            connection.executemany('INSERT INTO event_sources VALUES (?,?,?,?,?)',[(e['id'],r['source_id'],r['line'],r['byte_offset'],r['record_sha256']) for e in events for r in e['evidence']])
-            connection.executemany('INSERT INTO usage_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)',[(r['id'],r['session'],r.get('turn_id'),r['ts'],r['model'],r['input'],r['output'],r['cached'],r['write'],r['cost'],encode(r)) for r in requests])
-            event_map={e['id']:e for e in events}
-            connection.executemany('INSERT INTO observation_events VALUES (?,?)',[(r['id'],event) for r in requests for event in r.get('event_ids',[]) if event in event_map])
-            connection.executemany('INSERT INTO context_snapshots VALUES (?,?,?,?,?)',[(r['id'],r['input'],r['cached'],next((event_map[e].get('context_limit') for e in r.get('event_ids',[]) if e in event_map and event_map[e].get('context_limit')),None),'unavailable') for r in requests])
-            connection.executemany('INSERT INTO tool_calls VALUES (?,?,?,?,?)',[(c['id'],c['session'],c['tool'],c['result_bytes'],encode(c)) for c in calls])
-            connection.executemany('INSERT INTO turns VALUES (?,?,?,?)',[(t['id'],t['session'],t['turn_id'],encode(t)) for t in turns])
-            connection.executemany('INSERT INTO metadata VALUES (?,?)',[(k,encode(v)) for k,v in dict(schema_version=EVIDENCE_SCHEMA,version=VERSION,generated=generated,price_catalog=catalog,measurement_basis=MEASUREMENT_BASIS).items()])
+            if full:
+                for table in ('observation_events','context_snapshots','usage_observations','event_sources','tool_calls','turns','events','sessions','source_files'):
+                    connection.execute('DELETE FROM '+table)
+            elif rewrite:
+                connection.execute('CREATE TEMP TABLE IF NOT EXISTS rewritten (id TEXT PRIMARY KEY)')
+                connection.execute('DELETE FROM rewritten')
+                connection.executemany('INSERT INTO rewritten VALUES (?)',[(sid,) for sid in rewrite])
+                observations='SELECT id FROM usage_observations WHERE session_id IN (SELECT id FROM rewritten)'
+                connection.execute('DELETE FROM observation_events WHERE observation_id IN ('+observations+')')
+                connection.execute('DELETE FROM context_snapshots WHERE observation_id IN ('+observations+')')
+                connection.execute('DELETE FROM usage_observations WHERE session_id IN (SELECT id FROM rewritten)')
+                connection.execute('DELETE FROM event_sources WHERE event_id IN (SELECT id FROM events WHERE session_id IN (SELECT id FROM rewritten))')
+                for table in ('events','tool_calls','turns'):
+                    connection.execute('DELETE FROM '+table+' WHERE session_id IN (SELECT id FROM rewritten)')
+                connection.execute('DELETE FROM sessions WHERE id IN (SELECT id FROM rewritten)')
+            connection.execute('DELETE FROM metadata')
+            # Source identity is keyed by path, so a rewritten trace keeps its id and
+            # the rows of untouched sessions keep a valid reference.
+            connection.executemany('INSERT OR REPLACE INTO source_files VALUES (?,?,?,?)',[(s['id'],s['path'],s['size'],s['mtime_ns']) for s in sources])
+            connection.executemany('INSERT INTO sessions VALUES (?,?,?,?,?)',[(s['id'],s['parent_session'],s['provider'],s['project'],encode(s)) for s in sessions if keep(s['id'])])
+            fresh=[e for e in events if keep(e['session'])]
+            connection.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)',[(e['id'],e['session'],e.get('turn_id'),e['kind'],e['ts'],encode(e)) for e in fresh])
+            connection.executemany('INSERT INTO event_sources VALUES (?,?,?,?,?)',[(e['id'],r['source_id'],r['line'],r['byte_offset'],r['record_sha256']) for e in fresh for r in e['evidence']])
+            observed=[r for r in requests if keep(r['session'])]
+            connection.executemany('INSERT INTO usage_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)',[(r['id'],r['session'],r.get('turn_id'),r['ts'],r['model'],r['input'],r['output'],r['cached'],r['write'],r['cost'],encode(r)) for r in observed])
+            event_map={e['id']:e for e in fresh}
+            connection.executemany('INSERT INTO observation_events VALUES (?,?)',[(r['id'],event) for r in observed for event in r.get('event_ids',[]) if event in event_map])
+            connection.executemany('INSERT INTO context_snapshots VALUES (?,?,?,?,?)',[(r['id'],r['input'],r['cached'],next((event_map[e].get('context_limit') for e in r.get('event_ids',[]) if e in event_map and event_map[e].get('context_limit')),None),'unavailable') for r in observed])
+            connection.executemany('INSERT INTO tool_calls VALUES (?,?,?,?,?)',[(c['id'],c['session'],c['tool'],c['result_bytes'],encode(c)) for c in calls if keep(c['session'])])
+            connection.executemany('INSERT INTO turns VALUES (?,?,?,?)',[(t['id'],t['session'],t['turn_id'],encode(t)) for t in turns if keep(t['session'])])
+            connection.executemany('DELETE FROM source_files WHERE id=?',[(sid,) for sid in gone])
+            connection.executemany('INSERT INTO metadata VALUES (?,?)',[(k,encode(v)) for k,v in dict(schema_version=EVIDENCE_SCHEMA,version=VERSION,generated=generated,price_catalog=catalog,measurement_basis=MEASUREMENT_BASIS,build_signature=signature).items()])
             connection.execute('PRAGMA user_version='+str(EVIDENCE_SCHEMA))
     finally:connection.close()
 
@@ -730,24 +799,58 @@ def grok_totals(records):
                 included_in_api_estimate=False)
 
 class ParseCache:
+    """Per-file parse results, kept in two columns so a usage run never decodes events.
+
+    Events dominate the cached bytes -- they outweigh the usage observations parsed
+    from the same trace by an order of magnitude -- and only the evidence commands
+    read them. Holding them in a trailing column lets a usage run select the small
+    one alone, which SQLite satisfies without touching the overflow pages of the
+    large one. Rows written by an earlier version carry a single combined payload;
+    they are split on first read rather than discarded, so upgrading costs one
+    decode per file instead of reparsing every local trace.
+    """
     def __init__(self,path):
         self.c=sqlite3.connect(path)
-        self.c.execute('CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, fingerprint TEXT, payload TEXT)')
-    def parse(self,provider,path,titles,stats):
+        self.c.execute('CREATE TABLE IF NOT EXISTS parsed (path TEXT PRIMARY KEY, fingerprint TEXT, payload TEXT, events TEXT)')
+        self.legacy=bool(self.c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'").fetchone())
+    def store(self,key,fingerprint,result):
+        body={field:value for field,value in result.items() if field!='events'}
+        encode=lambda value:json.dumps(value,separators=(',',':'))
+        self.c.execute('INSERT OR REPLACE INTO parsed VALUES (?,?,?,?)',
+                       (key,fingerprint,encode(body),encode(result.get('events',[]))))
+    def parse(self,provider,path,titles,stats,want_events=True):
         st=path.stat();fp=f'{PARSER_VERSION}:{int(titles)}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}'
-        cached=self.c.execute('SELECT fingerprint,payload FROM files WHERE path=?',(str(path),)).fetchone()
+        key=str(path)
+        cached=self.c.execute('SELECT fingerprint,payload'+(',events' if want_events else '')+' FROM parsed WHERE path=?',(key,)).fetchone()
         if cached and cached[0]==fp:
-            try:result=json.loads(cached[1]);stats['cached_files']+=1;return result
+            try:
+                result=json.loads(cached[1])
+                if want_events:result['events']=json.loads(cached[2]) if cached[2] else []
+                stats['cached_files']+=1;return result
             except ValueError:pass
+        if self.legacy:
+            old=self.c.execute('SELECT fingerprint,payload FROM files WHERE path=?',(key,)).fetchone()
+            if old and old[0]==fp:
+                try:result=json.loads(old[1])
+                except ValueError:result=None
+                if result is not None:
+                    self.store(key,fp,result);self.c.execute('DELETE FROM files WHERE path=?',(key,))
+                    stats['migrated_files']+=1
+                    if not want_events:result.pop('events',None)
+                    return result
         result=(parse_codex if provider=='Codex' else parse_claude)(path,titles)
         stats['parsed_files']+=1
-        if not result['quality'].get('unreadable_files'):
-            self.c.execute('INSERT OR REPLACE INTO files VALUES (?,?,?)',(str(path),fp,json.dumps(result,separators=(',',':'))))
+        if not result['quality'].get('unreadable_files'):self.store(key,fp,result)
+        if not want_events:result.pop('events',None)
         return result
     def close(self,paths):
         # Removed traces must disappear from subsequent snapshots and derived cache.
-        for (path,) in self.c.execute('SELECT path FROM files').fetchall():
-            if path not in paths:self.c.execute('DELETE FROM files WHERE path=?',(path,))
+        for table in ('parsed','files') if self.legacy else ('parsed',):
+            for (path,) in self.c.execute('SELECT path FROM '+table).fetchall():
+                if path not in paths:self.c.execute('DELETE FROM '+table+' WHERE path=?',(path,))
+        # Freed pages are reused rather than reclaimed; the file does not shrink here.
+        if self.legacy and not self.c.execute('SELECT 1 FROM files LIMIT 1').fetchone():
+            self.c.execute('DROP TABLE files');self.legacy=False
         self.c.commit();self.c.close()
 
 def report_timezone(name):
@@ -756,20 +859,32 @@ def report_timezone(name):
     from zoneinfo import ZoneInfo
     return ZoneInfo(name)
 
+def evidence_wanted(args):
+    """Whether this invocation reads the metadata timeline, not just usage totals.
+
+    A usage or status-line answer is computed entirely from usage observations.
+    Merging events, deriving session evidence and republishing the event store
+    cost minutes once local history reaches a few gigabytes, so that work belongs
+    to the commands that actually read it. Those commands rebuild the store, so
+    it is never read as if a usage run had refreshed it.
+    """
+    return bool(getattr(args,'include_events',False)) or getattr(args,'command','') in ('collect','sessions','session','dashboard')
+
 def make_snapshot(args, dashboard=True, include_requests=False):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
     sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[]
+    evidence=evidence_wanted(args)
     cache=ParseCache(output/'parse-cache.sqlite')
     try:
         for provider,path in files:
             try:
-                st=path.stat();r=cache.parse(provider,path,args.include_titles,stats)
+                st=path.stat();r=cache.parse(provider,path,args.include_titles,stats,want_events=evidence)
             except (OSError,ValueError,TypeError,AttributeError,sqlite3.Error):q['failed_files']+=1;continue
             q.update(r['quality']);rows.extend(r['requests'])
             source_files.append(dict(id=evidence_id(str(path.resolve())),path=str(path),size=st.st_size,mtime_ns=st.st_mtime_ns))
-            events.extend(r.get('events',[]))
+            if evidence:events.extend(r.get('events',[]))
             for s in r['sessions']:
                 previous=sessions.get(s['id'],{})
                 # Registry title and role enrich legacy traces; model remains per-request.
@@ -789,13 +904,15 @@ def make_snapshot(args, dashboard=True, include_requests=False):
         moment=dt.datetime.fromtimestamp(r['ts'],dt.timezone.utc).astimezone(tz)
         r['date']=moment.date().isoformat()
     request_stats=request_statistics(rows,getattr(args,'managed_session',[]))
-    events=merge_events(events)
-    event_refs={e['id']:e['evidence'] for e in events}
-    for record in request_stats:
-        record['evidence']=[ref for event in record['event_ids'] for ref in event_refs.get(event,[])]
-    for event in events:
-        event['date']=dt.datetime.fromtimestamp(event['ts'],dt.timezone.utc).astimezone(tz).date().isoformat() if event['ts'] is not None else None
-    session_details,tool_calls,turns=session_evidence(events,rows,sessions)
+    session_details=[];tool_calls=[];turns=[]
+    if evidence:
+        events=merge_events(events)
+        event_refs={e['id']:e['evidence'] for e in events}
+        for record in request_stats:
+            record['evidence']=[ref for event in record['event_ids'] for ref in event_refs.get(event,[])]
+        for event in events:
+            event['date']=dt.datetime.fromtimestamp(event['ts'],dt.timezone.utc).astimezone(tz).date().isoformat() if event['ts'] is not None else None
+        session_details,tool_calls,turns=session_evidence(events,rows,sessions)
     # Dashboard rows: one date × model × session × project × role, preserving filter correctness.
     grouped={}
     for r in rows:
@@ -838,9 +955,10 @@ def make_snapshot(args, dashboard=True, include_requests=False):
                   evidence_schema_version=EVIDENCE_SCHEMA,measurement_basis=MEASUREMENT_BASIS,
                   session_details=session_details,
                   budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)))
-    write_event_store(output/'sessions.sqlite',source_files,events,rows,session_details,tool_calls,turns,catalog,snapshot['generated'])
-    # Private evidence stays local. Requests are normalized fields only.
-    atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
+    if evidence:
+        write_event_store(output/'sessions.sqlite',source_files,events,rows,session_details,tool_calls,turns,catalog,snapshot['generated'])
+        # Private evidence stays local. Requests are normalized fields only.
+        atom_json(output/'usage.json',dict(snapshot,requests=rows,registry=list(sessions.values())))
     atom_json(output/'prices-used.json',catalog)
     if dashboard:
         previews=collections.defaultdict(lambda:collections.deque(maxlen=200))
