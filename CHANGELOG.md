@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2 — 2026-09-10
+
+- Add `prices --refresh`: read current published rates from models.dev into a local catalog, revalidated with the stored ETag. Reports use it when present and name their basis in `price_as_of`, `price_basis` and `price_sources`.
+- Keep what the published source omits. Base rates, context tiers and fast-mode rates are imported; one-hour cache writes and flex/batch discounts keep their built-in values, a model the source drops keeps its built-in rate, and models it publishes that AISAD did not know about are added. On this device the import reproduced every built-in rate exactly and priced 30 observations that had no rate before.
+- Read only the `anthropic` and `openai` providers, so a reseller entry cannot shadow a first-party rate. Refuse an oversized response, a payload without first-party models, or rates the pricer would reject, keeping the last good catalog in each case.
+- Refresh from the launcher at most once every 24 hours, next to the existing update check; `--offline` or `AISAD_AUTO_PRICES=0` disables it and a failure never blocks a report. Commands that read sessions still make no network requests.
+
 ## 1.1.1 — 2026-09-09
 
 - Answer `usage`, `analyze` and `statusline` from usage observations alone. They no longer merge the event timeline, derive session evidence, republish `sessions.sqlite` or rewrite `usage.json`; on a 7GB local history one report drops from about 3.5 minutes to under 10 seconds. Reported totals, breakdowns, comparisons and diagnostics are unchanged.
