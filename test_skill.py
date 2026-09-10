@@ -230,6 +230,16 @@ class SkillTests(unittest.TestCase):
             with patch.object(skill, 'update', side_effect=AssertionError('Network check used')), patch.object(skill.subprocess, 'call', return_value=0):
                 self.assertEqual(skill.main(arguments + ['--offline']), 0)
 
+    def test_every_forwarding_command_reaches_the_collector_with_its_options(self):
+        self.install()
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'run'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
+                with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                    self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
+                    self.assertEqual(invoke.call_args[0][0][2], command)
+                    self.assertIn('--refresh', invoke.call_args[0][0])
+
     def test_price_refresh_is_daily_offline_aware_and_never_blocks_a_report(self):
         self.install()
         arguments = ['usage', '--data-dir', str(self.data), '--json']

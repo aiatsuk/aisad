@@ -369,7 +369,7 @@ def refresh_prices(runtime, data, offline):
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session'):
+    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
     root = Path(__file__).absolute().parents[1]
     if args.command == 'install':
