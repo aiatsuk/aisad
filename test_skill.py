@@ -1,6 +1,7 @@
 """Release/install/update behavior; no GitHub requests or personal traces."""
 import contextlib
 import copy
+import datetime
 import importlib.util
 import io
 import json
@@ -228,6 +229,38 @@ class SkillTests(unittest.TestCase):
                 self.assertEqual(invoke.call_args[0][0][2], 'usage')
             with patch.object(skill, 'update', side_effect=AssertionError('Network check used')), patch.object(skill.subprocess, 'call', return_value=0):
                 self.assertEqual(skill.main(arguments + ['--offline']), 0)
+
+    def test_every_forwarding_command_reaches_the_collector_with_its_options(self):
+        self.install()
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'run'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
+                with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                    self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
+                    self.assertEqual(invoke.call_args[0][0][2], command)
+                    self.assertIn('--refresh', invoke.call_args[0][0])
+
+    def test_price_refresh_is_daily_offline_aware_and_never_blocks_a_report(self):
+        self.install()
+        arguments = ['usage', '--data-dir', str(self.data), '--json']
+        meta = self.data.resolve() / 'output/prices-models-dev.meta.json'
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'call', return_value=0):
+            with patch.object(skill.subprocess, 'run') as refresh:
+                self.assertEqual(skill.main(arguments), 0)
+                self.assertEqual(refresh.call_args[0][0][2:4], ['prices', '--refresh'])
+            # A refresh checked today is not repeated, and --offline skips it.
+            meta.parent.mkdir(parents=True, exist_ok=True)
+            meta.write_text(json.dumps({'checked_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+            with patch.object(skill.subprocess, 'run', side_effect=AssertionError('Refreshed twice in a day')):
+                self.assertEqual(skill.main(arguments), 0)
+                self.assertEqual(skill.main(arguments + ['--offline']), 0)
+            # A stale check refreshes again, and a failure leaves the report running.
+            meta.write_text(json.dumps({'checked_at': '2020-01-01T00:00:00+00:00'}))
+            with patch.object(skill.subprocess, 'run', side_effect=OSError('No network')):
+                with contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(skill.main(arguments), 0)
+                self.assertIn('Price refresh skipped', errors.getvalue())
 
     def test_copied_bundle_cli_and_json_without_dependencies(self):
         installer = ROOT / 'skills/aisad/scripts/aisad.py'

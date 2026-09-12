@@ -20,10 +20,12 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 import webbrowser
 from urllib.parse import unquote
 
-VERSION = '1.1.1'
+VERSION = '1.1.2'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -71,6 +73,109 @@ def default_prices():
             rule['batch_multiplier']=.5
         models[model] = rule
     return dict(as_of=PRICE_DATE, basis='current_rates', currency='USD', sources=PRICE_SOURCES, models=models)
+
+MODELS_DEV_URL = 'https://models.dev/api.json'
+# Only the two providers this collector prices; the published catalog carries
+# hundreds, and a reseller entry must never shadow a first-party rate.
+MODELS_DEV_PROVIDERS = ('anthropic','openai')
+MODELS_DEV_LIMIT = 32*1024*1024
+PRICE_CACHE = 'prices-models-dev.json'
+PRICE_CACHE_META = 'prices-models-dev.meta.json'
+
+def models_dev_fetch(etag=None,url=MODELS_DEV_URL,timeout=30):
+    """Read the published catalog, revalidating with the stored ETag.
+
+    Returns (body, etag) with body None when the server answers 304 and the
+    local copy is still current. The only outbound request this collector ever
+    makes, and only when a price refresh is asked for explicitly.
+    """
+    request=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'aisad/'+VERSION})
+    if etag:request.add_header('If-None-Match',etag)
+    try:
+        with urllib.request.urlopen(request,timeout=timeout) as response:
+            body=response.read(MODELS_DEV_LIMIT+1)
+            if len(body)>MODELS_DEV_LIMIT:raise ValueError('models.dev response exceeded '+str(MODELS_DEV_LIMIT)+' bytes')
+            return body,response.headers.get('ETag')
+    except urllib.error.HTTPError as error:
+        if error.code==304:return None,etag
+        raise
+
+def models_dev_rules(payload,base):
+    """Translate published rates into catalog rules, keeping what the source omits.
+
+    models.dev publishes base rates, context tiers and a fast mode. It does not
+    publish Anthropic's one-hour cache writes or the flex/batch discounts, so a
+    model that already carries them keeps them. A one-hour rate is only reused
+    when the input rate it was derived from is unchanged; otherwise it falls
+    back to the same doubling the built-in catalog uses.
+    """
+    number=lambda v:isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) and v>=0
+    models={};skipped=collections.Counter()
+    for provider in MODELS_DEV_PROVIDERS:
+        published=(payload.get(provider) or {}).get('models')
+        if not isinstance(published,dict):raise ValueError('models.dev carries no models for '+provider)
+        for name,body in published.items():
+            cost=(body or {}).get('cost') or {}
+            if not all(number(cost.get(field)) for field in ('input','output','cache_read')):skipped[provider]+=1;continue
+            model=canonical_model(name);previous=base.get(model) or {}
+            rule=dict(previous)
+            rule.update(input=cost['input'],output=cost['output'],cached=cost['cache_read'])
+            rule['write_1h']=previous['write_1h'] if 'write_1h' in previous and previous.get('input')==cost['input'] else cost['input']*2
+            if number(cost.get('cache_write')):
+                rule['write_5m']=cost['cache_write']
+                # A published rate answers what the built-in catalog left open.
+                if cost['cache_write']>0:rule.pop('no_cache_write_rate',None)
+            elif 'write_5m' not in rule:
+                # No published cache-write rate and nothing built in: report those
+                # observations as unpriced instead of inventing a rate for them.
+                rule.update(write_5m=0,no_cache_write_rate=True)
+            fast=((((body.get('experimental') or {}).get('modes') or {}).get('fast') or {}).get('cost') or {}).get('input')
+            if number(fast) and fast>0 and cost['input']>0:rule['fast_multiplier']=fast/cost['input']
+            for tier in cost.get('tiers') or []:
+                window=(tier or {}).get('tier') or {}
+                if window.get('type')!='context' or not number(window.get('size')) or not window['size']:continue
+                if not (number(tier.get('input')) and number(tier.get('output')) and cost['input']>0 and cost['output']>0):continue
+                rule.update(long_threshold=window['size'],long_input_multiplier=tier['input']/cost['input'],
+                            long_output_multiplier=tier['output']/cost['output'])
+            models[model]=rule
+    if not models:raise ValueError('models.dev carried no priced Anthropic or OpenAI model')
+    return models,dict(skipped)
+
+def models_dev_catalog(payload,retrieved=None):
+    if not isinstance(payload,dict):raise ValueError('models.dev payload must be a JSON object')
+    retrieved=retrieved or dt.datetime.now(dt.timezone.utc)
+    base=default_prices()['models']
+    models,skipped=models_dev_rules(payload,base)
+    # A model the source stopped publishing keeps its built-in rate rather than
+    # turning historical observations unpriced.
+    for model,rule in base.items():models.setdefault(model,rule)
+    return validate_prices(dict(as_of=retrieved.date().isoformat(),basis='models_dev_rates',currency='USD',
+                                sources=[MODELS_DEV_URL]+list(PRICE_SOURCES),retrieved_at=retrieved.isoformat(),
+                                published_models=len(models)-len(base)+len([m for m in base if m in models]),
+                                unpriced_source_models=skipped,models=models))
+
+def refresh_prices(output,url=MODELS_DEV_URL,timeout=30):
+    """Publish current rates locally, keeping the last good catalog on any failure."""
+    output=Path(output);output.mkdir(parents=True,exist_ok=True)
+    cache=output/PRICE_CACHE;meta_path=output/PRICE_CACHE_META
+    meta=read_json_file(meta_path) if cache.is_file() else {}
+    body,etag=models_dev_fetch(meta.get('etag'),url,timeout)
+    now=dt.datetime.now(dt.timezone.utc)
+    if body is None:
+        catalog=load_prices(cache)  # Confirm the copy being kept still prices.
+        atom_json(meta_path,dict(meta,checked_at=now.isoformat(),status='revalidated'))
+        return dict(status='revalidated',as_of=catalog.get('as_of'),models=len(catalog['models']),path=str(cache))
+    catalog=models_dev_catalog(json.loads(body.decode('utf-8')),now)  # Validated before anything is replaced.
+    atom_json(cache,catalog)
+    atom_json(meta_path,dict(source='models.dev',url=url,etag=etag,status='updated',bytes=len(body),
+                             sha256=hashlib.sha256(body).hexdigest(),fetched_at=now.isoformat(),
+                             checked_at=now.isoformat(),collector=VERSION))
+    return dict(status='updated',as_of=catalog['as_of'],models=len(catalog['models']),
+                unpriced_source_models=catalog['unpriced_source_models'],path=str(cache))
+
+def read_json_file(path):
+    try:return json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError,ValueError):return {}
 
 def atom_json(path, obj):
     atom_write(path, json.dumps(obj,ensure_ascii=False,separators=(',',':')).encode())
@@ -429,8 +534,20 @@ def merge_requests(rows,quality):
         merged[r['id']]=result
     return list(merged.values())
 
-def load_prices(path=None):
-    catalog=json.loads(Path(path).read_text(encoding='utf-8')) if path else default_prices()
+def load_prices(path=None,output=None):
+    """Explicit catalog, else refreshed published rates, else the built-in table.
+
+    A refreshed catalog that no longer validates is ignored rather than fatal:
+    stale local rates still answer the question, an unreadable file does not.
+    """
+    if path:return validate_prices(json.loads(Path(path).read_text(encoding='utf-8')))
+    cache=Path(output)/PRICE_CACHE if output else None
+    if cache and cache.is_file():
+        try:return validate_prices(json.loads(cache.read_text(encoding='utf-8')))
+        except (OSError,ValueError,TypeError,KeyError,ArithmeticError):pass
+    return validate_prices(default_prices())
+
+def validate_prices(catalog):
     if catalog.get('currency')!='USD' or not isinstance(catalog.get('models'),dict):raise ValueError('Prices must contain currency=USD and models object')
     for model,rules in catalog['models'].items():
         rules=rules if isinstance(rules,list) else [rules]
@@ -872,7 +989,7 @@ def evidence_wanted(args):
 
 def make_snapshot(args, dashboard=True, include_requests=False):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
-    catalog=load_prices(args.prices)
+    catalog=load_prices(args.prices,output)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
     sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[]
     evidence=evidence_wanted(args)
@@ -1623,7 +1740,7 @@ def render_html(snapshot):
 
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
-    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session'],default='dashboard',help='One-shot dashboard, usage, collection, or session evidence; analyze aliases usage')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session','prices'],default='dashboard',help='One-shot dashboard, usage, collection, session evidence, or the local price catalog; analyze aliases usage')
     p.add_argument('--json',action='store_true',help='Emit one JSON object to stdout')
     p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
     p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
@@ -1652,6 +1769,8 @@ def parser():
     p.add_argument('--cowork',action='store_true',help='Also read local Claude Cowork audit traces on macOS')
     p.add_argument('--timezone',help='IANA timezone, e.g. Europe/Amsterdam; defaults to the system timezone')
     p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
+    p.add_argument('--refresh',action='store_true',help='Prices: read current published rates from models.dev into the local catalog')
+    p.add_argument('--prices-url',default=MODELS_DEV_URL,help=argparse.SUPPRESS)
     p.add_argument('--include-titles',action='store_true',help='Include shortened session titles; IDs only by default')
     p.add_argument('--write-prices',metavar='FILE',help='Write the built-in price catalog and exit')
     p.add_argument('--watch',type=float,default=None,metavar='SECONDS',help=argparse.SUPPRESS)
@@ -1670,6 +1789,19 @@ def main(argv=None):
     if args.open and args.command!='dashboard':raise SystemExit('--open is available only for dashboard')
     if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
     output=Path(args.output).expanduser().resolve()
+    if args.command=='prices':
+        if args.refresh:result=refresh_prices(output,args.prices_url)
+        else:
+            catalog=load_prices(args.prices,output)
+            meta=read_json_file(output/PRICE_CACHE_META)
+            result=dict(status='local',basis=catalog.get('basis'),as_of=catalog.get('as_of'),
+                        models=len(catalog['models']),sources=catalog.get('sources',[]),
+                        checked_at=meta.get('checked_at'),fetched_at=meta.get('fetched_at'),
+                        path=str(output/PRICE_CACHE) if (output/PRICE_CACHE).is_file() else 'built-in catalog')
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else
+              f"{result['status']}: {result['models']} models, rates as of {result['as_of']} ({result.get('basis','models_dev_rates')}). {result['path']}")
+        return
+    if args.refresh:raise SystemExit('--refresh belongs to the prices command; other commands never reach the network')
     snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
     if args.command=='dashboard':
         t=snap['summary']

@@ -7,6 +7,8 @@ description: Analyze local Claude Code and Codex usage on demand, with text or J
 
 Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files and exits. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
 
+Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
+
 ## Quick usage
 
 Resolve this skill's directory and run its helper:
@@ -59,6 +61,17 @@ For broad queries, use local Python and open `output/sessions.sqlite` read-only 
 
 Original prompts, answers, reasoning, tool arguments/results and compaction summaries are not copied into reports or the database. Source references can locate original records while the local files still exist; fingerprints detect changes. Do not reconstruct missing payloads or infer exact tool cost from byte counts.
 
+## Prices
+
+```sh
+python3 <skill-directory>/scripts/aisad.py prices            # what is stored locally
+python3 <skill-directory>/scripts/aisad.py prices --refresh  # read published rates now
+```
+
+Rates come from models.dev, refreshed at most once every 24 hours by the launcher alongside its update check; `--offline` or `AISAD_AUTO_PRICES=0` disables that. Reports name their basis in `price_as_of`, `price_basis` and `price_sources` — read those rather than assuming a catalog. A failed refresh keeps the rates already stored, so a report never waits on the network or changes because a fetch failed.
+
+The published source supplies base rates, context tiers and fast-mode rates. It does not publish one-hour cache writes or flex/batch discounts, which keep their built-in values, and a model it omits keeps its built-in rate. `--prices FILE` still overrides everything. Refreshed rates do not restate history: the catalog applies current prices to all recorded dates.
+
 ## Offline dashboard
 
 ```sh
@@ -77,7 +90,7 @@ python3 <skill-directory>/scripts/aisad.py check-update
 python3 <skill-directory>/scripts/aisad.py update
 ```
 
-The helper checks for newer stable releases at most once per 24 hours when a command is invoked. It does not install a scheduler. Checks download public GitHub release metadata and code only, without uploading sessions or metrics. Add `--offline` to reporting commands to skip all update requests. `AISAD_AUTO_UPDATE=0` disables automatic update checks; explicit update commands still work.
+The helper checks for newer stable releases at most once per 24 hours when a command is invoked, and refreshes published rates on the same schedule. It does not install a scheduler. Those requests download public GitHub release metadata, code and the models.dev catalog only, without uploading sessions or metrics. Add `--offline` to reporting commands to skip every network request. `AISAD_AUTO_UPDATE=0` disables update checks and `AISAD_AUTO_PRICES=0` disables price refreshes; explicit commands still work.
 
 Updates replace the skill, launcher and collector together, verify release checksums and the manifest, and refuse to overwrite local edits. If an update occurred, reread the installed SKILL.md before interpreting its output. A failed automatic check keeps the current installation usable. Existing HTML snapshots do not update themselves.
 

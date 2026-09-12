@@ -2,7 +2,7 @@
 
 An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Every command runs once and exits. The optional skill invokes the same standalone commands.
 
-**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. The collector opens no network connections or listening sockets. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
+**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
 
@@ -218,7 +218,20 @@ Comparisons use recorded observations, not guaranteed complete coverage. The cur
 
 **Local token counts cannot reveal subscription charges, remaining account limits or a provider invoice.** Even Claude SDK `total_cost_usd` is an estimate. AISAD does not add it to request-level costs because it may already include subagents and cumulative totals across turns.
 
-Built-in rates calculate an **API-equivalent estimate** from each model's input, output, cache usage and available processing mode/geography. The catalog was checked on **September 5, 2026**. It is a current-rate scenario applied to the available history, not a reconstructed billing history.
+Rates calculate an **API-equivalent estimate** from each model's input, output, cache usage and available processing mode/geography. It is a current-rate scenario applied to the available history, not a reconstructed billing history. Reports use the refreshed catalog when one exists, the built-in table otherwise, and `price_as_of`, `price_basis` and `price_sources` always name which.
+
+### Refreshed rates
+
+```sh
+python3 agent_usage.py prices --refresh    # read published rates
+python3 agent_usage.py prices --json       # what is stored locally
+```
+
+`prices --refresh` is the only outbound request the collector ever makes, and it happens only when asked. It reads [models.dev](https://models.dev/api.json), revalidates with the stored ETag, and keeps the last good catalog if anything fails: an oversized response, a payload that carries no first-party model, or rates the pricer would reject. The result lands in `output/prices-models-dev.json` beside a metadata file with the ETag, fetch time and payload SHA-256.
+
+Only the `anthropic` and `openai` providers are read, so a reseller entry never shadows a first-party rate. Published base rates, context tiers and fast-mode rates become `input`/`cached`/`write_5m`/`output`, `long_threshold` with its multipliers, and `fast_multiplier`. What that source does not publish — Anthropic's one-hour cache writes, the flex and batch discounts — stays at its built-in value, and a model missing from the source keeps its built-in rate rather than turning historical observations unpriced. Models it publishes that AISAD did not know about are added.
+
+The launcher (`skills/aisad/scripts/aisad.py`) refreshes at most once every 24 hours, alongside its existing update check. `--offline` or `AISAD_AUTO_PRICES=0` disables that; the refresh never blocks or fails a report.
 
 Missing tiers default to Standard and missing geography defaults to global. An unknown model or unsupported mode has a missing price, not a zero price; the request is excluded from the displayed cost subtotal and comparison, with its count disclosed separately. If a Claude cache-write TTL is unknown, cost is shown as a 5-minute to 1-hour range.
 
@@ -235,7 +248,7 @@ python3 agent_usage.py --prices prices.json --open
 
 `models` maps model IDs to `input`, `cached`, `write_5m`, `write_1h` and `output` rates in USD per million tokens. To describe historical prices, replace a model's rate object with a list of objects using `valid_from` (inclusive) and `valid_to` (exclusive). Zero or multiple matching rules leave the price unknown.
 
-Supported adjustments include `long_threshold`, `long_input_multiplier`, `long_output_multiplier`, `long_scope` (`session`, or per request by default), `fast_multiplier`, `flex_multiplier` and `batch_multiplier`. `as_of` records when the catalog was checked. The collector never fetches prices. A new AISAD release may include an updated built-in catalog; a local `--prices` file continues to override it.
+Supported adjustments include `long_threshold`, `long_input_multiplier`, `long_output_multiplier`, `long_scope` (`session`, or per request by default), `fast_multiplier`, `flex_multiplier` and `batch_multiplier`. `as_of` records when the catalog was checked. A local `--prices` file overrides both the refreshed catalog and the built-in table.
 
 Explicitly recorded server-side web searches are included at $0.01 per search. Other service fees, discounts, taxes and missing telemetry are not reconstructed. Output counts come from traces, which can contain intermediate SDK values; estimates reflect only the recorded observations.
 
@@ -269,6 +282,8 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |
 | `prices-used.json` | Price catalog used for the snapshot |
+| `prices-models-dev.json` | Refreshed published rates, with the built-in table filling what they omit |
+| `prices-models-dev.meta.json` | ETag, fetch time and payload checksum for that refresh |
 | `status.json` | Saved snapshot timestamp; no polling |
 | `sessions.sqlite` | Transactional event metadata, usage and provenance database |
 | `session-report.json` | Last paginated session query |
