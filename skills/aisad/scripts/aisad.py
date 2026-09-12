@@ -3,6 +3,7 @@
 import argparse
 import ast
 from contextlib import contextmanager
+import datetime
 import hashlib
 import io
 import json
@@ -331,19 +332,44 @@ def parser():
     install.add_argument('--allow-downgrade', action='store_true', help='Allow an intentional reinstall to a lower version; preserves local edits and data')
     install.add_argument('--archive', help='Local release skill ZIP for offline installation')
     install.add_argument('--checksum-file', help='Local SHA256SUMS (required with --archive)')
-    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session']:
+    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices']:
         command = commands.add_parser(name, allow_abbrev=False,
-                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session') else None)
+                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices') else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
-        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session'):
+        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
             command.add_argument('--offline', action='store_true', help='Skip all update network requests')
     return cli
+
+
+def refresh_prices(runtime, data, offline):
+    """Read published rates at most once a day, and never in place of a report.
+
+    The collector itself stays offline; this launcher already owns the one
+    throttled network moment per day, so the price refresh rides along with it.
+    A failed refresh keeps the rates already stored locally.
+    """
+    if offline or os.environ.get('AISAD_AUTO_PRICES', '1') == '0':
+        return
+    meta = data / 'output/prices-models-dev.meta.json'
+    checked = read_json(meta).get('checked_at')
+    if checked:
+        try:
+            age = time.time() - datetime.datetime.fromisoformat(checked).timestamp()
+            if 0 <= age < CHECK_INTERVAL:
+                return
+        except ValueError:
+            pass
+    try:
+        subprocess.run([sys.executable, str(runtime), 'prices', '--refresh', '--json', '--output', str(data / 'output')],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        print('Price refresh skipped; keeping stored rates: ' + str(error), file=sys.stderr)
 
 
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session'):
+    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
     root = Path(__file__).absolute().parents[1]
     if args.command == 'install':
@@ -397,7 +423,9 @@ def main(argv=None):
     runtime = root / 'runtime/agent_usage.py'
     if not runtime.is_file():
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
-    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session') else []
+    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices') else []
+    if args.command != 'prices':
+        refresh_prices(runtime, data, args.offline)
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
 
 

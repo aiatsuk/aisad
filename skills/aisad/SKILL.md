@@ -7,6 +7,8 @@ description: Analyze local Claude Code and Codex usage on demand, with text or J
 
 Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files and exits. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
 
+Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
+
 ## Quick usage
 
 Resolve this skill's directory and run its helper:
@@ -35,6 +37,8 @@ Usage JSON remains `schema_version: 2`. Read `period`, `previous_period`, `filte
 
 Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Read the installed version's comparison status and pricing coverage: current versions may compare priced subtotals while reporting excluded observations. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled.
 
+A usage answer is computed from usage observations alone, so `usage`, `analyze` and `statusline` do not refresh `sessions.sqlite` or `usage.json`. Their totals cover every discovered trace either way. Run `collect` when the evidence database itself must be current.
+
 ## Session evidence and custom analysis
 
 ```sh
@@ -46,7 +50,7 @@ python3 <skill-directory>/scripts/aisad.py session --session Codex:SESSION_ID --
 python3 <skill-directory>/scripts/aisad.py usage --json --include-requests --include-events
 ```
 
-These commands collect on request; none keeps observing the tools afterward. Find a real provider-prefixed session ID from `sessions`, rather than guessing it. Session reports and the SQLite event database use evidence schema version 1, separate from usage schema version 2. `--from`, `--to`, `--days`, `--all-time`, provider/model/project/role/pool filters work on these reports. Follow `next_offset` for additional events; default pages contain 200 and the maximum is 10,000.
+These commands collect on request; none keeps observing the tools afterward. They publish the evidence database, rewriting only the sessions whose traces changed since the last collection, so a repeat run costs a fraction of the first. Find a real provider-prefixed session ID from `sessions`, rather than guessing it. Session reports and the SQLite event database use evidence schema version 1, separate from usage schema version 2. `--from`, `--to`, `--days`, `--all-time`, provider/model/project/role/pool filters work on these reports. Follow `next_offset` for additional events; default pages contain 200 and the maximum is 10,000.
 
 - `sessions[].own` covers that session's observations within the selected dates/model/pool. `tree` includes confirmed descendants once; tree totals overlap and must not be summed.
 - `lifecycle` and explicitly named `lifetime` fields describe all observed history. Last seen and a completed turn do not prove a session's current state. State stays unknown; elapsed time includes idle time, and active time is unavailable.
@@ -56,6 +60,17 @@ These commands collect on request; none keeps observing the tools afterward. Fin
 For broad queries, use local Python and open `output/sessions.sqlite` read-only (`mode=ro`). Tables include `sessions`, `turns`, `events`, `event_sources`, `source_files`, `usage_observations`, `observation_events`, `tool_calls`, `context_snapshots` and `metadata`. The current price catalog and measurement definitions are in metadata. Use SQL to select only the needed rows, then compute the answer locally; avoid dumping the full history into the conversation.
 
 Original prompts, answers, reasoning, tool arguments/results and compaction summaries are not copied into reports or the database. Source references can locate original records while the local files still exist; fingerprints detect changes. Do not reconstruct missing payloads or infer exact tool cost from byte counts.
+
+## Prices
+
+```sh
+python3 <skill-directory>/scripts/aisad.py prices            # what is stored locally
+python3 <skill-directory>/scripts/aisad.py prices --refresh  # read published rates now
+```
+
+Rates come from models.dev, refreshed at most once every 24 hours by the launcher alongside its update check; `--offline` or `AISAD_AUTO_PRICES=0` disables that. Reports name their basis in `price_as_of`, `price_basis` and `price_sources` — read those rather than assuming a catalog. A failed refresh keeps the rates already stored, so a report never waits on the network or changes because a fetch failed.
+
+The published source supplies base rates, context tiers and fast-mode rates. It does not publish one-hour cache writes or flex/batch discounts, which keep their built-in values, and a model it omits keeps its built-in rate. `--prices FILE` still overrides everything. Refreshed rates do not restate history: the catalog applies current prices to all recorded dates.
 
 ## Offline dashboard
 
@@ -75,7 +90,7 @@ python3 <skill-directory>/scripts/aisad.py check-update
 python3 <skill-directory>/scripts/aisad.py update
 ```
 
-The helper checks for newer stable releases at most once per 24 hours when a command is invoked. It does not install a scheduler. Checks download public GitHub release metadata and code only, without uploading sessions or metrics. Add `--offline` to reporting commands to skip all update requests. `AISAD_AUTO_UPDATE=0` disables automatic update checks; explicit update commands still work.
+The helper checks for newer stable releases at most once per 24 hours when a command is invoked, and refreshes published rates on the same schedule. It does not install a scheduler. Those requests download public GitHub release metadata, code and the models.dev catalog only, without uploading sessions or metrics. Add `--offline` to reporting commands to skip every network request. `AISAD_AUTO_UPDATE=0` disables update checks and `AISAD_AUTO_PRICES=0` disables price refreshes; explicit commands still work.
 
 Updates replace the skill, launcher and collector together, verify release checksums and the manifest, and refuse to overwrite local edits. If an update occurred, reread the installed SKILL.md before interpreting its output. A failed automatic check keeps the current installation usable. Existing HTML snapshots do not update themselves.
 
