@@ -35,7 +35,7 @@ python3 <skill-directory>/scripts/aisad.py usage --json --include-requests
 
 Usage JSON remains `schema_version: 2`. Read `period`, `previous_period`, `filters`, `current.totals`, `changes`, and the relevant `by_model`, `by_provider`, `by_project`, `by_session`, `by_role` or `by_date` breakdown. `current.rows` provides joint groups; distinct session counts must not be summed across models or days. `--include-requests` adds normalized usage observations and `request_stats`, including event IDs and source references. `quality` and `scan` describe collection coverage over discovered history.
 
-Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Read the installed version's comparison status and pricing coverage: current versions may compare priced subtotals while reporting excluded observations. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled.
+Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Cost totals and cost comparisons cover priced requests only: `cost_comparison_basis` names that basis, `changes.estimated_cost_usd` reports `excluded_current_requests` and `excluded_previous_requests`, and `--include-requests` adds `pricing_coverage`. Report those exclusions with any cost figure. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled.
 
 A usage answer is computed from usage observations alone, so `usage`, `analyze` and `statusline` do not refresh `sessions.sqlite` or `usage.json`. Their totals cover every discovered trace either way. Run `collect` when the evidence database itself must be current.
 
@@ -80,7 +80,7 @@ python3 <skill-directory>/scripts/aisad.py run -- --open
 
 This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context and Cache usage; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
 
-`statusline` remains a manually invoked one-shot snapshot for compatibility. `--watch` and `--stdin` are no longer supported. Do not create replacement monitors or configure external status hooks.
+`statusline` prints one snapshot and exits; it has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
 
 ## Updates and local data
 

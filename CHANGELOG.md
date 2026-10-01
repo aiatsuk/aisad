@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 — 2026-10-01
+
+- Tighten the skill instructions on cost figures: totals and comparisons cover priced requests only, so name `cost_comparison_basis`, report `excluded_current_requests` and `excluded_previous_requests` from `changes.estimated_cost_usd`, and read `pricing_coverage` from `--include-requests` alongside any cost figure.
+- Describe `statusline` plainly as a one-shot snapshot with no watch or stdin mode. Collector behaviour is unchanged.
+
 ## 1.1.2 — 2026-09-10
 
 - Add `prices --refresh`: read current published rates from models.dev into a local catalog, revalidated with the stored ETag. Reports use it when present and name their basis in `price_as_of`, `price_basis` and `price_sources`.

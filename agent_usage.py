@@ -25,7 +25,7 @@ import urllib.request
 import webbrowser
 from urllib.parse import unquote
 
-VERSION = '1.1.2'
+VERSION = '1.1.3'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
