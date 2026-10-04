@@ -315,6 +315,19 @@ python3 scripts/build_release.py --tag v1.1.0
 
 The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
 
+### Releasing
+
+1. In the release pull request, bump `VERSION` in `agent_usage.py` (the only version file) and add a `## X.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md`. `python3 scripts/release.py check --tag vX.Y.Z` confirms they agree.
+2. After the merge, tag the merged commit on main and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m "AISAD X.Y.Z" <merged main sha>
+   git push origin vX.Y.Z
+   ```
+
+3. The release workflow checks the tag with `scripts/release.py check`, runs the tests, builds the assets and publishes the GitHub Release with that version's changelog section (`scripts/release.py notes`) as its notes.
+4. To republish an existing tag, for example after a failed run, use `gh workflow run release.yml -f tag=vX.Y.Z`. It updates the existing release's notes and assets instead of failing.
+
 ## Tests and demo
 
 ```sh

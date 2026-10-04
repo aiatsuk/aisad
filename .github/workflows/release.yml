@@ -3,31 +3,58 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, vX.Y.Z
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  # The cross-platform and browser suites check out github.ref, which is the tag
+  # only for a tag push. A manual run tests the tagged source in the publish job.
   tests:
+    if: github.event_name == 'push'
     uses: ./.github/workflows/test.yml
 
   publish:
     needs: tests
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
+      - name: Verify the tag matches every version file and the changelog
+        run: python3 scripts/release.py check --tag "$TAG"
+      - name: Run the tests on the tagged source
+        run: python3 -m unittest discover -v
       - name: Build assets and verify the tag matches VERSION
-        run: python scripts/build_release.py --tag "$GITHUB_REF_NAME"
+        run: python3 scripts/build_release.py --tag "$TAG"
+      - name: Write release notes from the changelog section
+        run: python3 scripts/release.py notes --tag "$TAG" > "$RUNNER_TEMP/notes.md"
       - name: Publish the stable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/agent_usage.py "dist/aisad-skill-$GITHUB_REF_NAME.zip" dist/SHA256SUMS \
-            --verify-tag --latest --title "AISAD $GITHUB_REF_NAME" --notes-file CHANGELOG.md
+          VERSION="$(python3 scripts/release.py version)"
+          ASSETS=(dist/agent_usage.py "dist/aisad-skill-$TAG.zip" dist/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Republishing keeps whichever release is already marked Latest.
+            gh release edit "$TAG" --title "AISAD ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --verify-tag --latest --title "AISAD ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
