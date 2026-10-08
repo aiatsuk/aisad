@@ -14,3 +14,6 @@ Bundle the UI and third-party notices optionally in the existing checked release
 
 ## Consequences
 UI builds need pinned npm dependencies and Bun; local usage needs no package installation or network access. The embedded Yoga WASM loads from a data URI. Disable Ink's optional development-only DevTools gate while bundling. Keep separate layout tests and PTY checks for real input, resize and cleanup. Pricing remains authoritative in Python, including incomplete observations and the separate Grok cost basis.
+
+## Weekly analytics extension — 2026-10-08
+Keep weekly subtotals, daily intensity levels and deterministic budget/weekday insights in Python as well. The UI receives numeric totals/levels and generated message strings rather than calculating another forecast. See [accounting rules](../../ACCOUNTING.md) for windows, weighting, gap handling and the monthly budget reset.

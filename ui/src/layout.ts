@@ -1,4 +1,4 @@
-import {colors, money, monthTitle, providerColor, safeText, textRow, weekdays, weekdayIndex, weekdayShort, widthOf, type Dataset, type Report, type Row} from './types.js';
+import {colors, spendColors, money, monthTitle, providerColor, safeText, textRow, weekdays, weekdayIndex, weekdayShort, widthOf, type Dataset, type Report, type Row} from './types.js';
 const centered = (text: string, width: number): string => ' '.repeat(Math.floor((width - text.length) / 2)) + text + ' '.repeat(Math.ceil((width - text.length) / 2));
 const wrapped = (text: string, width: number): Row[] => {
   const rows: Row[] = []; let line = '';
@@ -73,18 +73,21 @@ export function graphRows(report: Report, width: number, height: number, ascii =
 }
 export function weekRows(report: Report, width: number, ascii = false): Row[] {
   const data = report.weekday_view, amount = (cell: typeof data.rows[number]['cells'][number]): string => !cell.in_month ? '' : (cell.cost_usd !== null ? money(cell.cost_usd) : cell.observations ? '?' : ascii ? '-' : '—');
-  const cellWidth = Math.max(11,...data.rows.flatMap(row=>row.cells.map(c=>amount(c).length+3))), perPanel = Math.max(1,Math.floor((width-11)/cellWidth));
-  const maximum = Math.max(0,...data.rows.flatMap(r=>r.cells.map(c=>c.cost_usd??0)));
+  const totalAmount = (total: typeof data.totals[number]): string => total.cost_usd!==null?money(total.cost_usd):total.observations?'?':ascii?'-':'—';
+  const cellWidth = Math.max(11,...data.rows.flatMap(row=>row.cells.map(c=>amount(c).length+3)),...data.totals.map(total=>totalAmount(total).length+3)), perPanel = Math.max(1,Math.floor((width-11)/cellWidth));
   const rows: Row[] = [textRow('Cost by Weekday'+(ascii?' | ':' · ')+monthTitle(report.period.from),colors.text,true),[],...wrapped(data.providers.map(safeText).join(', ')+' ('+(data.basis==='api_equivalent_estimate'?'API estimates':'reported cost')+')',width),[]];
   for (let start=0;start<data.weeks.length;start+=perPanel) {
     rows.push(textRow(' '.repeat(11)+data.weeks.slice(start,start+perPanel).map(w=>centered(w.from.slice(-2)+(ascii?'-':'–')+w.to.slice(-2),cellWidth)).join('')));
     data.rows.forEach((row,index)=> {
       const segments: Row = [{text:weekdays[index]!.padEnd(9)+'  ',color:index===0||index===6?colors.amber:colors.muted}];
-      for (const cell of row.cells.slice(start,start+perPanel)) segments.push({text:amount(cell).padStart(cellWidth-2)+'  ',color:cell.cost_usd===null?colors.muted:cell.cost_usd===maximum&&maximum>0?colors.amber:colors.coral,bold:cell.cost_usd===maximum&&maximum>0});
+      for (const cell of row.cells.slice(start,start+perPanel)) segments.push({text:amount(cell).padStart(cellWidth-2)+'  ',color:cell.intensity_level===null?colors.muted:spendColors[cell.intensity_level]!,bold:cell.intensity_level===4});
       rows.push(segments);
-    }); rows.push([]);
+    });
+    rows.push([{text:'Total'.padEnd(9)+'  ',color:colors.text,bold:true},...data.totals.slice(start,start+perPanel).map(total=>({text:totalAmount(total).padStart(cellWidth-2)+'  ',color:colors.text,bold:true}))],[]);
   }
-  rows.push(budgetRow(report,ascii),...wrapped('Each cell: daily cost. '+(ascii?'-':'—')+' = no priced data; ? = unpriced.',width));
+  rows.push([{text:'Spend: low ',color:colors.muted},...spendColors.map(color=>({text:ascii?'* ':'● ',color})),{text:'high',color:colors.muted}],budgetRow(report,ascii),[],textRow('Insights',colors.text,true));
+  for(const message of report.insights.messages) rows.push(...wrapped(safeText(message),width));
+  rows.push(...wrapped('Total = known subtotal; '+(ascii?'-':'—')+' no data; ? unpriced.',width));
   if(data.rows.some(row=>row.cells.some(cell=>cell.incomplete))) rows.push(...wrapped('Known subtotals; incomplete pricing remains in JSON.',width));
   return rows;
 }

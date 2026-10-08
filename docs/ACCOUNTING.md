@@ -53,3 +53,11 @@ These tools establish useful cross-checks, not an invoice oracle. Results can di
 Use the same device, source files, dates, timezone, provider/model filters, price catalog and processing modes. The rolling seven-day window changes daily. Newly saved files can add older observations. README screenshots are synthetic examples and cannot be compared with personal reports.
 
 An audit should independently sum raw usage fields after deduplication, reconcile input buckets and cost components, test repeated counters/resets/streaming/forks, and inspect missing-price and source-coverage diagnostics. Browser totals should then reconcile with the resulting JSON and SQLite observations. No hooks, background polling or tool instrumentation are required.
+
+## Terminal weekly summaries and forecasts
+
+Weekly totals sum known daily subtotals inside the selected calendar month and provider/filter scope. Empty columns remain unavailable; wholly unpriced columns remain unknown. Color levels split the largest known daily subtotal into five equal bands; observed zero uses primary text and missing cells use muted text.
+
+Insights are calculated in Python from the 28 completed calendar days before the current report date (or ending at a closed month's final day). The current partial day and future observations are excluded from the trend. Ranked weekdays use the mean known cost of observed priced days, with at least two observations per weekday and seven priced days overall. Missing days never become zero-cost observations.
+
+The shared budget forecast always uses all Claude/Codex request records, independent of display filters; Grok reported costs remain separate. At least seven completed priced days and priced current-month records are required. Known daily subtotals receive exponentially declining weights with a seven-day half-life. A future weekday uses its weighted mean when at least two matching days exist, otherwise the overall weighted observed-day mean. This is a conditional projection assuming usage like the observed days; missing logs are not a model of inactivity. Remaining dates start tomorrow and stop at month end because the budget resets next month. Forecasts are approximate known-cost estimates, not invoices; unpriced costs are excluded and day coverage is shown. Closed months report actual known subtotals rather than forecasts.

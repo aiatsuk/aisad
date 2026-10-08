@@ -1357,7 +1357,7 @@ def chart_month(value):
     if not re.fullmatch(r'\d{4}-\d{2}',value):raise ValueError('Month must be YYYY-MM')
     return dt.date.fromisoformat(value+'-01')
 
-def terminal_chart_report(snapshot,args,month=None):
+def terminal_chart_report(snapshot,args,month=None,history=None):
     today=dt.date.fromisoformat(snapshot['as_of_date'])
     selected=month or getattr(args,'month',None)
     first=chart_month(selected) if selected else today.replace(day=1)
@@ -1403,6 +1403,7 @@ def terminal_chart_report(snapshot,args,month=None):
                'Claude/Codex use API-equivalent estimates; Grok uses provider-reported completed-turn costs.',
                'The shared monthly budget covers Claude/Codex; reported Grok costs remain separate.'])
     result['weekday_view']=terminal_week_report(result)
+    result['insights']=terminal_chart_insights(history if history is not None else snapshot,args,result)
     result['view']=getattr(args,'view','graph')
     return result
 
@@ -1521,7 +1522,93 @@ def terminal_week_report(report):
                 observations=sum(entry['observations'] for entry in entries),unpriced_observations=sum(entry['unpriced_observations'] for entry in entries),
                 incomplete=any(entry['incomplete'] for entry in entries)))
         result['rows'].append(dict(weekday=name,cells=cells))
+    peak=max((cell['cost_usd'] or 0 for row in result['rows'] for cell in row['cells']),default=0)
+    for row in result['rows']:
+        for cell in row['cells']:
+            cost=cell['cost_usd']
+            cell['intensity_level']=None if cost is None else min(4,max(0,math.ceil(5*cost/peak)-1)) if peak else 0
+    result['totals']=[]
+    for column in range(len(weeks)):
+        cells=[row['cells'][column] for row in result['rows'] if row['cells'][column]['in_month']]
+        priced=[cell for cell in cells if cell['cost_usd'] is not None]
+        result['totals'].append(dict(cost_usd=sum(cell['cost_usd'] for cell in priced) if priced else None,
+            observations=sum(cell['observations'] for cell in cells),unpriced_observations=sum(cell['unpriced_observations'] for cell in cells),
+            incomplete=any(cell['incomplete'] for cell in cells),priced_days=len(priced),elapsed_days=sum(not cell['future'] for cell in cells)))
     return result
+
+SPEND_COLORS=('204;204;204','212;173;155','215;119;87','229;155;89','229;181;103')
+
+def terminal_chart_insights(snapshot,args,report):
+    # Deterministic known-cost projections; absent logs never become zero days.
+    today=dt.date.fromisoformat(report['as_of_date']);last=dt.date.fromisoformat(report['period']['to'])
+    current=report['period']['from'][:7]==today.isoformat()[:7]
+    cutoff=today-dt.timedelta(days=1) if current else last
+    start=cutoff-dt.timedelta(days=27)
+    def in_window(row):return start.isoformat()<=row['date']<=cutoff.isoformat()
+    def priced_days(records):
+        daily=collections.defaultdict(float);missing=0
+        for row in records:
+            unpriced=row.get('unpriced',int(row.get('cost') is None));missing+=unpriced
+            if row.get('cost') is not None and row.get('requests',1)>unpriced:daily[row['date']]+=row['cost']
+        return dict(daily),missing
+    shared=[row for row in snapshot.get('request_stats',[]) if in_window(row) and row.get('provider') in ('Claude','Codex')]
+    daily,missing=priced_days(shared)
+    provider={'openai':'Codex','codex':'Codex','anthropic':'Claude','claude':'Claude','grok':'Grok'}.get((args.provider or '').lower(),args.provider)
+    selected=[row for row in snapshot.get('rows',[]) if in_window(row) and (not provider or row['provider']==provider)
+        and (not args.model or canonical_model(row['model'])==canonical_model(args.model))
+        and (not args.project or row['project']==args.project) and (not args.role or row['role']==args.role)
+        and (not args.pool or row.get('pool','interactive')==args.pool)]
+    # Only a Grok-specific matrix (or no API series) uses reported costs.
+    if report['weekday_view']['basis']=='provider_reported_turn_cost':
+        selected=[dict(date=row['date'],cost=row['reported_cost_usd'],requests=1) for row in snapshot.get('grok_records',[])
+            if in_window(row) and (not args.project or row['project']==args.project)
+            and (not args.model or canonical_model(args.model) in [canonical_model(model) for model in row['models']])
+            and (not args.role or args.role=='main') and (not args.pool or args.pool=='interactive')]
+    visible,_=priced_days(selected);weekdays=('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')
+    groups=collections.defaultdict(list)
+    for date,cost in visible.items():groups[dt.date.fromisoformat(date).weekday()].append(cost)
+    ranking=sorted((dict(weekday=weekdays[index],average_cost_usd=sum(values)/len(values),observed_days=len(values))
+        for index,values in groups.items() if len(values)>=2 and sum(values)>0),key=lambda row:(-row['average_cost_usd'],weekdays.index(row['weekday'])))
+    budget=report['monthly_budget'];spent=budget['known_cost_usd'];limit=budget['budget_usd']
+    forecast=dict(status='insufficient_data',scope='All Claude/Codex sessions and agents; API estimates',method='28 completed days; 7-day half-life; weekday means with >=2 observations, otherwise observed-day mean',
+        as_of_date=today.isoformat() if current else last.isoformat(),priced_days=len(daily),unpriced_requests=missing,
+        projected_month_cost_usd=None,limit_date=None,days_until_limit=None)
+    messages=[]
+    stamp=lambda date:date.strftime('%b')+' '+str(date.day)
+    if not current:
+        forecast['status']='closed_month'
+        amount='unavailable' if not budget['observed_requests'] else 'unpriced' if budget['observed_requests']==budget['unpriced_requests'] else f'${spent:,.2f}'
+        share=f' ({100*spent/limit:.1f}%)' if budget['observed_requests']>budget['unpriced_requests'] else ''
+        messages.append(f'Closed month: {amount} / ${limit:,.2f} budget{share}.')
+    elif budget['observed_requests'] and spent>=limit:
+        forecast.update(status='reached',limit_date=today.isoformat(),days_until_limit=0)
+        messages.append(f"Budget reached: ${spent:,.2f} / ${limit:,.2f}.")
+    elif len(daily)>=7 and budget['observed_requests']>budget['unpriced_requests']:
+        weighted=[];by_weekday=collections.defaultdict(list)
+        for date,cost in daily.items():
+            date=dt.date.fromisoformat(date);weight=2**(-((cutoff-date).days)/7)
+            weighted.append((cost,weight));by_weekday[date.weekday()].append((cost,weight))
+        mean=lambda pairs:sum(cost*weight for cost,weight in pairs)/sum(weight for _,weight in pairs)
+        overall=mean(weighted);projected=spent;depletion=None
+        for offset in range(1,(last-today).days+1):
+            date=today+dt.timedelta(days=offset);values=by_weekday[date.weekday()]
+            projected+=mean(values) if len(values)>=2 else overall
+            if depletion is None and projected>=limit-1e-9:depletion=date
+        forecast.update(status='projected_limit' if depletion else 'within_budget',projected_month_cost_usd=projected,
+            limit_date=depletion.isoformat() if depletion else None,days_until_limit=(depletion-today).days if depletion else None)
+        if depletion:messages.append(f"Known-cost trend: budget around {stamp(depletion)} (in {(depletion-today).days} days); ~${projected:,.0f} by month end.")
+        else:messages.append(f"Known-cost trend: ~${projected:,.0f} by {stamp(last)}; ${max(0,limit-projected):,.0f} below budget.")
+    else:messages.append('Budget forecast: not enough priced data (need 7 completed days and current-month spend).')
+    if len(visible)>=7 and ranking:
+        leaders=ranking[:2];labels=[row['weekday']+f" (${row['average_cost_usd']:,.0f}/day)" for row in leaders]
+        messages.append('Last 4 weeks: highest observed daily spend on '+', '.join(labels)+'.')
+    elif len(visible)>=7 and not any(visible.values()):messages.append('Last 4 weeks: no recorded positive priced spend.')
+    else:messages.append('Weekday pattern: not enough repeated priced days in the last 4 weeks.')
+    if current:
+        excluded=missing+budget['unpriced_requests']
+        messages.append(f"Trend history: {len(daily)}/28 priced days; gaps excluded."+(' Unpriced costs excluded.' if excluded else ''))
+    return dict(window={'from':start.isoformat(),'to':cutoff.isoformat(),'days':28},basis=report['weekday_view']['basis'],
+        busiest_weekdays=ranking[:2] if len(visible)>=7 else [],forecast=forecast,messages=messages)
 
 def terminal_week_text(report,width=100,color=False,ascii_only=False):
     width=max(48,min(240,width));data=report.get('weekday_view') or terminal_week_report(report)
@@ -1532,15 +1619,14 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
     basis='API estimates' if data['basis']=='api_equivalent_estimate' else 'reported cost'
     scope=', '.join(data['providers'])+' ('+basis+')'
     lines.extend(textwrap.wrap(scope,width));lines.append('')
-    values=[cell['cost_usd'] for row in data['rows'] for cell in row['cells'] if cell['cost_usd'] is not None]
-    peak=max(values,default=0)
     def cell_text(cell):
         if not cell['in_month']:return ''
         amount='-' if ascii_only else '—'
         if cell['cost_usd'] is not None:amount=f"${cell['cost_usd']:,.2f}"
         elif cell['observations']:amount='?'
         return amount
-    cell_width=max(11,max((len(cell_text(cell)) for row in data['rows'] for cell in row['cells']),default=0)+3)
+    total_width=max((len(f"${total['cost_usd']:,.2f}") for total in data['totals'] if total['cost_usd'] is not None),default=0)+3
+    cell_width=max(11,total_width,max((len(cell_text(cell)) for row in data['rows'] for cell in row['cells']),default=0)+3)
     per_panel=max(1,(width-11)//cell_width)
     for start in range(0,len(data['weeks']),per_panel):
         end=min(start+per_panel,len(data['weeks']))
@@ -1552,13 +1638,21 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
                 label=cell_text(cell).rjust(cell_width-2)+'  '
                 amount=cell['cost_usd'];tone=muted
                 if amount is not None:
-                    tone='\x1b[38;2;215;119;87m'
-                    if amount==peak and peak>0:tone='\x1b[1m\x1b[38;2;229;181;103m'
+                    level=cell['intensity_level'];tone='\x1b[38;2;'+SPEND_COLORS[level]+'m'
+                    if level==4:tone='\x1b[1m'+tone
                 parts.append(paint(label,tone))
             lines.append(''.join(parts))
-        lines.append('')
+        total_parts=[paint('Total'.ljust(9)+'  ','\x1b[1m')]
+        for total in data['totals'][start:end]:
+            amount=f"${total['cost_usd']:,.2f}" if total['cost_usd'] is not None else '?' if total['observations'] else '-' if ascii_only else '—'
+            total_parts.append(paint(amount.rjust(cell_width-2)+'  ','\x1b[1m\x1b[38;2;204;204;204m'))
+        lines.extend([''.join(total_parts),''])
+    legend='Spend: low '+''.join(paint('* ' if ascii_only else '● ','\x1b[38;2;'+tone+'m') for tone in SPEND_COLORS)+'high'
+    lines.append(legend)
     lines.append(paint(terminal_budget_text(report['monthly_budget'],ascii_only)))
-    note='Each cell: daily cost. '+('-' if ascii_only else '—')+' = no priced data; ? = unpriced.'
+    lines.extend(['',paint('Insights','\x1b[1m')])
+    for message in report['insights']['messages']:lines.extend(paint(piece) for piece in textwrap.wrap(message,width))
+    note='Total = known subtotal; '+('-' if ascii_only else '—')+' no data; ? unpriced.'
     lines.extend(paint(piece) for piece in textwrap.wrap(note,width))
     if any(cell['incomplete'] for row in data['rows'] for cell in row['cells']):lines.extend(paint(piece) for piece in textwrap.wrap('Known subtotals; incomplete pricing remains in JSON.',width))
     return '\n'.join(lines)
@@ -1614,7 +1708,13 @@ def terminal_ui_dataset(snapshot,args,color=False):
     while index<=end:
         year,number=divmod(index,12);month=f'{year:04d}-{number+1:02d}'
         sliced={**snapshot,**{key:by_month[month] for key,by_month in groups.items()}}
-        months.append({'month':month,'report':terminal_chart_report(sliced,args,month)})
+        first=dt.date(year,number+1,1);last=first.replace(day=calendar.monthrange(year,number+1)[1])
+        cutoff=dt.date.fromisoformat(snapshot['as_of_date'])-dt.timedelta(days=1) if first==today else last
+        history_start=cutoff-dt.timedelta(days=27)
+        history={**snapshot,**{key:[row for key_month in (history_start.isoformat()[:7],cutoff.isoformat()[:7])
+            for row in by_month[key_month]] if history_start.month!=cutoff.month or history_start.year!=cutoff.year
+            else list(by_month[cutoff.isoformat()[:7]]) for key,by_month in groups.items()}}
+        months.append({'month':month,'report':terminal_chart_report(sliced,args,month,history=history)})
         index+=1
     return dict(schema_version=1,initial_month=initial.isoformat()[:7],initial_view=args.view,
         options=dict(color=color,ascii=args.ascii_only,width=args.width,height=args.height),months=months)
