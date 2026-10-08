@@ -2,8 +2,8 @@
 
 ## 1.2.0 — 2026-10-08
 
-- Render one compact AISAD line: calendar-week-to-date spend versus the same weekdays last week, today, then a six-cell calendar-month budget bar with a percentage.
-- Show month-to-date spend before the bar and the matched-day previous-month subtotal and delta after its percentage.
+- Render one compact AISAD line: today, calendar-week-to-date spend versus the same weekdays last week, monthly spend and comparison, then a six-cell budget bar and percentage.
+- Group month-to-date spend and matched-day previous-month subtotal and delta before the bar.
 - Compare equal calendar-day windows, including February, leap years and year rollover; the budget always counts every day of the current month to date.
 - Default the monthly budget to $2,000 across all discovered Claude/Codex sessions and agent pools, independent of report filters; add `--monthly-budget USD` to override it.
 - Use warm coral, amber at 65%, orange at 80% and red at 100%, with a dark gray bar background and fractional-cell fill; support forced and suppressed ANSI colors and preserve incomplete-pricing markers.

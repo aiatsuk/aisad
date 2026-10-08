@@ -139,7 +139,7 @@ class TelemetryTests(unittest.TestCase):
                     self.assertEqual(result['session']['records'], 2)
                     # A provider filter must not reduce the shared pool.
                     self.assertGreater(result['pools']['interactive']['known_cost_usd'], 0)
-                    self.assertTrue(app.statusline_text(result).startswith('wk '))
+                    self.assertTrue(app.statusline_text(result).startswith('td '))
                     self.assertEqual(len(app.statusline_text(result).splitlines()), 1)
                     self.assertEqual(result['monthly_budget']['budget_usd'], 2000)
             self.assertEqual(reports['usage']['current'], reports['analyze']['current'])

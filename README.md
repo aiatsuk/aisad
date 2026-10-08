@@ -142,14 +142,14 @@ python3 agent_usage.py statusline --json
 AISAD prints one compact line; Claude Code's own mode indicator can appear beneath it:
 
 ```text
-wk $647.75+ vs $353.64+ (+83%) · td $11.45+ · mo $950.02+ [██▊░░░] 47.5%+ vs $1,156.65+ (-18%)
+td $11.45+ · wk $647.75+ vs $353.64+ (+83%)  · mo $950.02+ vs $1,156.65+ (-18%) [██▊░░░] 47.5%+
 ```
 
-The line compares calendar-week-to-date spend (Monday through today) with the same weekdays in the previous week, followed by today's estimate and a compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. `+` marks incomplete pricing; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+The line shows today's estimate first, then calendar-week-to-date spend (Monday through today) versus the same weekdays in the previous week, followed by monthly spend and comparison, and the compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. `+` marks incomplete pricing; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
 
 The budget remains **calendar-month-to-date** against a **$2,000 default monthly limit**, across all discovered sessions and agent pools. `--monthly-budget USD` overrides it. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate selected-period pool budgets in JSON and the dashboard.
 
-Monthly spend appears immediately before the bar, labelled `mo`; the previous-month subtotal and delta follow the budget percentage. They use equal day windows from the start of each month. If the previous month is shorter, an explicit `28d CURRENT vs PREVIOUS` (or `29d`/`30d`) shows both comparison subtotals, while the amount before the bar still covers the complete current month to date.
+The `mo` block shows monthly spend followed by the previous-month subtotal and delta; the bar and budget percentage come last. They use equal day windows from the start of each month. If the previous month is shorter, an explicit `28d CURRENT vs PREVIOUS` (or `29d`/`30d`) shows both comparison subtotals, while the amount before the bar still covers the complete current month to date.
 
 The bar is six terminal cells wide, with eighth-cell precision, a dark gray background and a percentage beside it. Its fill is warm coral below 65%, amber from 65%, orange from 80% and red from 100%. The fill caps at the limit while the percentage continues to show overspend. `+` beside the percentage marks incomplete pricing. Terminal output enables colors automatically; `--color` forces ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors. Plain output brackets the bar and uses shaded unused cells.
 

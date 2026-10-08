@@ -1382,10 +1382,9 @@ def statusline_text(result,color=False):
         high=value.get('cost_high_usd',value.get('estimated_cost_high_usd'))
         return f"${known:,.2f}"+('+' if value['unpriced_requests'] or high-known>.005 else '')
     monthly=result['monthly_budget'];weekly=result['weekly']
-    line='wk '+money(weekly['current'])+' vs '+money(weekly['previous'])
+    line='td '+money(monthly['today'])+' · wk '+money(weekly['current'])+' vs '+money(weekly['previous'])
     change=weekly['changes'].get('estimated_cost_usd',{})
     if change.get('status')=='available':line+=f" ({change['percent']:+.0f}%)"
-    line+=' · td '+money(monthly['today'])
     ratio=monthly['known_cost_usd']/monthly['budget_usd']
     # Six cells, each with eighth-cell precision; cap the bar, not the amount.
     units=min(48,max(0,int(ratio*48+1e-9)));filled,partial=divmod(units,8)
@@ -1412,7 +1411,7 @@ def statusline_text(result,color=False):
         progress='\x1b[48;2;45;45;45m'+accent+progress+' '*remaining+reset
         percent=accent+percent+reset
     else:progress='['+progress+'░'*remaining+']'
-    return line+' · '+spent+' '+progress+' '+percent+' '+month_compare
+    return line+'  · '+spent+' '+month_compare+' '+progress+' '+percent
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
