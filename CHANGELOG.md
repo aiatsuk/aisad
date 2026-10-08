@@ -2,6 +2,8 @@
 
 ## 1.2.0 — 2026-10-08
 
+- Add bounded Braille particle morphs for Ink month/view navigation, with interruption continuity, idle clock suspension, static accessibility modes and synthetic PTY coverage. Exact prices and axes remain text.
+
 - Add weekly Total rows, five daily-spend intensity colors and deterministic Python Insights: recent weekday averages and a recency-weighted shared-budget forecast, preserving gaps and unknown prices.
 
 - Add an optional strict TypeScript/React/Ink terminal UI, bundled with Bun, with resize-aware layout, keyboard readiness and automatic terminal cleanup. Python supplies aggregate-only monthly data; pricing and portable/headless operation remain in Python. Validate source fingerprints before packaging the UI.

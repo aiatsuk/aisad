@@ -84,5 +84,6 @@ jobs:
           bun run check
           bun run test
           bun run build
+          python3 test/pty_motion.py
       - name: Package the optional UI with manifest checks
         run: python3 scripts/build_release.py --with-ui
