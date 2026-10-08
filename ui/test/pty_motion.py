@@ -86,13 +86,15 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         assert marker in out,(marker,out[-500:]);return out
     try:
         initial=expect(b'Q quit')+settle()
+        animated=not env_overrides and not ascii and color
+        if animated:assert initial.count(b'\x1b[?2026h')>=4, ('No initial animation ticks',initial.count(b'\x1b[?2026h'),len(initial))
         assert b'Total' in initial and b'Insights' in initial
         assert b'enlarge the terminal' not in initial
         assert read(.25)==b'', 'Idle UI must stop rendering'
         os.write(master,b'w');expect(b'Cost per Day');settle()
         assert read(.25)==b''
         assert not any(0x2800<=ord(c)<=0x28ff for line in screen.body() for c in line), ('Particles remain in settled plot',list(enumerate(screen.lines())))
-        os.write(master,b'h');expect(b'Sep 2026');middle=read(.09)
+        os.write(master,b'h');middle=expect(b'Sep 2026')+read(.09)
         # Interrupt both plot and badge mid-morph; the target table must be exact.
         os.write(master,b'w');expect(b'Cost by Weekday');settle()
         assert read(.25)==b''
@@ -106,8 +108,8 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         screen.resize(80,24);fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0));process.send_signal(signal.SIGWINCH)
         resized=settle();assert b'enlarge the terminal' not in resized
         assert read(.25)==b'', 'Resize must not leave a running clock'
-        if not env_overrides and not ascii and color:
-            assert any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')), 'No morph frames'
+        if animated:
+            assert any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')), ('No morph frames',len(middle),initial.count(b'\x1b[?2026h'),screen.lines())
         else:
             # A static badge may contain Braille, but no delayed animation writes.
             os.write(master,b'h');expect(b'Sep 2026');read(.08)
