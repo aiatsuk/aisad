@@ -131,6 +131,29 @@ Usage and session JSON expose `measurement_basis`: tokens and logged result byte
 
 `--watch` and `--stdin` are rejected before collecting. No dashboard server or browser polling remains. `statusline` is retained only as a manually invoked one-shot text/JSON snapshot. If you previously configured an external status hook or scheduler, remove that configuration yourself; AISAD does not edit other tools' settings.
 
+## Status line
+
+```sh
+python3 agent_usage.py statusline
+python3 agent_usage.py statusline --monthly-budget 3000 --color
+python3 agent_usage.py statusline --json
+```
+
+AISAD prints two lines; Claude Code's own mode indicator can appear beneath them:
+
+```text
+wk $647.75+ vs $353.64+ (+83%) · td $11.45+
+██████░░░░░░░░░░░░░░ $647.75+ / $2,000
+```
+
+The first line compares the selected period (seven days by default) with the preceding equal period and shows today's estimate. Date/provider/model/project/role/pool filters apply to the period comparison; today's estimate uses the same non-date filters. A cost delta appears only when both periods have comparable priced observations. `+` marks an estimate with unpriced observations or a pricing range; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+
+The second line shows **calendar-month-to-date** estimated API cost against a **$2,000 default monthly budget**. `--monthly-budget USD` overrides the amount. It includes all discovered Claude and Codex sessions, subagents, reviews and managed agents exactly once, regardless of first-line filters, selected dates or session. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate optional selected-period pool budgets in JSON and the dashboard; they do not override the monthly limit.
+
+The 20-cell bar is warm coral below 65%, amber from 65%, orange from 80% and red from 100%; unused cells are muted gray. The bar fills at the limit while the amount continues to show overspend. No percentage or threshold label is added to this line. Terminal output enables colors automatically; `--color` also enables ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors.
+
+`statusline --json` retains session, harness and pool fields and adds `summary` and `monthly_budget`, including daily summary groups, the month dates, scope, pricing coverage and threshold. Costs are API-equivalent estimates, not subscription billing or enforced spending caps. The command still prints one snapshot and exits.
+
 ## Install the skill
 
 From a clone of this repository:
@@ -279,7 +302,7 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `dashboard.html` | Self-contained offline dashboard |
 | `usage.json` | Normalized usage evidence and local source metadata, written by evidence commands |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
-| `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
+| `statusline.json` | Period/day summary, monthly budget, session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |
 | `prices-used.json` | Price catalog used for the snapshot |
 | `prices-models-dev.json` | Refreshed published rates, with the built-in table filling what they omit |

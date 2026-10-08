@@ -25,7 +25,7 @@ import urllib.request
 import webbrowser
 from urllib.parse import unquote
 
-VERSION = '1.1.3'
+VERSION = '1.2.0'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -844,11 +844,11 @@ def write_event_store(path,sources,events,requests,sessions,calls,turns,catalog,
             connection.execute('PRAGMA user_version='+str(EVIDENCE_SCHEMA))
     finally:connection.close()
 
-def budget_status(records,budget):
+def budget_status(records,budget,thresholds=(50,80,100)):
     if budget is not None and (not math.isfinite(budget) or budget<=0):raise ValueError('Budgets must be finite positive USD amounts')
     missing=sum(r['cost'] is None for r in records);known=sum(r['cost'] or 0 for r in records);high=sum(r['cost_high'] or 0 for r in records)
     ratio=known/budget if budget and records else None
-    level=max((n for n in (50,80,100) if ratio is not None and ratio*100>=n),default=0)
+    level=max((n for n in thresholds if ratio is not None and ratio*100>=n),default=0)
     return dict(budget_usd=budget,known_cost_usd=known,cost_high_usd=high,unpriced_requests=missing,
         observed_requests=len(records),
         used_percent=ratio*100 if ratio is not None else None,nudge_percent=level,
@@ -1333,7 +1333,19 @@ def statusline_report(snapshot,report,args):
     provider=latest['provider'] if latest else report['filters']['provider']
     period=report['period']
     harness=[r for r in records if r['provider']==provider and period['from']<=r['date']<=period['to']]
+    today=snapshot['as_of_date'];month_start=today[:8]+'01'
+    monthly=budget_status([r for r in records if month_start<=r['date']<=today],args.monthly_budget,(65,80,100))
+    monthly.update(period={'from':month_start,'to':today},
+        scope='Calendar month to date, all providers, projects, sessions and agent pools; independent of report filters.')
+    filters=report['filters']
+    today_rows=[r for r in snapshot['rows'] if r['date']==today and
+        all(not filters[key] or (canonical_model(r[key]) if key=='model' else r.get(key,'interactive') if key=='pool' else r[key])==filters[key]
+            for key in ('provider','model','project','role','pool'))]
+    summary=dict(current=report['current']['totals'],
+        previous=report['previous']['totals'] if report['previous'] else None,
+        today=usage_totals(today_rows),changes=report['changes'],by_date=report['current']['by_date'])
     return dict(schema_version=2,version=VERSION,generated=snapshot['generated'],period=period,
+        summary=summary,monthly_budget=monthly,
         session=dict(id=latest['session'] if latest else wanted,selection=selection,records=len(matching),
             model=latest['model'] if latest else None,context_tokens=latest['input'] if latest else None,
             cache_share=latest['cached']/latest['input'] if latest and latest['input'] else None,
@@ -1343,24 +1355,37 @@ def statusline_report(snapshot,report,args):
 
 def statusline_text(result,color=False):
     def money(value):
-        if value['observed_requests']==0:return 'unavailable'
-        if value['observed_requests']==value['unpriced_requests']:return 'unpriced'
-        amount=f"${value['known_cost_usd']:,.2f}"
-        if value['cost_high_usd']-value['known_cost_usd']>.005:amount+=f"–${value['cost_high_usd']:,.2f}"
-        return amount+(' (priced only)' if value['unpriced_requests'] else '')
-    pool=result['pools']['interactive'];managed=result['pools']['managed'];session=result['session'];harness=result['harness']
-    scope='Session' if session['selection']=='explicit' else 'Latest session'
-    text=f"AISAD est · {scope} {money(session)} · {harness['provider'] or 'Harness'} {result['period']['days']}d {money(harness)} · Shared {money(pool)}"
-    if pool['budget_usd']:text+=f"/${pool['budget_usd']:,.0f}"
-    if managed['budget_usd'] or managed['known_cost_usd']:text+=f" · Managed {money(managed)}"+(f"/${managed['budget_usd']:,.0f}" if managed['budget_usd'] else '')
-    level=max(pool['nudge_percent'],managed['nudge_percent'])
-    for name,value in [('Shared',pool),('Managed',managed)]:
-        if value['nudge_percent']:text+=f" · {name} {value['nudge_percent']}% threshold"
-    if session['context_tokens'] is not None:text+=' · Ctx '+compact_tokens(session['context_tokens'])
-    if session['cache_share'] is not None:text+=f" · Cache {session['cache_share']*100:.0f}%"
-    text=re.sub(r'[\x00-\x1f\x7f-\x9f]',' ',text)
-    if color:text='\x1b['+('31' if level==100 else '33' if level else '36')+'m'+text+'\x1b[0m'
-    return text
+        count=value.get('observed_requests',value.get('requests',0))
+        if not count:return 'unavailable'
+        if count==value['unpriced_requests']:return 'unpriced'
+        known=value['known_cost_usd']
+        high=value.get('cost_high_usd',value.get('estimated_cost_high_usd'))
+        return f"${known:,.2f}"+('+' if value['unpriced_requests'] or high-known>.005 else '')
+    summary=result['summary'];monthly=result['monthly_budget']
+    label='wk' if result['period']['days']==7 else f"{result['period']['days']}d"
+    line=label+' '+money(summary['current'])
+    if summary['previous'] is not None:
+        line+=' vs '+money(summary['previous'])
+        change=summary['changes'].get('estimated_cost_usd',{})
+        if change.get('status')=='available':line+=f" ({change['percent']:+.0f}%)"
+    line+=' · td '+money(summary['today'])
+    ratio=monthly['known_cost_usd']/monthly['budget_usd']
+    filled=min(20,max(0,int(ratio*20)))
+    progress='█'*filled;remaining='░'*(20-filled)
+    budget=monthly['budget_usd']
+    limit=f"${budget:,.0f}" if budget.is_integer() else f"${budget:,.2f}"
+    spent=money(monthly)
+    if color:
+        palette={0:'215;119;87',65:'229;181;103',80:'232;146;74',100:'224;108;117'}
+        accent='\x1b[38;2;'+palette[monthly['nudge_percent']]+'m'
+        muted='\x1b[38;2;112;112;112m';reset='\x1b[0m'
+        line=muted+line+reset
+        progress=accent+progress+muted+remaining+reset
+        amount=accent+spent+muted+' / '+limit+reset
+    else:
+        progress+=remaining
+        amount=spent+' / '+limit
+    return line+'\n'+progress+' '+amount
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1753,9 +1778,11 @@ def parser():
     p.add_argument('--pool',choices=['interactive','managed'],help='Filter the report by spend pool')
     p.add_argument('--managed-session',action='append',default=[],metavar='PROVIDER:ID',help='Tag a managed session and its confirmed descendants; repeat as needed')
     p.add_argument('--budget',type=float,help='Optional shared interactive budget in USD for the selected period, across providers and projects')
+    p.add_argument('--monthly-budget',type=float,default=2000.,metavar='USD',help='Status line: calendar-month budget across all sessions and agents, default 2000 USD')
     p.add_argument('--managed-budget',type=float,help='Optional separate managed-agent budget in USD')
     p.add_argument('--session',help='Session detail or one-shot status: provider-prefixed session ID')
     p.add_argument('--stdin',action='store_true',help=argparse.SUPPRESS)
+    p.add_argument('--color',action='store_true',help='Status line: force ANSI colors even when stdout is piped')
     p.add_argument('--no-color',action='store_true',help='Status line: disable ANSI colors')
     p.add_argument('--include-events',action='store_true',help='Include a paginated metadata timeline and source references in usage JSON')
     p.add_argument('--tree',action='store_true',help='Session detail: include confirmed descendants')
@@ -1782,7 +1809,7 @@ def main(argv=None):
     args=parser().parse_args(argv)
     if args.watch is not None or args.stdin:
         raise SystemExit('AISAD runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
-    for value in [args.budget,args.managed_budget]:
+    for value in [args.budget,args.managed_budget,args.monthly_budget]:
         if value is not None and (not math.isfinite(value) or value<=0):raise SystemExit('Budgets must be finite positive USD amounts')
     if args.offset<0 or not 1<=args.limit<=10000:raise SystemExit('--offset must be nonnegative and --limit must be between 1 and 10000')
     if args.command=='session' and not args.session:raise SystemExit('session requires --session PROVIDER:ID; use sessions --json to find an ID')
@@ -1830,7 +1857,8 @@ def main(argv=None):
     result=usage_report(snap,args);atom_json(output/'usage-report.json',result)
     if args.command=='statusline':
         result=statusline_report(snap,result,args);atom_json(output/'statusline.json',result)
-        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else statusline_text(result))
+        color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else statusline_text(result,color=color))
     else:print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else usage_text(result))
 
 if __name__=='__main__':

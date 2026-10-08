@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 — 2026-10-08
+
+- Render two AISAD status lines: selected-period spend versus the previous period and today, then a calendar-month-to-date budget bar.
+- Default the monthly budget to $2,000 across all discovered Claude/Codex sessions and agent pools, independent of report filters; add `--monthly-budget USD` to override it.
+- Use warm coral, amber at 65%, orange at 80% and red at 100%, with muted gray unused cells; support forced and suppressed ANSI colors and preserve incomplete-pricing markers.
+- Keep existing status-line session/harness/pool JSON fields and add period/day summary and monthly budget metadata.
+
 ## 1.1.3 — 2026-10-01
 
 - Tighten the skill instructions on cost figures: totals and comparisons cover priced requests only, so name `cost_comparison_basis`, report `excluded_current_requests` and `excluded_previous_requests` from `changes.estimated_cost_usd`, and read `pricing_coverage` from `--include-requests` alongside any cost figure.
