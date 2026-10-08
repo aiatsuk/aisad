@@ -1395,15 +1395,24 @@ def statusline_text(result,color=False):
     elif monthly['observed_requests']==monthly['unpriced_requests']:percent='unpriced'
     else:
         percent=f"{ratio*100:.1f}%"+('+' if not monthly['pricing_complete'] else '')
+    spent='mo '+money(monthly)
+    comparison=monthly['comparison']
+    month_compare='vs '+money(comparison['previous'])
+    if comparison['period']['days']<monthly['period']['days']:
+        month_compare=f"{comparison['period']['days']}d "+money(comparison['current'])+' '+month_compare
+    month_change=comparison['changes'].get('estimated_cost_usd',{})
+    if month_change.get('status')=='available':month_compare+=f" ({month_change['percent']:+.0f}%)"
     if color:
         palette={0:'215;119;87',65:'229;181;103',80:'232;146;74',100:'224;108;117'}
         accent='\x1b[38;2;'+palette[monthly['nudge_percent']]+'m'
         muted='\x1b[38;2;112;112;112m';reset='\x1b[0m'
         line=muted+line+reset
+        spent=muted+'mo '+accent+money(monthly)+reset
+        month_compare=muted+month_compare+reset
         progress='\x1b[48;2;45;45;45m'+accent+progress+' '*remaining+reset
         percent=accent+percent+reset
     else:progress='['+progress+'░'*remaining+']'
-    return line+' · '+progress+' '+percent
+    return line+' · '+spent+' '+progress+' '+percent+' '+month_compare
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
