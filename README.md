@@ -1,8 +1,8 @@
 # AISAD — AI Session Analysis Dashboard
 
-An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Every command runs once and exits. The optional skill invokes the same standalone commands.
+An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Commands run on demand; the terminal dashboard waits for keyboard input and exits with Q/Escape. The optional skill invokes the same standalone commands.
 
-**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
+**Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
 
@@ -158,17 +158,41 @@ The bar is six terminal cells wide, with eighth-cell precision, a dark gray back
 ## Terminal dashboard and saved budget
 
 ```sh
-aisad chart --offline
-aisad chart --offline --ascii --width 80 --height 10
+aisad chart --offline --color
+aisad chart --offline --color --interactive
+aisad chart --offline --color --snapshot
+aisad chart --offline --color --view weeks --month 2026-09 --snapshot
 aisad chart --offline --json
 aisad budget
 aisad budget --set 3000
 aisad budget --reset
 ```
 
-`chart` prints a single terminal snapshot: days 01 through the last day of the current calendar month on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Claude, Codex and other observed providers have separate colored step lines and a legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Custom date ranges belong to `usage`, not `chart`.
+`chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. Narrow terminals split the month into panels to keep the labels legible. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
 
-Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series show `╳` (`+` in ASCII mode). `+` on legend totals marks incomplete pricing/coverage. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
+The enhanced terminal view uses strict TypeScript, React and public upstream Ink, built into one module with Bun. Ink manages layout through Yoga, key handling, live terminal resize and alternate-screen cleanup. Python still collects and prices usage; the UI receives only monthly numeric aggregates, never transcript text, source paths or project names. Navigation reuses those aggregates and does not open network connections or rescan sessions.
+
+When the bundled UI and Bun are available, `aisad chart` selects it automatically. Otherwise the portable Python view remains available. Set `AISAD_TERMINAL_UI=python` to select that view explicitly. Snapshot and JSON commands continue to use Python without launching the UI. The enhanced UI browses loaded months, from the earliest available history/requested month through the current month.
+
+For UI development and a local bundle:
+
+```sh
+cd ui
+bun install --frozen-lockfile --ignore-scripts
+bun run check
+bun run test
+bun run build
+cd ..
+python3 scripts/build_release.py --tag v1.2.0 --with-ui
+```
+
+The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
+
+In the terminal, press **W** to switch between the graph and a weekday table, **H** for the previous month, **L** for the next month (up to the current month), and **Q** or Escape to exit. Left/right arrow keys also change months. `--interactive` requires a terminal; `--view weeks --snapshot` prints the table without waiting for keys. Navigation reuses the initial local snapshot; it does not poll, rescan, start a server or reach the network. Exiting restores the terminal.
+
+The weekday table has seven rows, Sunday through Saturday, and a column per Sunday–Saturday calendar week. Each cell shows only that day's known USD subtotal. Partial first/last weeks keep dates outside the month blank; unknown/future days show `—`, wholly unpriced days show `?`, and observed zero spend shows `$0.00`. The month's largest daily subtotal is highlighted. Default cells combine Claude/Codex API estimates; Grok remains separate. With `--provider grok`, cells show Grok's reported cost. `chart --json` includes the same matrix in `weekday_view`.
+
+Run the command in the terminal to see the actual colored chart; an ASCII reconstruction in an assistant message is not a faithful preview. `--ascii` is an explicit compatibility fallback. Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series keep the visible provider's color. Incomplete pricing/coverage remains explicit in the footer and JSON. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
 
 `budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
 

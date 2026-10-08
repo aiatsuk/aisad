@@ -62,3 +62,27 @@ jobs:
           node scripts/test_dashboard.cjs
           node scripts/test_session_evidence.cjs
           node scripts/capture_demo.cjs
+
+  terminal-ui:
+    name: TypeScript and Ink terminal UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install pinned Bun build runtime
+        run: npm install --global bun@1.2.22
+      - name: Build and verify the aggregate-only terminal UI
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          bun run check
+          bun run test
+          bun run build
+      - name: Package the optional UI with manifest checks
+        run: python3 scripts/build_release.py --with-ui

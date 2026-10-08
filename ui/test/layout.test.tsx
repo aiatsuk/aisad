@@ -1,0 +1,81 @@
+import React from 'react';
+import {describe,expect,test} from 'bun:test';
+import {renderToString} from 'ink';
+import {Rows} from '../src/app.js';
+import {frame,graphRows,weekRows} from '../src/layout.js';
+import {navigate,parseDataset,widthOf,weekdays,type Dataset,type Report,type Series} from '../src/types.js';
+function fixture(month='2026-10',last=31):Report {
+  const dates=Array.from({length:last},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
+  const daily=dates.map((date,index)=>({date,cost_usd:index===3?10.35:index===10?35:index===17?50:index===1?0:null,observations:[1,3,10,17].includes(index)?1:0,unpriced_observations:0,incomplete:false}));
+  const series:Series={provider:'Claude',basis:'api_equivalent_estimate',daily,known_cost_usd:95.35,observations:4,unpriced_observations:0,incomplete:false};
+  const first=new Date(month+'-01T00:00:00Z'),offset=first.getUTCDay(),weekCount=Math.ceil((last+offset)/7);
+  const weekly=Array.from({length:weekCount},(_,i)=>({from:month+'-'+String(Math.max(1,i*7-offset+1)).padStart(2,'0'),to:month+'-'+String(Math.min(last,(i+1)*7-offset)).padStart(2,'0')}));
+  const rows=weekdays.map((weekday,row)=>({weekday,cells:weekly.map((_,column)=>{
+    const day=column*7+row-offset+1,index=day-1,in_month=day>=1&&day<=last;
+    const stamp=new Date(first.getTime()+(day-1)*86400000).toISOString().slice(0,10);
+    return {date:stamp,in_month,future:false,cost_usd:in_month?(daily[index]?.cost_usd??null):null,observations:in_month?(daily[index]?.observations??0):0,unpriced_observations:0,incomplete:false};
+  })}));
+  return {period:{from:month+'-01',to:month+'-'+last,days:last},series:[series],monthly_budget:{known_cost_usd:95.35,budget_usd:2000,observed_requests:4,unpriced_requests:0,pricing_complete:true},weekday_view:{basis:'api_equivalent_estimate',providers:['Claude'],weeks:weekly,rows}};
+}
+const options={color:true,ascii:false,width:null,height:8};
+const text=(rows:ReturnType<typeof graphRows>):string=>rows.map(row=>row.map(s=>s.text).join('')).join('\n');
+describe('aggregate graph and week layouts',()=>{
+  test('all dates and weekdays survive narrow panels without month labels',()=>{
+    for(const width of [48,80,100,110,240]) {
+      const rows=graphRows(fixture(),width,8),value=text(rows);
+      const labels=value.split('\n').filter(line=>/^\s+(?:\d{2}\s*)+$/.test(line));
+      expect(labels.flatMap(line=>line.trim().split(/\s+/).map(Number))).toEqual(Array.from({length:31},(_,i)=>i+1));
+      expect(value.match(/Oct/g)).toHaveLength(1);expect(value).toMatch(/Th\s+Fr\s+Sa\s+Su/);
+      expect(Math.max(...rows.map(widthOf))).toBeLessThanOrEqual(width);
+    }
+  });
+  test('Sunday cells retain exact daily costs and blank partial weeks',()=>{
+    const r=fixture();expect(r.weekday_view.rows[0]!.cells.filter(c=>c.in_month).map(c=>c.date.slice(-2))).toEqual(['04','11','18','25']);
+    const value=text(weekRows(r,100));expect(value).toContain('$10.35');expect(value).toContain('$35.00');expect(value).toContain('$50.00');expect(value).not.toMatch(/(?:^|\s)\d{2} (?=\$|—|\?)/m);
+    expect(value).toContain('$0.00');expect(value).toContain('—');
+  });
+  test('weekday rows keep the requested order, peak and width',()=>{
+    for(const width of [48,80,100,110]) {
+      const rows=weekRows(fixture(),width);expect(Math.max(...rows.map(widthOf))).toBeLessThanOrEqual(width);
+      expect(rows.flat().find(s=>s.text.includes('$50.00'))?.bold).toBe(true);
+    }
+    expect(text(weekRows(fixture(),100)).split('\n').filter(l=>weekdays.some(w=>l.startsWith(w))).map(l=>l.split(/\s+/)[0])).toEqual([...weekdays]);
+  });
+  test('leap and short months label every day once',()=>{
+    for(const [month,days] of [['2024-02',29],['2025-02',28],['2026-09',30]] as const) {
+      const value=text(graphRows(fixture(month,days),100,8));
+      const labels=value.split('\n').filter(line=>/^\s+(?:\d{2}\s*)+$/.test(line));expect(labels.flatMap(l=>l.trim().split(/\s+/))).toHaveLength(days);
+    }
+  });
+  test('unpriced is distinct from zero and gaps',()=>{
+    const r=fixture();r.series[0]!.daily[6]!.observations=1;r.series[0]!.daily[6]!.unpriced_observations=1;r.series[0]!.unpriced_observations=1;
+    expect(text(graphRows(r,100,8))).toContain('? = unpriced (1 observations)');
+    const cell=r.weekday_view.rows[3]!.cells[1]!;cell.observations=1;cell.unpriced_observations=1;cell.incomplete=true;
+    expect(weekRows(r,100).find(row=>row[0]?.text.startsWith('Wednesday'))?.slice(1).some(segment=>segment.text.trim()==='?')).toBe(true);
+  });
+  test('ASCII is an explicit compatibility fallback',()=>{
+    expect(/[^\x00-\x7f]/.test(text(graphRows(fixture(),100,8,true)))).toBe(false);
+    expect(/[^\x00-\x7f]/.test(text(weekRows(fixture(),100,true)))).toBe(false);
+  });
+  test('resize-aware frames reserve room for controls',()=>{
+    for(const view of ['graph','weeks'] as const) expect(frame(fixture(),view,options,80,24).length).toBeLessThanOrEqual(21);
+  });
+  test('React/Ink renders the same actual cost labels and weekdays',()=>{
+    const rendered=renderToString(<Rows rows={weekRows(fixture(),100)} color={false}/>,{columns:100});
+    expect(rendered).toContain('Sunday');expect(rendered).toContain('$10.35');expect(rendered).toContain('Wednesday');
+  });
+});
+describe('navigation and contract',()=>{
+  test('W toggles; H/L stop at loaded month boundaries',()=>{
+    expect(navigate({index:1,view:'graph'},'toggle',3)).toEqual({index:1,view:'weeks'});
+    expect(navigate({index:0,view:'weeks'},'previous',3).index).toBe(0);
+    expect(navigate({index:2,view:'graph'},'next',3).index).toBe(2);
+    expect(navigate({index:1,view:'graph'},'previous',3).index).toBe(0);
+  });
+  test('invalid contracts and nonfinite costs fail before rendering',()=>{
+    const data:Dataset={schema_version:1,initial_month:'2026-10',initial_view:'graph',options,months:[{month:'2026-10',report:fixture()}]};
+    expect(parseDataset(data)).toBe(data);
+    for(const bad of [null,{}, {...data,initial_month:'2025-01'},{...data,options:{...options,height:Infinity}}]) expect(()=>parseDataset(bad)).toThrow();
+    const corrupt=structuredClone(data);corrupt.months[0]!.report.series[0]!.daily[0]!.cost_usd=NaN;expect(()=>parseDataset(corrupt)).toThrow();
+  });
+});

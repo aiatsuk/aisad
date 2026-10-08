@@ -5,7 +5,7 @@ description: Analyze local Claude Code and Codex usage on demand, with text or J
 
 # AISAD
 
-Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files and exits. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
+Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files on demand; the interactive chart waits for keyboard input and exits with Q/Escape. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
 
 Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
 
@@ -64,14 +64,19 @@ Original prompts, answers, reasoning, tool arguments/results and compaction summ
 ## Terminal chart and budget
 
 ```sh
-python3 <skill-directory>/scripts/aisad.py chart --offline
-python3 <skill-directory>/scripts/aisad.py chart --offline --ascii --width 80
+python3 <skill-directory>/scripts/aisad.py chart --offline --color
+python3 <skill-directory>/scripts/aisad.py chart --offline --color --interactive
+python3 <skill-directory>/scripts/aisad.py chart --offline --color --view weeks --snapshot
 python3 <skill-directory>/scripts/aisad.py budget
 python3 <skill-directory>/scripts/aisad.py budget --set 3000
 python3 <skill-directory>/scripts/aisad.py budget --reset
 ```
 
-`chart` renders a one-shot calendar-month daily cost chart with colored Claude/Codex lines and other providers when local data exists. Missing/future days stay blank, wholly unpriced days show `?`, and totals retain incomplete-coverage markers. Grok uses separately labelled provider-reported costs; the existing shared budget still covers Claude/Codex. `--json` exposes exact daily costs and coverage; `--ascii`, `--width`, `--height`, `--color` and `--no-color` control rendering. No server, watch loop or new hooks are installed.
+For a requested visual terminal chart, execute `chart --offline --color` and show the actual terminal output. Do not recreate the graph in an assistant message, strip its colors, switch to `--ascii`, or substitute an ASCII code block. If the chat surface cannot display ANSI colors, provide the command to run in the user's terminal instead of pretending a text reconstruction is the chart. Use `--ascii` only when the user explicitly asks for ASCII compatibility.
+
+When its checked bundle and Bun are available, the interactive chart uses a strict TypeScript/React/Ink UI with live resize and automatic terminal cleanup. Its input contains only monthly numeric aggregates, never transcripts or source paths. It keeps the same W/H/L/Q controls. Without Bun/the bundle, the portable Python UI remains available; `AISAD_TERMINAL_UI=python` selects it explicitly. Snapshot/JSON commands never launch that UI. No runtime package installation or network connection is needed.
+
+`chart` renders a calendar-month daily cost chart with rounded Unicode step lines, daily number/weekday labels (weekends highlighted), and colored Claude/Codex lines and other providers when local data exists. Missing/future days stay blank, wholly unpriced days show `?`, and JSON retains incomplete-coverage metadata. Grok uses separately labelled provider-reported costs; the existing shared budget still covers Claude/Codex. `--json` exposes exact daily costs and coverage; `--ascii`, `--width`, `--height`, `--color` and `--no-color` control rendering. In a terminal, W toggles a Sunday-first weekday cost matrix, H/L or left/right arrows change months, and Q/Escape exits. The matrix has one column per calendar week with only the known daily cost in each cell; the highest daily cost is highlighted. `--month YYYY-MM` selects a month, `--view weeks` starts with the table, and `--snapshot` prints once. Piped output and JSON always remain one-shot. Keyboard navigation reuses one local snapshot, without polling or background collection. No server, watch loop or new hooks are installed.
 
 `budget` is always offline and does not collect sessions. `--set USD` saves a finite positive monthly limit in the data directory's `output/budget.json`; `--reset` restores $2,000. Statusline and chart use this value unless `--monthly-budget` overrides it. Change the saved limit only when requested. For a requested terminal launcher installation, the installer accepts `--cli-dir DIR`; it does not edit shell settings or overwrite an unrelated command.
 

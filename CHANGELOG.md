@@ -2,7 +2,10 @@
 
 ## 1.2.0 — 2026-10-08
 
-- Add `chart`: a one-shot terminal daily-cost graph for the current calendar month, with colored provider lines, rounded USD ticks, explicit gaps/unknowns, Unicode/ASCII modes and JSON coverage.
+- Add an optional strict TypeScript/React/Ink terminal UI, bundled with Bun, with resize-aware layout, keyboard readiness and automatic terminal cleanup. Python supplies aggregate-only monthly data; pricing and portable/headless operation remain in Python. Validate source fingerprints before packaging the UI.
+- Add daily number/weekday chart labels and a Sunday-first weekday cost matrix; W switches views, H/L or arrows browse calendar months, and Q/Escape restores the terminal. Piped/JSON output stays one-shot and navigation never rescans or polls.
+- Draw terminal charts with rounded Unicode lines, daily date/weekday labels and provider-colored crossings; guide agents to show the actual ANSI chart instead of an ASCII reconstruction.
+- Add `chart`: a terminal daily-cost graph for a selected calendar month (current by default), with colored provider lines, rounded USD ticks, explicit gaps/unknowns, Unicode/ASCII modes and JSON coverage.
 - Add offline `budget` show/set/reset commands, preserving the monthly limit outside the installation; statusline and chart honor it with per-run overrides.
 - Support an optional `aisad` shell launcher via installer `--cli-dir`, without shell configuration changes.
 

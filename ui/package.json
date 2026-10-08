@@ -1,0 +1,20 @@
+{
+  "name": "aisad-terminal-ui",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun run build.ts"
+  },
+  "dependencies": {
+    "ink": "8.0.0",
+    "react": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/bun": "1.2.22",
+    "typescript": "7.0.2"
+  }
+}
