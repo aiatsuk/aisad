@@ -1333,9 +1333,21 @@ def statusline_report(snapshot,report,args):
     provider=latest['provider'] if latest else report['filters']['provider']
     period=report['period']
     harness=[r for r in records if r['provider']==provider and period['from']<=r['date']<=period['to']]
-    today=snapshot['as_of_date'];month_start=today[:8]+'01'
+    today=snapshot['as_of_date'];day=dt.date.fromisoformat(today);first=day.replace(day=1)
+    month_start=first.isoformat();previous_last=first-dt.timedelta(days=1)
+    previous_first=previous_last.replace(day=1)
+    compared_days=min(day.day,previous_last.day)
+    current_end=(first+dt.timedelta(days=compared_days-1)).isoformat()
+    previous_end=(previous_first+dt.timedelta(days=compared_days-1)).isoformat()
+    current=usage_period([r for r in snapshot['rows'] if month_start<=r['date']<=current_end])
+    previous=usage_period([r for r in snapshot['rows'] if previous_first.isoformat()<=r['date']<=previous_end])
     monthly=budget_status([r for r in records if month_start<=r['date']<=today],args.monthly_budget,(65,80,100))
-    monthly.update(period={'from':month_start,'to':today},
+    monthly.update(period={'from':month_start,'to':today,'days':day.day},
+        today=budget_status([r for r in records if r['date']==today],None),
+        comparison=dict(basis='matched_calendar_days',
+            period={'from':month_start,'to':current_end,'days':compared_days},
+            previous_period={'from':previous_first.isoformat(),'to':previous_end,'days':compared_days},
+            current=current['totals'],previous=previous['totals'],changes=usage_changes(current,previous)),
         scope='Calendar month to date, all providers, projects, sessions and agent pools; independent of report filters.')
     filters=report['filters']
     today_rows=[r for r in snapshot['rows'] if r['date']==today and
@@ -1361,14 +1373,13 @@ def statusline_text(result,color=False):
         known=value['known_cost_usd']
         high=value.get('cost_high_usd',value.get('estimated_cost_high_usd'))
         return f"${known:,.2f}"+('+' if value['unpriced_requests'] or high-known>.005 else '')
-    summary=result['summary'];monthly=result['monthly_budget']
-    label='wk' if result['period']['days']==7 else f"{result['period']['days']}d"
-    line=label+' '+money(summary['current'])
-    if summary['previous'] is not None:
-        line+=' vs '+money(summary['previous'])
-        change=summary['changes'].get('estimated_cost_usd',{})
-        if change.get('status')=='available':line+=f" ({change['percent']:+.0f}%)"
-    line+=' · td '+money(summary['today'])
+    monthly=result['monthly_budget'];comparison=monthly['comparison']
+    label='mo'
+    if comparison['period']['days']<monthly['period']['days']:label+=f" {comparison['period']['days']}d"
+    line=label+' '+money(comparison['current'])+' vs '+money(comparison['previous'])
+    change=comparison['changes'].get('estimated_cost_usd',{})
+    if change.get('status')=='available':line+=f" ({change['percent']:+.0f}%)"
+    line+=' · td '+money(monthly['today'])
     ratio=monthly['known_cost_usd']/monthly['budget_usd']
     filled=min(20,max(0,int(ratio*20)))
     progress='█'*filled;remaining='░'*(20-filled)

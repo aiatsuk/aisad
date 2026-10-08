@@ -142,17 +142,17 @@ python3 agent_usage.py statusline --json
 AISAD prints two lines; Claude Code's own mode indicator can appear beneath them:
 
 ```text
-wk $647.75+ vs $353.64+ (+83%) · td $11.45+
+mo $647.75+ vs $353.64+ (+83%) · td $11.45+
 ██████░░░░░░░░░░░░░░ $647.75+ / $2,000
 ```
 
-The first line compares the selected period (seven days by default) with the preceding equal period and shows today's estimate. Date/provider/model/project/role/pool filters apply to the period comparison; today's estimate uses the same non-date filters. A cost delta appears only when both periods have comparable priced observations. `+` marks an estimate with unpriced observations or a pricing range; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+The first line compares calendar-month-to-date spend with the same number of calendar days in the previous month and shows today's estimate across all sessions and agent pools. For example, October 1–8 compares with September 1–8. When the previous month is shorter, both comparison windows stop at the last common day: March 31 compares March 1–28 with February 1–28 in a non-leap year, labelled `mo 28d`. The budget bar still counts all March usage through March 31. Missing dates are not treated as evidence of zero usage; no extrapolation is made. A cost delta appears only when both windows have comparable priced observations. `+` marks an estimate with unpriced observations or a pricing range; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
 
-The second line shows **calendar-month-to-date** estimated API cost against a **$2,000 default monthly budget**. `--monthly-budget USD` overrides the amount. It includes all discovered Claude and Codex sessions, subagents, reviews and managed agents exactly once, regardless of first-line filters, selected dates or session. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate optional selected-period pool budgets in JSON and the dashboard; they do not override the monthly limit.
+The second line shows **calendar-month-to-date** estimated API cost against a **$2,000 default monthly budget**. `--monthly-budget USD` overrides the amount. It includes all discovered Claude and Codex sessions, subagents, reviews and managed agents exactly once, regardless of report filters, selected dates or session. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate optional selected-period pool budgets in JSON and the dashboard; they do not override the monthly limit.
 
 The 20-cell bar is warm coral below 65%, amber from 65%, orange from 80% and red from 100%; unused cells are muted gray. The bar fills at the limit while the amount continues to show overspend. No percentage or threshold label is added to this line. Terminal output enables colors automatically; `--color` also enables ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors.
 
-`statusline --json` retains session, harness and pool fields and adds `summary` and `monthly_budget`, including daily summary groups, the month dates, scope, pricing coverage and threshold. Costs are API-equivalent estimates, not subscription billing or enforced spending caps. The command still prints one snapshot and exits.
+`statusline --json` retains session, harness and pool fields and adds `summary` and `monthly_budget`, including daily summary groups, the month dates, scope, pricing coverage and threshold. `monthly_budget.comparison` names both matched windows, their totals and comparison basis; the existing selected-period `summary` remains available in JSON. Costs are API-equivalent estimates, not subscription billing or enforced spending caps. The command still prints one snapshot and exits.
 
 ## Install the skill
 
