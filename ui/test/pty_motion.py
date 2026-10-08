@@ -94,7 +94,14 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         os.write(master,b'w');expect(b'Cost per Day');settle()
         assert read(.25)==b''
         assert not any(0x2800<=ord(c)<=0x28ff for line in screen.body() for c in line), ('Particles remain in settled plot',list(enumerate(screen.lines())))
-        os.write(master,b'h');middle=expect(b'Sep 2026')+read(.09)
+        os.write(master,b'h');middle=expect(b'Sep 2026')
+        # Wait for an emitted frame, not a fixed 90 ms read window. Linux's
+        # scheduler can deliver the first dirty badge/plot later than macOS.
+        if animated:
+            deadline=time.monotonic()+.35
+            while not any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')) and time.monotonic()<deadline:middle+=read(.02)
+            assert any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')), ('No navigation morph frame',len(middle),screen.lines())
+        else:middle+=read(.09)
         # Interrupt both plot and badge mid-morph; the target table must be exact.
         os.write(master,b'w');expect(b'Cost by Weekday');settle()
         assert read(.25)==b''
@@ -108,9 +115,7 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         screen.resize(80,24);fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0));process.send_signal(signal.SIGWINCH)
         resized=settle();assert b'enlarge the terminal' not in resized
         assert read(.25)==b'', 'Resize must not leave a running clock'
-        if animated:
-            assert any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')), ('No morph frames',len(middle),initial.count(b'\x1b[?2026h'),screen.lines())
-        else:
+        if not animated:
             # A static badge may contain Braille, but no delayed animation writes.
             os.write(master,b'h');expect(b'Sep 2026');read(.08)
             assert read(.3)==b'', 'Static mode must not animate'

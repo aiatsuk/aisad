@@ -25,7 +25,7 @@ Baseline: PR #9 has 14 successful GitHub checks. The new motion implementation p
 - Synthetic ANSI frames exported through actual Ink; no personal data in the preview.
 - Local 512-particle measurement: core p95 approximately 0.02 ms and colored static Ink frame p95 approximately 25 ms. This excludes terminal flush/scheduler latency and is not a cross-platform FPS guarantee. Existing renderer still performs React/Yoga work for changed grouped text cells.
 - Observer feedback: model CSI E/F next-line commands before judging terminal artifacts. Captured synthetic bytes showed Ink relies on these commands; final settled-screen checks pass with them modeled.
-- Linux CI exposed a sampling flaw: inspecting only a 90 ms tail after a title discarded the same packet containing the transition. The test now captures the whole navigation event and independently requires multiple initial animation-clock frames. All six modes pass locally with CI build/runtime conditions reproduced.
+- Linux CI exposed a timing assumption: the initial animation clock emitted ten frames, but navigation produced no dirty Braille cells inside the fixed 90 ms sample. The test now waits for an emitted navigation frame before interrupting, with a bounded deadline within the transition, and independently requires multiple initial animation-clock frames.
 - The new bundle also passed private real-aggregate PTY checks at 80x24 with H/L/W, resize and terminal restoration; those data remain local.
 
 ## Next
