@@ -142,18 +142,45 @@ python3 agent_usage.py statusline --json
 AISAD prints one compact line; Claude Code's own mode indicator can appear beneath it:
 
 ```text
-td $11.45+ · wk $647.75+ vs $353.64+ (+83%)  · mo $950.02+ vs $1,156.65+ (-18%) [██▊░░░] 47.5%+
+td $11.45 · wk $647.75 vs $353.64 (+83%) · mo $950.02 vs $1,156.65 (-18%) [██▊░░░] 47.5%
 ```
 
-The line shows today's estimate first, then calendar-week-to-date spend (Monday through today) versus the same weekdays in the previous week, followed by monthly spend and comparison, and the compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. `+` marks incomplete pricing; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+The line shows today's estimate first, then calendar-week-to-date spend (Monday through today) versus the same weekdays in the previous week, followed by monthly spend and comparison, and the compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. Monetary amounts omit `+`; positive comparison deltas retain it. Incomplete-pricing metadata remains in JSON; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
 
-The budget remains **calendar-month-to-date** against a **$2,000 default monthly limit**, across all discovered sessions and agent pools. `--monthly-budget USD` overrides it. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate selected-period pool budgets in JSON and the dashboard.
+The budget remains **calendar-month-to-date** against a **$2,000 default monthly limit**, across all discovered sessions and agent pools. `--monthly-budget USD` overrides the saved limit for this run. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate selected-period pool budgets in JSON and the dashboard.
 
 The `mo` block shows monthly spend followed by the previous-month subtotal and delta; the bar and budget percentage come last. They use equal day windows from the start of each month. If the previous month is shorter, an explicit `28d CURRENT vs PREVIOUS` (or `29d`/`30d`) shows both comparison subtotals, while the amount before the bar still covers the complete current month to date.
 
-The bar is six terminal cells wide, with eighth-cell precision, a dark gray background and a percentage beside it. Its fill is warm coral below 65%, amber from 65%, orange from 80% and red from 100%. The fill caps at the limit while the percentage continues to show overspend. `+` beside the percentage marks incomplete pricing. Terminal output enables colors automatically; `--color` forces ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors. Plain output brackets the bar and uses shaded unused cells.
+The bar is six terminal cells wide, with eighth-cell precision, a dark gray background and a percentage beside it. Its fill is warm coral below 65%, amber from 65%, orange from 80% and red from 100%. The fill caps at the limit while the percentage continues to show overspend. Budget percentages omit `+`; JSON retains pricing coverage. Terminal output enables colors automatically; `--color` forces ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors. Both colored and plain output bracket the bar and use shaded unused cells, with one space between each block.
 
 `statusline --json` retains the session, harness, pool and selected-period summary fields and exposes `weekly` and `monthly_budget`. Monthly comparison metadata remains available in `monthly_budget.comparison`: equal day windows from the beginning of each month, capped to the last common day if the previous month is shorter, while the budget includes every current-month day through today. Missing history is unavailable rather than assumed zero; costs are API-equivalent estimates, not subscription billing or enforced caps. The command prints one snapshot and exits.
+
+## Terminal dashboard and saved budget
+
+```sh
+aisad chart --offline
+aisad chart --offline --ascii --width 80 --height 10
+aisad chart --offline --json
+aisad budget
+aisad budget --set 3000
+aisad budget --reset
+```
+
+`chart` prints a single terminal snapshot: days 01 through the last day of the current calendar month on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Claude, Codex and other observed providers have separate colored step lines and a legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Custom date ranges belong to `usage`, not `chart`.
+
+Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series show `╳` (`+` in ASCII mode). `+` on legend totals marks incomplete pricing/coverage. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
+
+`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
+
+To add the `aisad` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
+
+```sh
+python3 skills/aisad/scripts/aisad.py install --target both \
+  --archive dist/aisad-skill-v1.2.0.zip --checksum-file dist/SHA256SUMS \
+  --cli-dir "$HOME/.local/bin"
+```
+
+This installs a small launcher without editing shell settings and refuses to overwrite an unrelated existing command. Without it, invoke the installed helper with Python and the same commands. The existing offline HTML dashboard remains available through `aisad run --offline -- --open`.
 
 ## Install the skill
 
@@ -303,6 +330,8 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `dashboard.html` | Self-contained offline dashboard |
 | `usage.json` | Normalized usage evidence and local source metadata, written by evidence commands |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
+| `chart.json` | Calendar-month daily costs and provider coverage from `chart` |
+| `budget.json` | Saved monthly limit shared by the local helpers |
 | `statusline.json` | Period/day summary, monthly budget, session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |
 | `prices-used.json` | Price catalog used for the snapshot |

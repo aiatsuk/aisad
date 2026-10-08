@@ -61,6 +61,20 @@ For broad queries, use local Python and open `output/sessions.sqlite` read-only 
 
 Original prompts, answers, reasoning, tool arguments/results and compaction summaries are not copied into reports or the database. Source references can locate original records while the local files still exist; fingerprints detect changes. Do not reconstruct missing payloads or infer exact tool cost from byte counts.
 
+## Terminal chart and budget
+
+```sh
+python3 <skill-directory>/scripts/aisad.py chart --offline
+python3 <skill-directory>/scripts/aisad.py chart --offline --ascii --width 80
+python3 <skill-directory>/scripts/aisad.py budget
+python3 <skill-directory>/scripts/aisad.py budget --set 3000
+python3 <skill-directory>/scripts/aisad.py budget --reset
+```
+
+`chart` renders a one-shot calendar-month daily cost chart with colored Claude/Codex lines and other providers when local data exists. Missing/future days stay blank, wholly unpriced days show `?`, and totals retain incomplete-coverage markers. Grok uses separately labelled provider-reported costs; the existing shared budget still covers Claude/Codex. `--json` exposes exact daily costs and coverage; `--ascii`, `--width`, `--height`, `--color` and `--no-color` control rendering. No server, watch loop or new hooks are installed.
+
+`budget` is always offline and does not collect sessions. `--set USD` saves a finite positive monthly limit in the data directory's `output/budget.json`; `--reset` restores $2,000. Statusline and chart use this value unless `--monthly-budget` overrides it. Change the saved limit only when requested. For a requested terminal launcher installation, the installer accepts `--cli-dir DIR`; it does not edit shell settings or overwrite an unrelated command.
+
 ## Prices
 
 ```sh
@@ -80,7 +94,7 @@ python3 <skill-directory>/scripts/aisad.py run -- --open
 
 This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context and Cache usage; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
 
-`statusline` prints one compact line and exits: today, calendar-week-to-date spend versus the same weekdays last week, month-to-date spend versus matched days in the previous month, then a six-cell budget bar and percentage. Shorter previous months explicitly label the matched-day subtotals. The monthly budget defaults to $2,000; `--monthly-budget USD` overrides it. Monthly spend includes every discovered Claude/Codex session and agent pool, independent of filters and selected dates. JSON retains matched-day monthly comparison metadata. Coral changes to amber at 65%, orange at 80% and red at 100%, against a dark gray background. `--color` forces colors in piped output; `--no-color` disables them. A `+` marks incomplete pricing. It has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
+`statusline` prints one compact line and exits: today, calendar-week-to-date spend versus the same weekdays last week, month-to-date spend versus matched days in the previous month, then a six-cell budget bar and percentage. Shorter previous months explicitly label the matched-day subtotals. The monthly budget defaults to $2,000; `--monthly-budget USD` overrides it. Monthly spend includes every discovered Claude/Codex session and agent pool, independent of filters and selected dates. JSON retains matched-day monthly comparison metadata. Coral changes to amber at 65%, orange at 80% and red at 100%, against a dark gray background. `--color` forces colors in piped output; `--no-color` disables them. Text keeps monetary amounts and budget percentages uncluttered; only comparison deltas use a positive sign. JSON retains incomplete-pricing metadata. It has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
 
 ## Updates and local data
 

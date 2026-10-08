@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -326,17 +327,18 @@ def parser():
     cli = argparse.ArgumentParser(description='Local AISAD usage reports, dashboard and skill updates.', allow_abbrev=False)
     commands = cli.add_subparsers(dest='command', required=True)
     install = commands.add_parser('install', help='Install a released skill', allow_abbrev=False)
+    install.add_argument('--cli-dir', help='Also install an aisad terminal command in this directory; no shell settings are changed')
     install.add_argument('--target', choices=['codex', 'claude', 'both'], default='codex')
     install.add_argument('--dest', help='Custom skills parent directory')
     install.add_argument('--version', help='Published stable version, e.g. 1.0.0')
     install.add_argument('--allow-downgrade', action='store_true', help='Allow an intentional reinstall to a lower version; preserves local edits and data')
     install.add_argument('--archive', help='Local release skill ZIP for offline installation')
     install.add_argument('--checksum-file', help='Local SHA256SUMS (required with --archive)')
-    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices']:
+    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget']:
         command = commands.add_parser(name, allow_abbrev=False,
-                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices') else None)
+                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
-        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
+        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
             command.add_argument('--offline', action='store_true', help='Skip all update network requests')
     return cli
 
@@ -369,7 +371,7 @@ def refresh_prices(runtime, data, offline):
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
+    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
     root = Path(__file__).absolute().parents[1]
     if args.command == 'install':
@@ -392,9 +394,20 @@ def main(argv=None):
                 destinations.append(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser().absolute() / 'skills/aisad')
             if args.target in ('claude', 'both'):
                 destinations.append(Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser().absolute() / 'skills/aisad')
+        cli_path = None
+        if args.cli_dir:
+            cli_path = Path(args.cli_dir).expanduser().absolute() / 'aisad'
+            cli_body = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 ' + shlex.quote(str(destinations[0] / 'scripts/aisad.py')) + ' "$@"\n'
+            if cli_path.is_symlink() or (cli_path.exists() and cli_path.read_text() != cli_body):
+                raise UpdateError('Existing terminal command preserved: ' + str(cli_path))
         for destination in destinations:
             version = install_files(destination, manifest, files, allow_downgrade=args.allow_downgrade)
             print('Installed AISAD ' + version + ' at ' + str(destination))
+        if cli_path is not None:
+            cli_path.parent.mkdir(parents=True, exist_ok=True)
+            cli_path.write_text(cli_body)
+            cli_path.chmod(0o755)
+            print('Installed terminal command at ' + str(cli_path))
         return 0
     data = data_directory(args.data_dir)
     if data == root.resolve() or root.resolve() in data.parents:
@@ -412,7 +425,7 @@ def main(argv=None):
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
     changed = False
-    if not args.offline and os.environ.get('AISAD_AUTO_UPDATE', '1') != '0':
+    if args.command != 'budget' and not args.offline and os.environ.get('AISAD_AUTO_UPDATE', '1') != '0':
         try:
             changed = update(root, data, automatic=True)
         except (OSError, ValueError, UpdateError, zipfile.BadZipFile) as error:
@@ -423,8 +436,8 @@ def main(argv=None):
     runtime = root / 'runtime/agent_usage.py'
     if not runtime.is_file():
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
-    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices') else []
-    if args.command != 'prices':
+    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else []
+    if args.command not in ('prices', 'budget'):
         refresh_prices(runtime, data, args.offline)
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
 

@@ -142,9 +142,10 @@ class EvidenceTests(unittest.TestCase):
 
     def test_no_network_hooks_or_background_process_for_every_command(self):
         self.write('.codex/sessions/root.jsonl',self.trace())
-        for command in ['usage','collect','sessions','session','dashboard','statusline']:
+        for command in ['usage','collect','sessions','session','dashboard','statusline','chart','budget']:
             out=io.StringIO()
-            args=[command,'--home',str(self.home),'--output',str(self.output),'--to','2026-09-07','--json']
+            args=[command,'--home',str(self.home),'--output',str(self.output),'--json']
+            if command!='chart':args+=['--to','2026-09-07']
             if command in ['session','statusline']:args+=['--session','Codex:root']
             with contextlib.redirect_stdout(out),patch('socket.socket',side_effect=AssertionError('Network used')),patch('subprocess.Popen',side_effect=AssertionError('Child process used')):
                 app.main(args)
