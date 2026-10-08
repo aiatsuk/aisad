@@ -1349,6 +1349,14 @@ def statusline_report(snapshot,report,args):
             previous_period={'from':previous_first.isoformat(),'to':previous_end,'days':compared_days},
             current=current['totals'],previous=previous['totals'],changes=usage_changes(current,previous)),
         scope='Calendar month to date, all providers, projects, sessions and agent pools; independent of report filters.')
+    monday=day-dt.timedelta(days=day.weekday());prior_monday=monday-dt.timedelta(days=7)
+    prior_day=day-dt.timedelta(days=7)
+    week_current=dict(totals=usage_totals([r for r in snapshot['rows'] if monday.isoformat()<=r['date']<=today]))
+    week_previous=dict(totals=usage_totals([r for r in snapshot['rows'] if prior_monday.isoformat()<=r['date']<=prior_day.isoformat()]))
+    weekly=dict(period={'from':monday.isoformat(),'to':today,'days':day.weekday()+1},
+        previous_period={'from':prior_monday.isoformat(),'to':prior_day.isoformat(),'days':day.weekday()+1},
+        current=week_current['totals'],previous=week_previous['totals'],changes=usage_changes(week_current,week_previous),
+        scope='Calendar week to date versus the same weekdays last week, all sessions and agent pools.')
     filters=report['filters']
     today_rows=[r for r in snapshot['rows'] if r['date']==today and
         all(not filters[key] or (canonical_model(r[key]) if key=='model' else r.get(key,'interactive') if key=='pool' else r[key])==filters[key]
@@ -1357,7 +1365,7 @@ def statusline_report(snapshot,report,args):
         previous=report['previous']['totals'] if report['previous'] else None,
         today=usage_totals(today_rows),changes=report['changes'],by_date=report['current']['by_date'])
     return dict(schema_version=2,version=VERSION,generated=snapshot['generated'],period=period,
-        summary=summary,monthly_budget=monthly,
+        summary=summary,monthly_budget=monthly,weekly=weekly,
         session=dict(id=latest['session'] if latest else wanted,selection=selection,records=len(matching),
             model=latest['model'] if latest else None,context_tokens=latest['input'] if latest else None,
             cache_share=latest['cached']/latest['input'] if latest and latest['input'] else None,
@@ -1373,30 +1381,29 @@ def statusline_text(result,color=False):
         known=value['known_cost_usd']
         high=value.get('cost_high_usd',value.get('estimated_cost_high_usd'))
         return f"${known:,.2f}"+('+' if value['unpriced_requests'] or high-known>.005 else '')
-    monthly=result['monthly_budget'];comparison=monthly['comparison']
-    label='mo'
-    if comparison['period']['days']<monthly['period']['days']:label+=f" {comparison['period']['days']}d"
-    line=label+' '+money(comparison['current'])+' vs '+money(comparison['previous'])
-    change=comparison['changes'].get('estimated_cost_usd',{})
+    monthly=result['monthly_budget'];weekly=result['weekly']
+    line='wk '+money(weekly['current'])+' vs '+money(weekly['previous'])
+    change=weekly['changes'].get('estimated_cost_usd',{})
     if change.get('status')=='available':line+=f" ({change['percent']:+.0f}%)"
     line+=' · td '+money(monthly['today'])
     ratio=monthly['known_cost_usd']/monthly['budget_usd']
-    filled=min(20,max(0,int(ratio*20)))
-    progress='█'*filled;remaining='░'*(20-filled)
-    budget=monthly['budget_usd']
-    limit=f"${budget:,.0f}" if budget.is_integer() else f"${budget:,.2f}"
-    spent=money(monthly)
+    # Six cells, each with eighth-cell precision; cap the bar, not the amount.
+    units=min(48,max(0,int(ratio*48+1e-9)));filled,partial=divmod(units,8)
+    progress='█'*filled+('▏▎▍▌▋▊▉'[partial-1] if partial else '')
+    remaining=6-len(progress)
+    if not monthly['observed_requests']:percent='unavailable'
+    elif monthly['observed_requests']==monthly['unpriced_requests']:percent='unpriced'
+    else:
+        percent=f"{ratio*100:.1f}%"+('+' if not monthly['pricing_complete'] else '')
     if color:
         palette={0:'215;119;87',65:'229;181;103',80:'232;146;74',100:'224;108;117'}
         accent='\x1b[38;2;'+palette[monthly['nudge_percent']]+'m'
         muted='\x1b[38;2;112;112;112m';reset='\x1b[0m'
         line=muted+line+reset
-        progress=accent+progress+muted+remaining+reset
-        amount=accent+spent+muted+' / '+limit+reset
-    else:
-        progress+=remaining
-        amount=spent+' / '+limit
-    return line+'\n'+progress+' '+amount
+        progress='\x1b[48;2;45;45;45m'+accent+progress+' '*remaining+reset
+        percent=accent+percent+reset
+    else:progress='['+progress+'░'*remaining+']'
+    return line+' · '+progress+' '+percent
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

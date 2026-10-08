@@ -139,20 +139,19 @@ python3 agent_usage.py statusline --monthly-budget 3000 --color
 python3 agent_usage.py statusline --json
 ```
 
-AISAD prints two lines; Claude Code's own mode indicator can appear beneath them:
+AISAD prints one compact line; Claude Code's own mode indicator can appear beneath it:
 
 ```text
-mo $647.75+ vs $353.64+ (+83%) · td $11.45+
-██████░░░░░░░░░░░░░░ $647.75+ / $2,000
+wk $647.75+ vs $353.64+ (+83%) · td $11.45+ · [█▉░░░░] 32.4%+
 ```
 
-The first line compares calendar-month-to-date spend with the same number of calendar days in the previous month and shows today's estimate across all sessions and agent pools. For example, October 1–8 compares with September 1–8. When the previous month is shorter, both comparison windows stop at the last common day: March 31 compares March 1–28 with February 1–28 in a non-leap year, labelled `mo 28d`. The budget bar still counts all March usage through March 31. Missing dates are not treated as evidence of zero usage; no extrapolation is made. A cost delta appears only when both windows have comparable priced observations. `+` marks an estimate with unpriced observations or a pricing range; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+The line compares calendar-week-to-date spend (Monday through today) with the same weekdays in the previous week, followed by today's estimate and a compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. `+` marks incomplete pricing; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
 
-The second line shows **calendar-month-to-date** estimated API cost against a **$2,000 default monthly budget**. `--monthly-budget USD` overrides the amount. It includes all discovered Claude and Codex sessions, subagents, reviews and managed agents exactly once, regardless of report filters, selected dates or session. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate optional selected-period pool budgets in JSON and the dashboard; they do not override the monthly limit.
+The budget remains **calendar-month-to-date** against a **$2,000 default monthly limit**, across all discovered sessions and agent pools. `--monthly-budget USD` overrides it. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate selected-period pool budgets in JSON and the dashboard.
 
-The 20-cell bar is warm coral below 65%, amber from 65%, orange from 80% and red from 100%; unused cells are muted gray. The bar fills at the limit while the amount continues to show overspend. No percentage or threshold label is added to this line. Terminal output enables colors automatically; `--color` also enables ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors.
+The bar is six terminal cells wide, with eighth-cell precision, a dark gray background and a percentage beside it. Its fill is warm coral below 65%, amber from 65%, orange from 80% and red from 100%. The fill caps at the limit while the percentage continues to show overspend. `+` beside the percentage marks incomplete pricing. Terminal output enables colors automatically; `--color` forces ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors. Plain output brackets the bar and uses shaded unused cells.
 
-`statusline --json` retains session, harness and pool fields and adds `summary` and `monthly_budget`, including daily summary groups, the month dates, scope, pricing coverage and threshold. `monthly_budget.comparison` names both matched windows, their totals and comparison basis; the existing selected-period `summary` remains available in JSON. Costs are API-equivalent estimates, not subscription billing or enforced spending caps. The command still prints one snapshot and exits.
+`statusline --json` retains the session, harness, pool and selected-period summary fields and exposes `weekly` and `monthly_budget`. Monthly comparison metadata remains available in `monthly_budget.comparison`: equal day windows from the beginning of each month, capped to the last common day if the previous month is shorter, while the budget includes every current-month day through today. Missing history is unavailable rather than assumed zero; costs are API-equivalent estimates, not subscription billing or enforced caps. The command prints one snapshot and exits.
 
 ## Install the skill
 

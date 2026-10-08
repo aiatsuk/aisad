@@ -2,10 +2,10 @@
 
 ## 1.2.0 — 2026-10-08
 
-- Render two AISAD status lines: calendar-month-to-date spend versus matched calendar days in the previous month and today, then a calendar-month-to-date budget bar.
+- Render one compact AISAD line: calendar-week-to-date spend versus the same weekdays last week, today, then a six-cell calendar-month budget bar with a percentage.
 - Compare equal calendar-day windows, including February, leap years and year rollover; the budget always counts every day of the current month to date.
 - Default the monthly budget to $2,000 across all discovered Claude/Codex sessions and agent pools, independent of report filters; add `--monthly-budget USD` to override it.
-- Use warm coral, amber at 65%, orange at 80% and red at 100%, with muted gray unused cells; support forced and suppressed ANSI colors and preserve incomplete-pricing markers.
+- Use warm coral, amber at 65%, orange at 80% and red at 100%, with a dark gray bar background and fractional-cell fill; support forced and suppressed ANSI colors and preserve incomplete-pricing markers.
 - Keep existing status-line session/harness/pool JSON fields and add period/day summary and monthly budget metadata.
 
 ## 1.1.3 — 2026-10-01
