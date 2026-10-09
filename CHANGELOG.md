@@ -2,6 +2,10 @@
 
 ## 1.2.0 — 2026-10-08
 
+- Replace the decorative wave/grid badge with a calendar-month usage minimap with thin provider curves, corresponding-day morphs and fading samples, preserving gaps and unpriced markers in graph and weekly views.
+- Improve terminal pacing with a clock/throttle margin, grouped styled text and memoized stable rows.
+- Prevent a completed target graph flashing before month morphs; prepare transitions before commit and use a quiet 360 ms quintic curve with exact endpoints. Test every atomic first frame and rapid retargeting.
+
 - Add bounded Braille particle morphs for Ink month/view navigation, with interruption continuity, idle clock suspension, static accessibility modes and synthetic PTY coverage. Exact prices and axes remain text.
 
 - Add weekly Total rows, five daily-spend intensity colors and deterministic Python Insights: recent weekday averages and a recency-weighted shared-budget forecast, preserving gaps and unknown prices.

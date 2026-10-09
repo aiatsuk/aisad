@@ -87,23 +87,31 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
     try:
         initial=expect(b'Q quit')+settle()
         animated=not env_overrides and not ascii and color
-        if animated:assert initial.count(b'\x1b[?2026h')>=4, ('No initial animation ticks',initial.count(b'\x1b[?2026h'),len(initial))
+        # The minimap is real data immediately, with no decorative intro.
+        def minimap():
+            lines=screen.lines();controls=next(i for i,line in enumerate(lines) if 'Q quit' in line)
+            return tuple(line.ljust(screen.columns)[-20:] for line in lines[controls-1:controls+1])
+        initial_map=minimap()
+        if env.get('INK_SCREEN_READER')!='true':assert ''.join(initial_map).strip(), 'Missing initial usage minimap'
         assert b'Total' in initial and b'Insights' in initial
         assert b'enlarge the terminal' not in initial
         assert read(.25)==b'', 'Idle UI must stop rendering'
         os.write(master,b'w');expect(b'Cost per Day');settle()
+        if env.get('INK_SCREEN_READER')!='true':assert minimap()==initial_map, 'W changed the selected month minimap'
         assert read(.25)==b''
         assert not any(0x2800<=ord(c)<=0x28ff for line in screen.body() for c in line), ('Particles remain in settled plot',list(enumerate(screen.lines())))
         os.write(master,b'h');middle=expect(b'Sep 2026')
         # Wait for an emitted frame, not a fixed 90 ms read window. Linux's
-        # scheduler can deliver the first dirty badge/plot later than macOS.
+        # scheduler can deliver the first dirty minimap/plot later than macOS.
         if animated:
             deadline=time.monotonic()+.35
             while not any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')) and time.monotonic()<deadline:middle+=read(.02)
             assert any(0x2800<=ord(c)<=0x28ff for c in middle.decode(errors='replace')), ('No navigation morph frame',len(middle),screen.lines())
         else:middle+=read(.09)
-        # Interrupt both plot and badge mid-morph; the target table must be exact.
-        os.write(master,b'w');expect(b'Cost by Weekday');settle()
+        # Interrupt both plot and minimap mid-morph; the target table must be exact.
+        os.write(master,b'w');navigation=middle+expect(b'Cost by Weekday')+settle()
+        if animated:assert navigation.count(b'\x1b[?2026h')>=4, 'No navigation animation ticks'
+        if env.get('INK_SCREEN_READER')!='true':assert minimap()!=initial_map, 'Month navigation retained the old usage minimap'
         assert read(.25)==b''
         if env.get('INK_SCREEN_READER')!='true':
             content='\n'.join(screen.lines());expected=app.terminal_week_text(dataset['months'][0]['report'],110,color=False,ascii_only=ascii)
@@ -116,7 +124,7 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         resized=settle();assert b'enlarge the terminal' not in resized
         assert read(.25)==b'', 'Resize must not leave a running clock'
         if not animated:
-            # A static badge may contain Braille, but no delayed animation writes.
+            # A static minimap may contain Braille, but no delayed animation writes.
             os.write(master,b'h');expect(b'Sep 2026');read(.08)
             assert read(.3)==b'', 'Static mode must not animate'
             os.write(master,b'l');expect(b'Oct 2026');read(.08)

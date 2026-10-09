@@ -1,9 +1,11 @@
 /** React-independent, normalized particle motion; no timers or terminal writes. */
 export type Point = {x: number; y: number; color?: number};
 export type Shape = {points: Float32Array; colors: Uint8Array; visible: boolean};
-export type Raster = {width: number; height: number; masks: Uint8Array; colors: Uint8Array};
+export type Raster = {width: number; height: number; masks: Uint8Array; colors: Uint8Array;opacity?:Uint8Array};
 export const DOT_BITS = [[1,8],[2,16],[4,32],[64,128]] as const;
 const clamp = (value: number): number => Math.max(0,Math.min(1,value));
+/** Quintic ease-in-out: zero velocity and acceleration at both endpoints. */
+export const easeInOut = (value:number):number => {const t=clamp(value);return t*t*t*(t*(6*t-15)+10);};
 export function morton(x: number,y: number): number {
   const spread=(value:number):number=>{let n=Math.floor(clamp(value)*1023);n=(n|(n<<8))&0x00ff00ff;n=(n|(n<<4))&0x0f0f0f0f;n=(n|(n<<2))&0x33333333;return (n|(n<<1))&0x55555555;};
   return spread(x)|(spread(y)<<1);
@@ -40,7 +42,15 @@ export class Morph {
     this.fromAlpha=new Float32Array(this.count);this.toAlpha=new Float32Array(this.count);this.colors=new Uint8Array(this.count);
     for(let i=0;i<this.count;i++){this.x[i]=this.toX[i]=initial.points[i*2]!;this.y[i]=this.toY[i]=initial.points[i*2+1]!;this.alpha[i]=this.toAlpha[i]=Number(initial.visible);this.colors[i]=initial.colors[i]!;}
   }
-  morphTo(target:Shape,now:number,duration=420):void {
+  /** Fork only the visible pose; a prepared transition cannot mutate a committed one. */
+  copy():Morph {
+    const points=new Float32Array(this.count*2);
+    for(let i=0;i<this.count;i++){points[i*2]=this.x[i]!;points[i*2+1]=this.y[i]!;}
+    const result=new Morph({points,colors:this.colors,visible:true});
+    result.alpha.set(this.alpha);result.fromAlpha.set(this.alpha);result.toAlpha.set(this.alpha);
+    return result;
+  }
+  morphTo(target:Shape,now:number,duration=500):void {
     if(target.colors.length!==this.count||target.points.length!==this.count*2||!Number.isFinite(now)||!Number.isFinite(duration)||duration<0)throw new Error('Invalid transition');
     this.update(now);this.fromX.set(this.x);this.fromY.set(this.y);this.fromAlpha.set(this.alpha);
     const sources=Array.from({length:this.count},(_,i)=>i).sort((a,b)=>morton(this.x[a]!,this.y[a]!)-morton(this.x[b]!,this.y[b]!));
@@ -49,13 +59,11 @@ export class Morph {
     this.started=now;this.duration=duration;this.update(now);
   }
   update(now:number):boolean {
-    const t=this.duration?clamp((now-this.started)/this.duration):1,e=t*t*(3-2*t);
-    // A deterministic small arc has zero displacement at both endpoints.
-    const drift=Math.sin(Math.PI*t)*.018;
+    const t=this.duration?clamp((now-this.started)/this.duration):1,e=easeInOut(t);
     for(let i=0;i<this.count;i++) {
-      this.x[i]=clamp(this.fromX[i]!+(this.toX[i]!-this.fromX[i]!)*e+drift*Math.sin(i*2.399));
-      this.y[i]=clamp(this.fromY[i]!+(this.toY[i]!-this.fromY[i]!)*e+drift*Math.cos(i*2.399));
-      this.alpha[i]=this.fromAlpha[i]!+(this.toAlpha[i]!-this.fromAlpha[i]!)*e;
+      this.x[i]=t===1?this.toX[i]!:this.fromX[i]!+(this.toX[i]!-this.fromX[i]!)*e;
+      this.y[i]=t===1?this.toY[i]!:this.fromY[i]!+(this.toY[i]!-this.fromY[i]!)*e;
+      this.alpha[i]=t===1?this.toAlpha[i]!:this.fromAlpha[i]!+(this.toAlpha[i]!-this.fromAlpha[i]!)*e;
     }
     return t<1;
   }

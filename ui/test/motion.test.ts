@@ -1,5 +1,5 @@
 import {describe,expect,test} from 'bun:test';
-import {badgeShape,braille,DOT_BITS,Morph,morton,motionEnabled,shape} from '../src/motion.js';
+import {badgeShape,braille,DOT_BITS,Morph,morton,motionEnabled,shape,easeInOut} from '../src/motion.js';
 import {graphScene,overlayGraph} from '../src/motion-ui.js';
 import type {Row} from '../src/types.js';
 const point=(x:number,y:number)=>shape([{x,y}],1);
@@ -26,6 +26,24 @@ describe('normalized motion core',()=>{
     expect([...engine.x,...engine.y]).toEqual(before);expect(engine.update(580)).toBe(false);
     expect(engine.x[0]).toBeCloseTo(.2,6);expect(engine.y[0]).toBeCloseTo(.8,6);
     expect(engine.update(900)).toBe(false);
+  });
+  test('quintic curve is monotone with quiet starts and exact stops',()=>{
+    expect(easeInOut(0)).toBe(0);expect(easeInOut(1)).toBe(1);expect(easeInOut(.5)).toBe(.5);
+    expect(easeInOut(.1)).toBeLessThan(.02);expect(easeInOut(.9)).toBeGreaterThan(.98);
+    const values=Array.from({length:101},(_,i)=>easeInOut(i/100));
+    expect(values.every((value,i)=>value>=0&&value<=1&&(!i||value>=values[i-1]!))).toBe(true);
+    const engine=new Morph(point(.1,.2));engine.morphTo(point(.9,.8),0,500);engine.update(.5);
+    expect(Math.abs(engine.x[0]!-.1)).toBeLessThan(1e-6);expect(Math.abs(engine.y[0]!-.2)).toBeLessThan(1e-6);
+    engine.update(499.5);expect(Math.abs(engine.x[0]!-.9)).toBeLessThan(1e-6);expect(Math.abs(engine.y[0]!-.8)).toBeLessThan(1e-6);
+    expect(engine.update(500)).toBe(false);expect(engine.x[0]).toBe(point(.9,.8).points[0]!);
+  });
+  test('forked retargets preserve the visible pose and do not mutate a committed transition',()=>{
+    const original=new Morph(point(.1,.1));original.morphTo(point(.9,.9),0,500);original.update(150);
+    const visible=[...original.x,...original.y,...original.alpha],fork=original.copy();fork.morphTo(point(.2,.8),150);
+    expect([...fork.x,...fork.y,...fork.alpha]).toEqual(visible);expect([...original.x,...original.y,...original.alpha]).toEqual(visible);
+    original.update(500);fork.update(650);expect(original.x[0]).toBeCloseTo(.9,6);expect(fork.x[0]).toBeCloseTo(.2,6);
+    const fading=new Morph(point(.1,.1));fading.morphTo(shape([],1),0,500);fading.update(200);
+    expect(fading.copy().alpha).toEqual(fading.alpha);
   });
   test('reuses and clears buffers; empty shapes fade to no cells',()=>{
     const engine=new Morph(point(.1,.1)),raster=engine.render(10,2),buffer=raster.masks;
