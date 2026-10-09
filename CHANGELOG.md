@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add an optional frozen weekly and monthly known-spend forecast with a suggested budget quantile: `budget --forecast on|off`, `budget --quantile Q` and `forecast`. Idle days count as $0, unpriced days stay missing, forecasts are written once per period to `forecast.json`, and pace is shown separately. The saved limit is never changed automatically.
+
 ## 1.2.0 — 2026-10-08
 
 - Replace the decorative wave/grid badge with a calendar-month usage minimap with thin provider curves, corresponding-day morphs and fading samples, preserving gaps and unpriced markers in graph and weekly views.

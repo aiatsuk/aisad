@@ -142,7 +142,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_no_network_hooks_or_background_process_for_every_command(self):
         self.write('.codex/sessions/root.jsonl',self.trace())
-        for command in ['usage','collect','sessions','session','dashboard','statusline','chart','budget']:
+        for command in ['usage','collect','sessions','session','dashboard','statusline','chart','budget','forecast']:
             out=io.StringIO()
             args=[command,'--home',str(self.home),'--output',str(self.output),'--json']
             if command!='chart':args+=['--to','2026-09-07']

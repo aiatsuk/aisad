@@ -76,7 +76,7 @@ python3 agent_usage.py usage --json --all-time --include-requests
 
 Use `usage --json --include-requests` to inspect request timing, input/output tokens, cache usage, and numeric tool/MCP counts and sizes. These records support questions such as “Which sessions had the largest tool payloads?” or “How did cache usage change this week?” Tool bytes are measured locally and are not converted into billed tokens. Missing tool telemetry is reported explicitly.
 
-`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. AISAD does not generate recommendations, flag workflow patterns, or estimate hypothetical savings.
+`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. AISAD does not generate recommendations, flag workflow patterns, or estimate hypothetical savings. The one exception is the optional, off-by-default spend forecast below, which is a statistical projection of known cost.
 
 Usage and status-line JSON now use `schema_version: 2`. Usage reports replace `diagnostics` with `telemetry` and `analysis_records` with `request_stats`; `analysis_rules` is removed. Status-line reports omit coaching fields. Token and cost totals, breakdowns, periods and comparisons keep their existing field names. The full `usage.json` snapshot exposes numeric request statistics in `request_stats`.
 
@@ -155,6 +155,15 @@ The bar is six terminal cells wide, with eighth-cell precision, a dark gray back
 
 `statusline --json` retains the session, harness, pool and selected-period summary fields and exposes `weekly` and `monthly_budget`. Monthly comparison metadata remains available in `monthly_budget.comparison`: equal day windows from the beginning of each month, capped to the last common day if the previous month is shorter, while the budget includes every current-month day through today. Missing history is unavailable rather than assumed zero; costs are API-equivalent estimates, not subscription billing or enforced caps. The command prints one snapshot and exits.
 
+## Spend forecast and suggested budget
+
+`budget --forecast on` enables an optional, deterministic Python forecast; `forecast` prints it (`--json` for fields). It forecasts known API-equivalent cost for the current Monday–Sunday week and calendar month and suggests a budget, the chosen quantile (default 80%, `budget --quantile Q`, 0.5–0.99) of the forecast. Nothing is sent anywhere, no model is involved, and the saved limit is never changed: only `budget --set` does that.
+
+- **Data:** all Claude/Codex sessions and pools, independent of display filters. A day without requests counts as $0; a wholly unpriced day or a day before the first record is missing. At least three complete Monday–Sunday weeks of history and ten days with priced spend in the last 21 days are required, otherwise the reason is printed.
+- **Method:** an exponentially weighted weekday profile (14-day half-life, weekend and weekday classes shrunk to their group) summed over the actual days of the period. The target is a Student-t log-spread quantile until six earlier outcomes can be replayed from local history, then the quantile of those outcome ratios. Output says `uncalibrated` or `calibrated` and a low/medium/high confidence; low pricing coverage and a recent level shift lower confidence.
+- **Frozen:** each week's and month's forecast uses only earlier days and is written once to `output/forecast.json`; it does not move during the period. `pace` (actual to date plus the same profile for the remaining days) is a separate number. A finished period receives its actual so accuracy can be checked. Changing the quantile applies from the next period.
+- **Limits:** spend is bursty, so even the best methods are often off by a large fraction (about 70% weekly in the maintainer's own backtest), and unpriced models lower the known total. Treat the target as a planning aid, not a prediction of the bill.
+
 ## Terminal dashboard and saved budget
 
 ```sh
@@ -166,6 +175,8 @@ aisad chart --offline --json
 aisad budget
 aisad budget --set 3000
 aisad budget --reset
+aisad budget --forecast on --quantile 0.8
+aisad forecast
 ```
 
 `chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. Narrow terminals split the month into panels to keep the labels legible. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
