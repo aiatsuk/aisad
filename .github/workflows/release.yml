@@ -40,8 +40,20 @@ jobs:
         run: python3 scripts/release.py check --tag "$TAG"
       - name: Run the tests on the tagged source
         run: python3 -m unittest discover -v
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install pinned Bun build runtime
+        run: npm install --global bun@1.2.22
+      - name: Build the optional terminal UI
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          bun run check
+          bun run test
+          bun run build
       - name: Build assets and verify the tag matches VERSION
-        run: python3 scripts/build_release.py --tag "$TAG"
+        run: python3 scripts/build_release.py --tag "$TAG" --with-ui
       - name: Write release notes from the changelog section
         run: python3 scripts/release.py notes --tag "$TAG" > "$RUNNER_TEMP/notes.md"
       - name: Publish the stable release

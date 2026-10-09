@@ -25,7 +25,7 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def build(root, output, tag=None):
+def build(root, output, tag=None, with_ui=False):
     source = (root / 'agent_usage.py').read_bytes()
     version = version_from_source(source)
     if tag and tag != 'v' + version:
@@ -37,6 +37,15 @@ def build(root, output, tag=None):
             raise ValueError('Release source must not be a symlink: ' + name)
         payloads[name] = path.read_bytes()
     payloads['runtime/agent_usage.py'] = source
+    if with_ui:
+        meta=json.loads((root/'ui/dist/build-meta.json').read_text())
+        expected=['build.ts','package.json','tsconfig.json','bun.lock']+['src/'+path.name for path in sorted((root/'ui/src').glob('*')) if path.is_file()]
+        if meta.get('schema_version')!=1 or set(meta.get('inputs',{}))!=set(expected) or any(sha256((root/'ui'/name).read_bytes())!=meta['inputs'][name] for name in expected):
+            raise ValueError('Terminal UI sources changed; rebuild before --with-ui')
+        for name in ('aisad-ui.mjs','THIRD_PARTY_NOTICES.txt'):
+            path=root/'ui/dist'/name
+            if path.is_symlink() or not path.is_file():raise ValueError('Build the terminal UI before --with-ui: '+name)
+            payloads['runtime/ui/'+name]=path.read_bytes()
     manifest = dict(schema=1, repository='aiatsuk/aisad', version=version,
                     files={name: sha256(data) for name, data in sorted(payloads.items())})
     payloads['manifest.json'] = (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode('utf-8')
@@ -59,8 +68,9 @@ def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('--output', default=str(ROOT / 'dist'))
     cli.add_argument('--tag', help='Require this release tag to match the source version')
+    cli.add_argument('--with-ui',action='store_true',help='Include the built, optional Bun/Ink terminal UI')
     args = cli.parse_args()
-    version, files = build(ROOT, Path(args.output).expanduser().resolve(), args.tag)
+    version, files = build(ROOT, Path(args.output).expanduser().resolve(), args.tag,with_ui=args.with_ui)
     print('Built AISAD ' + version)
     for path in files:
         print(path)

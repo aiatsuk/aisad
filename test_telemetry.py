@@ -139,7 +139,9 @@ class TelemetryTests(unittest.TestCase):
                     self.assertEqual(result['session']['records'], 2)
                     # A provider filter must not reduce the shared pool.
                     self.assertGreater(result['pools']['interactive']['known_cost_usd'], 0)
-                    self.assertIn('Session $', app.statusline_text(result))
+                    self.assertTrue(app.statusline_text(result).startswith('td '))
+                    self.assertEqual(len(app.statusline_text(result).splitlines()), 1)
+                    self.assertEqual(result['monthly_budget']['budget_usd'], 2000)
             self.assertEqual(reports['usage']['current'], reports['analyze']['current'])
             self.assertFalse((root / 'report/dashboard.html').exists())
             self.assertFalse((root / 'report/status.json').exists())
@@ -154,6 +156,32 @@ class TelemetryTests(unittest.TestCase):
                     elif isinstance(value, list):
                         for child in value: assert_statistics(child)
                 assert_statistics(json.loads(path.read_text()))
+
+    def test_terminal_ui_receives_only_aggregates_and_preserves_month_budgets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args=app.parser().parse_args(['chart','--output',temporary])
+            app.atom_json(Path(temporary)/'budget.json',{'monthly_budget_usd':3000})
+            def row(date,cost):
+                return dict(date=date,cost=cost,cost_high=cost,provider='Claude',requests=1,unpriced=0,
+                    model='claude-opus-5',project='PRIVATE PROJECT',role='main',pool='interactive')
+            rows=[row('2026-09-06',20),row('2026-10-04',10.35),row('2026-10-31',5000)]
+            snapshot=dict(as_of_date='2026-10-08',generated='2026-10-08T12:00:00Z',timezone='UTC',rows=rows,
+                request_stats=rows,grok_records=[],events=[{'text':'SECRET TRANSCRIPT'}],source_files=[{'path':'SECRET PATH'}])
+            dataset=app.terminal_ui_dataset(snapshot,args,True)
+            self.assertEqual([item['month'] for item in dataset['months']],['2026-09','2026-10'])
+            reports={item['month']:item['report'] for item in dataset['months']}
+            self.assertEqual(reports['2026-09']['monthly_budget']['known_cost_usd'],20)
+            self.assertEqual(reports['2026-10']['monthly_budget']['known_cost_usd'],10.35)
+            self.assertTrue(all(r['monthly_budget']['budget_usd']==3000 for r in reports.values()))
+            encoded=json.dumps(dataset)
+            for private in ['SECRET','PRIVATE PROJECT','source_files','request_stats','events']:self.assertNotIn(private,encoded)
+            self.assertEqual(dataset['initial_month'],'2026-10')
+            self.assertTrue(dataset['options']['color'])
+
+    def test_portable_ui_fallback_does_not_prepare_a_dataset(self):
+        with patch.object(app,'terminal_ui_dataset',side_effect=AssertionError('Unexpected UI preparation')):
+            with patch.object(app.shutil,'which',return_value=None):self.assertIsNone(app.terminal_ink_ui({},None))
+            with patch.dict(os.environ,{'AISAD_TERMINAL_UI':'python'}):self.assertIsNone(app.terminal_ink_ui({},None))
 
     def test_watch_and_hook_modes_are_rejected_before_collecting(self):
         for args in [['--watch', '60'], ['statusline', '--watch', '5'], ['statusline', '--stdin']]:

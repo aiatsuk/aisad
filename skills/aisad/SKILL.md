@@ -5,7 +5,7 @@ description: Analyze local Claude Code and Codex usage on demand, with text or J
 
 # AISAD
 
-Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files and exits. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
+Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files on demand; the interactive chart waits for keyboard input and exits with Q/Escape. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
 
 Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
 
@@ -61,6 +61,25 @@ For broad queries, use local Python and open `output/sessions.sqlite` read-only 
 
 Original prompts, answers, reasoning, tool arguments/results and compaction summaries are not copied into reports or the database. Source references can locate original records while the local files still exist; fingerprints detect changes. Do not reconstruct missing payloads or infer exact tool cost from byte counts.
 
+## Terminal chart and budget
+
+```sh
+python3 <skill-directory>/scripts/aisad.py chart --offline --color
+python3 <skill-directory>/scripts/aisad.py chart --offline --color --interactive
+python3 <skill-directory>/scripts/aisad.py chart --offline --color --view weeks --snapshot
+python3 <skill-directory>/scripts/aisad.py budget
+python3 <skill-directory>/scripts/aisad.py budget --set 3000
+python3 <skill-directory>/scripts/aisad.py budget --reset
+```
+
+For a requested visual terminal chart, execute `chart --offline --color` and show the actual terminal output. Do not recreate the graph in an assistant message, strip its colors, switch to `--ascii`, or substitute an ASCII code block. If the chat surface cannot display ANSI colors, provide the command to run in the user's terminal instead of pretending a text reconstruction is the chart. Use `--ascii` only when the user explicitly asks for ASCII compatibility.
+
+When its checked bundle and Bun are available, the interactive chart uses a strict TypeScript/React/Ink UI with live resize and automatic terminal cleanup. Its input contains only monthly numeric aggregates, never transcripts or source paths. It keeps the same W/H/L/Q controls. Without Bun/the bundle, the portable Python UI remains available; `AISAD_TERMINAL_UI=python` selects it explicitly. Snapshot/JSON commands never launch that UI. No runtime package installation or network connection is needed.
+
+`chart` renders a calendar-month daily cost chart with rounded Unicode step lines, daily number/weekday labels (weekends highlighted), and colored Claude/Codex lines and other providers when local data exists. Missing/future days stay blank, wholly unpriced days show `?`, and JSON retains incomplete-coverage metadata. Grok uses separately labelled provider-reported costs; the existing shared budget still covers Claude/Codex. `--json` exposes exact daily costs and coverage; `--ascii`, `--width`, `--height`, `--color` and `--no-color` control rendering. In a terminal, W toggles a Sunday-first weekday cost matrix, H/L or left/right arrows change months, and Q/Escape exits. The matrix has one column per calendar week with only the known daily cost in each cell; a Total row sums known weekly spend. Five spend levels use primary text through warm colors. Script-generated Insights summarize the recent 28 completed days, expensive weekdays and an approximate shared-budget forecast; no LLM or network is involved. `--month YYYY-MM` selects a month, `--view weeks` starts with the table, and `--snapshot` prints once. Piped output and JSON always remain one-shot. Keyboard navigation reuses one local snapshot, without polling or background collection. No server, watch loop or new hooks are installed.
+
+`budget` is always offline and does not collect sessions. `--set USD` saves a finite positive monthly limit in the data directory's `output/budget.json`; `--reset` restores $2,000. Statusline and chart use this value unless `--monthly-budget` overrides it. Change the saved limit only when requested. For a requested terminal launcher installation, the installer accepts `--cli-dir DIR`; it does not edit shell settings or overwrite an unrelated command.
+
 ## Prices
 
 ```sh
@@ -80,7 +99,7 @@ python3 <skill-directory>/scripts/aisad.py run -- --open
 
 This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context and Cache usage; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
 
-`statusline` prints one snapshot and exits; it has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
+`statusline` prints one compact line and exits: today, calendar-week-to-date spend versus the same weekdays last week, month-to-date spend versus matched days in the previous month, then a six-cell budget bar and percentage. Shorter previous months explicitly label the matched-day subtotals. The monthly budget defaults to $2,000; `--monthly-budget USD` overrides it. Monthly spend includes every discovered Claude/Codex session and agent pool, independent of filters and selected dates. JSON retains matched-day monthly comparison metadata. Coral changes to amber at 65%, orange at 80% and red at 100%, against a dark gray background. `--color` forces colors in piped output; `--no-color` disables them. Text keeps monetary amounts and budget percentages uncluttered; only comparison deltas use a positive sign. JSON retains incomplete-pricing metadata. It has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
 
 ## Updates and local data
 

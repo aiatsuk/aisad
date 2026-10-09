@@ -234,7 +234,7 @@ class SkillTests(unittest.TestCase):
         self.install()
         with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
              patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'run'):
-            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
                     self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
                     self.assertEqual(invoke.call_args[0][0][2], command)
@@ -304,6 +304,28 @@ class SkillTests(unittest.TestCase):
             skill.main(['install', '--target', 'both', '--archive', str(self.archive), '--checksum-file', str(self.assets[2])])
         for directory in [codex, claude]:
             self.assertTrue((directory / 'skills/aisad/runtime/agent_usage.py').is_file())
+
+
+    def test_optional_ui_bundle_is_whitelisted_and_rejects_stale_sources(self):
+        repository=self.root/'ui-repository';repository.mkdir()
+        (repository/'agent_usage.py').write_bytes((ROOT/'agent_usage.py').read_bytes())
+        for name in release.SKILL_FILES:
+            source=repository/'skills/aisad'/name;source.parent.mkdir(parents=True,exist_ok=True)
+            source.write_bytes((ROOT/'skills/aisad'/name).read_bytes())
+        ui=repository/'ui';(ui/'src').mkdir(parents=True);(ui/'dist').mkdir()
+        names=['build.ts','package.json','tsconfig.json','bun.lock','src/main.tsx']
+        for name in names:(ui/name).write_text('synthetic '+name)
+        meta={'schema_version':1,'inputs':{name:release.sha256((ui/name).read_bytes()) for name in names}}
+        (ui/'dist/build-meta.json').write_text(json.dumps(meta))
+        (ui/'dist/aisad-ui.mjs').write_text('// synthetic UI')
+        (ui/'dist/THIRD_PARTY_NOTICES.txt').write_text('Synthetic license notice')
+        _,assets=release.build(repository,self.root/'ui-dist',with_ui=True)
+        manifest,files=skill.checked_archive(assets[1].read_bytes(),assets[2].read_bytes(),assets[1].name)
+        self.assertEqual(files['runtime/ui/aisad-ui.mjs'],b'// synthetic UI')
+        self.assertIn('runtime/ui/THIRD_PARTY_NOTICES.txt',manifest['files'])
+        self.assertNotIn('build-meta.json',files)
+        (ui/'src/main.tsx').write_text('changed source')
+        with self.assertRaisesRegex(ValueError,'rebuild'):release.build(repository,self.root/'stale-dist',with_ui=True)
 
 
 if __name__ == '__main__':

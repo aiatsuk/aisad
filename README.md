@@ -1,8 +1,8 @@
 # AISAD — AI Session Analysis Dashboard
 
-An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Every command runs once and exits. The optional skill invokes the same standalone commands.
+An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Commands run on demand; the terminal dashboard waits for keyboard input and exits with Q/Escape. The optional skill invokes the same standalone commands.
 
-**Python 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
+**Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
 
@@ -130,6 +130,81 @@ Usage and session JSON expose `measurement_basis`: tokens and logged result byte
 ### Migration from monitoring modes
 
 `--watch` and `--stdin` are rejected before collecting. No dashboard server or browser polling remains. `statusline` is retained only as a manually invoked one-shot text/JSON snapshot. If you previously configured an external status hook or scheduler, remove that configuration yourself; AISAD does not edit other tools' settings.
+
+## Status line
+
+```sh
+python3 agent_usage.py statusline
+python3 agent_usage.py statusline --monthly-budget 3000 --color
+python3 agent_usage.py statusline --json
+```
+
+AISAD prints one compact line; Claude Code's own mode indicator can appear beneath it:
+
+```text
+td $11.45 · wk $647.75 vs $353.64 (+83%) · mo $950.02 vs $1,156.65 (-18%) [██▊░░░] 47.5%
+```
+
+The line shows today's estimate first, then calendar-week-to-date spend (Monday through today) versus the same weekdays in the previous week, followed by monthly spend and comparison, and the compact monthly-budget bar. For example, Monday–Thursday compares with Monday–Thursday one week earlier. Both weekly windows and today's estimate include all discovered Claude/Codex sessions and agent pools, independent of report filters. A cost delta appears only when both windows have comparable priced observations. Monetary amounts omit `+`; positive comparison deltas retain it. Incomplete-pricing metadata remains in JSON; no records show `unavailable`, and wholly unpriced observations show `unpriced`.
+
+The budget remains **calendar-month-to-date** against a **$2,000 default monthly limit**, across all discovered sessions and agent pools. `--monthly-budget USD` overrides the saved limit for this run. The month follows `--timezone` (system local timezone by default) and resets on the first day. Existing `--budget` and `--managed-budget` remain separate selected-period pool budgets in JSON and the dashboard.
+
+The `mo` block shows monthly spend followed by the previous-month subtotal and delta; the bar and budget percentage come last. They use equal day windows from the start of each month. If the previous month is shorter, an explicit `28d CURRENT vs PREVIOUS` (or `29d`/`30d`) shows both comparison subtotals, while the amount before the bar still covers the complete current month to date.
+
+The bar is six terminal cells wide, with eighth-cell precision, a dark gray background and a percentage beside it. Its fill is warm coral below 65%, amber from 65%, orange from 80% and red from 100%. The fill caps at the limit while the percentage continues to show overspend. Budget percentages omit `+`; JSON retains pricing coverage. Terminal output enables colors automatically; `--color` forces ANSI colors in piped output, and `--no-color` disables them. `NO_COLOR` and `TERM=dumb` disable automatic colors. Both colored and plain output bracket the bar and use shaded unused cells, with one space between each block.
+
+`statusline --json` retains the session, harness, pool and selected-period summary fields and exposes `weekly` and `monthly_budget`. Monthly comparison metadata remains available in `monthly_budget.comparison`: equal day windows from the beginning of each month, capped to the last common day if the previous month is shorter, while the budget includes every current-month day through today. Missing history is unavailable rather than assumed zero; costs are API-equivalent estimates, not subscription billing or enforced caps. The command prints one snapshot and exits.
+
+## Terminal dashboard and saved budget
+
+```sh
+aisad chart --offline --color
+aisad chart --offline --color --interactive
+aisad chart --offline --color --snapshot
+aisad chart --offline --color --view weeks --month 2026-09 --snapshot
+aisad chart --offline --json
+aisad budget
+aisad budget --set 3000
+aisad budget --reset
+```
+
+`chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. Narrow terminals split the month into panels to keep the labels legible. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
+
+The enhanced terminal view uses strict TypeScript, React and public upstream Ink, built into one module with Bun. Ink manages layout through Yoga, key handling, live terminal resize and alternate-screen cleanup. Python still collects and prices usage; the UI receives only monthly numeric aggregates, never transcript text, source paths or project names. Navigation reuses those aggregates and does not open network connections or rescan sessions.
+
+When the bundled UI and Bun are available, `aisad chart` selects it automatically. Otherwise the portable Python view remains available. Set `AISAD_TERMINAL_UI=python` to select that view explicitly. Snapshot and JSON commands continue to use Python without launching the UI. The enhanced UI browses loaded months, from the earliest available history/requested month through the current month.
+
+For UI development and a local bundle:
+
+```sh
+cd ui
+bun install --frozen-lockfile --ignore-scripts
+bun run check
+bun run test
+bun run build
+cd ..
+python3 scripts/build_release.py --tag v1.2.0 --with-ui
+```
+
+The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
+
+In the terminal, press **W** to switch between the graph and a weekday table, **H** for the previous month, **L** for the next month (up to the current month), and **Q** or Escape to exit. Left/right arrow keys also change months. `--interactive` requires a terminal; `--view weeks --snapshot` prints the table without waiting for keys. Navigation reuses the initial local snapshot; it does not poll, rescan, start a server or reach the network. Exiting restores the terminal.
+
+The weekday table has seven rows, Sunday through Saturday, and a column per Sunday–Saturday calendar week. Each cell shows only that day's known USD subtotal. Partial first/last weeks keep dates outside the month blank; unknown/future days show `—`, wholly unpriced days show `?`, and observed zero spend shows `$0.00`. Daily cells use five equal spend bands relative to the month's largest known daily subtotal: primary text, muted warm, coral, orange and amber; the highest band is bold. A final Total row shows each column's known weekly subtotal, keeping empty/unpriced columns distinct from observed zero. Below the table, Python generates a deterministic Insights summary with a budget forecast and the highest average spending weekdays over the last four completed weeks. Default cells combine Claude/Codex API estimates; Grok remains separate. With `--provider grok`, cells show Grok's reported cost. `chart --json` includes the same matrix in `weekday_view`.
+
+Run the command in the terminal to see the actual colored chart; an ASCII reconstruction in an assistant message is not a faithful preview. `--ascii` is an explicit compatibility fallback. Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series keep the visible provider's color. Incomplete pricing/coverage remains explicit in the footer and JSON. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
+
+`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
+
+To add the `aisad` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
+
+```sh
+python3 skills/aisad/scripts/aisad.py install --target both \
+  --archive dist/aisad-skill-v1.2.0.zip --checksum-file dist/SHA256SUMS \
+  --cli-dir "$HOME/.local/bin"
+```
+
+This installs a small launcher without editing shell settings and refuses to overwrite an unrelated existing command. Without it, invoke the installed helper with Python and the same commands. The existing offline HTML dashboard remains available through `aisad run --offline -- --open`.
 
 ## Install the skill
 
@@ -279,7 +354,9 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `dashboard.html` | Self-contained offline dashboard |
 | `usage.json` | Normalized usage evidence and local source metadata, written by evidence commands |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
-| `statusline.json` | Session/provider/pool and context/cache counters from `statusline` |
+| `chart.json` | Calendar-month daily costs and provider coverage from `chart` |
+| `budget.json` | Saved monthly limit shared by the local helpers |
+| `statusline.json` | Period/day summary, monthly budget, session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |
 | `prices-used.json` | Price catalog used for the snapshot |
 | `prices-models-dev.json` | Refreshed published rates, with the built-in table filling what they omit |

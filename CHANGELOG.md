@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0 — 2026-10-08
+
+- Add weekly Total rows, five daily-spend intensity colors and deterministic Python Insights: recent weekday averages and a recency-weighted shared-budget forecast, preserving gaps and unknown prices.
+
+- Add an optional strict TypeScript/React/Ink terminal UI, bundled with Bun, with resize-aware layout, keyboard readiness and automatic terminal cleanup. Python supplies aggregate-only monthly data; pricing and portable/headless operation remain in Python. Validate source fingerprints before packaging the UI.
+- Add daily number/weekday chart labels and a Sunday-first weekday cost matrix; W switches views, H/L or arrows browse calendar months, and Q/Escape restores the terminal. Piped/JSON output stays one-shot and navigation never rescans or polls.
+- Draw terminal charts with rounded Unicode lines, daily date/weekday labels and provider-colored crossings; guide agents to show the actual ANSI chart instead of an ASCII reconstruction.
+- Add `chart`: a terminal daily-cost graph for a selected calendar month (current by default), with colored provider lines, rounded USD ticks, explicit gaps/unknowns, Unicode/ASCII modes and JSON coverage.
+- Add offline `budget` show/set/reset commands, preserving the monthly limit outside the installation; statusline and chart honor it with per-run overrides.
+- Support an optional `aisad` shell launcher via installer `--cli-dir`, without shell configuration changes.
+
+- Render one compact AISAD line: today, calendar-week-to-date spend versus the same weekdays last week, monthly spend and comparison, then a six-cell budget bar and percentage.
+- Normalize statusline separators, show unfilled bar cells explicitly, and omit plus signs from amounts and budget percentages while retaining signed comparisons.
+- Group month-to-date spend and matched-day previous-month subtotal and delta before the bar.
+- Compare equal calendar-day windows, including February, leap years and year rollover; the budget always counts every day of the current month to date.
+- Default the monthly budget to $2,000 across all discovered Claude/Codex sessions and agent pools, independent of report filters; add `--monthly-budget USD` to override it.
+- Use warm coral, amber at 65%, orange at 80% and red at 100%, with a dark gray bar background and fractional-cell fill; support forced and suppressed ANSI colors and preserve incomplete-pricing metadata in JSON.
+- Keep existing status-line session/harness/pool JSON fields and add period/day summary and monthly budget metadata.
+
 ## 1.1.3 — 2026-10-01
 
 - Tighten the skill instructions on cost figures: totals and comparisons cover priced requests only, so name `cost_comparison_basis`, report `excluded_current_requests` and `excluded_previous_requests` from `changes.estimated_cost_usd`, and read `pricing_coverage` from `--include-requests` alongside any cost figure.
