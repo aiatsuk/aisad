@@ -234,7 +234,7 @@ class SkillTests(unittest.TestCase):
         self.install()
         with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
              patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'run'):
-            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
                     self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
                     self.assertEqual(invoke.call_args[0][0][2], command)

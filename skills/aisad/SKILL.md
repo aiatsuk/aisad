@@ -61,6 +61,10 @@ For broad queries, use local Python and open `output/sessions.sqlite` read-only 
 
 Original prompts, answers, reasoning, tool arguments/results and compaction summaries are not copied into reports or the database. Source references can locate original records while the local files still exist; fingerprints detect changes. Do not reconstruct missing payloads or infer exact tool cost from byte counts.
 
+## Spend forecast (optional)
+
+`budget --forecast on|off` and `budget --quantile Q` (0.5–0.99, default 0.8) switch the deterministic forecast; `forecast [--json]` prints the frozen weekly and monthly forecast, a suggested budget quantile, pace, calibration state, confidence and pricing coverage. It needs three complete Monday–Sunday weeks and writes `forecast.json` once per period. It is a statistical projection of known cost, not advice: present the numbers with their calibration and confidence, never change the saved limit unless the user asks for `budget --set`, and keep recommendations and hypothetical savings disabled.
+
 ## Terminal chart and budget
 
 ```sh

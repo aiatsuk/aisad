@@ -27,6 +27,7 @@ import textwrap
 import urllib.error
 import urllib.request
 import webbrowser
+from statistics import NormalDist
 from urllib.parse import unquote
 
 VERSION = '1.2.0'
@@ -1339,19 +1340,199 @@ def resolve_monthly_budget(args):
     if not math.isfinite(value) or value<=0:raise ValueError('Budgets must be finite positive USD amounts')
     return value
 
+def forecast_settings(data):
+    enabled=data.get('forecast_enabled',False);quantile=data.get('forecast_quantile',FORECAST_QUANTILE)
+    if not isinstance(enabled,bool):raise ValueError('Saved forecast_enabled must be true or false')
+    if isinstance(quantile,bool) or not isinstance(quantile,(int,float)) or not 0.5<=quantile<=0.99:
+        raise ValueError('Saved forecast_quantile must be between 0.5 and 0.99')
+    return enabled,float(quantile)
+
 def budget_command(args):
-    if args.set_budget is not None or args.reset_budget:
-        value=2000. if args.reset_budget else args.set_budget
-        if not math.isfinite(value) or value<=0:raise ValueError('Budgets must be finite positive USD amounts')
+    switch=getattr(args,'forecast_switch',None);quantile=getattr(args,'quantile',None)
+    if quantile is not None and not 0.5<=quantile<=0.99:raise ValueError('--quantile must be between 0.5 and 0.99')
+    if args.set_budget is not None or args.reset_budget or switch or quantile is not None:
         path=Path(args.output).expanduser().resolve()/'budget.json'
         # An explicit set/reset can repair this command's own corrupt settings.
         data=read_json_file(path)
         if not isinstance(data,dict):data={}
-        data.update(schema_version=1,monthly_budget_usd=value)
+        data['schema_version']=1
+        if args.set_budget is not None or args.reset_budget:
+            value=2000. if args.reset_budget else args.set_budget
+            if not math.isfinite(value) or value<=0:raise ValueError('Budgets must be finite positive USD amounts')
+            data['monthly_budget_usd']=value
+        if switch:data['forecast_enabled']=switch=='on'
+        if quantile is not None:data['forecast_quantile']=quantile
         atom_json(path,data)
     value,path,data=budget_settings(args.output)
+    enabled,quantile=forecast_settings(data)
     return dict(schema_version=1,monthly_budget_usd=value,source='saved' if 'monthly_budget_usd' in data else 'default',
+                forecast=dict(enabled=enabled,quantile=quantile),
                 path=str(path),scope='Calendar month, all discovered Claude/Codex sessions and agent pools.')
+
+# Frozen weekly and monthly known-cost forecast with a suggested budget. A period's forecast is a pure
+# function of the days before it starts, so it is stored once and never changed during the period.
+FORECAST_QUANTILE=.8;FORECAST_HALF_LIFE=14.;FORECAST_KAPPA=2.;FORECAST_WINDOW_DAYS=84
+FORECAST_MIN_WEEKS=3;FORECAST_MIN_ACTIVE_DAYS=10;FORECAST_MIN_RATIOS=6;FORECAST_MAX_RATIOS=26
+FORECAST_PRIOR_SIGMA=.35;FORECAST_PRIOR_WEIGHT=4;FORECAST_SPREAD_WEEKS=8;FORECAST_PROVIDERS=('Claude','Codex')
+FORECAST_LEDGER='forecast.json'
+
+def forecast_days(snapshot):
+    days={};first=None
+    for r in snapshot.get('request_stats',[]):
+        if r.get('provider') not in FORECAST_PROVIDERS:continue
+        d=dt.date.fromisoformat(r['date']);first=d if first is None or d<first else first
+        cost,priced,unpriced=days.get(d,(0.,0,0))
+        days[d]=(cost+r['cost'],priced+1,unpriced) if r['cost'] is not None else (cost,priced,unpriced+1)
+    return days,first
+
+def forecast_value(days,first,day):
+    """Known cost of one day: a day without requests is idle ($0); a wholly unpriced or pre-history day is missing (None)."""
+    if first is None or day<first:return None
+    cost,priced,unpriced=days.get(day,(0.,0,0))
+    if priced:return cost
+    return None if unpriced else 0.
+
+def forecast_profile(days,first,start):
+    if first is None or start<=first:return None
+    stats=[[0.,0.,0] for _ in range(7)];priced=unpriced=0
+    for age in range(min(FORECAST_WINDOW_DAYS,(start-first).days)):
+        day=start-dt.timedelta(age+1);value=forecast_value(days,first,day)
+        _,p,u=days.get(day,(0.,0,0));priced+=p;unpriced+=u
+        if value is None:continue
+        weight=.5**(age/FORECAST_HALF_LIFE);item=stats[day.weekday()]
+        item[0]+=weight*value;item[1]+=weight;item[2]+=1
+    total=sum(i[1] for i in stats)
+    if not total:return None
+    overall=sum(i[0] for i in stats)/total;classes={}
+    for name,weekdays in (('weekday',range(5)),('weekend',(5,6))):
+        weight=sum(stats[w][1] for w in weekdays);classes[name]=sum(stats[w][0] for w in weekdays)/weight if weight else overall
+    mu=[(stats[w][0]+FORECAST_KAPPA*classes['weekday' if w<5 else 'weekend'])/(stats[w][1]+FORECAST_KAPPA) for w in range(7)]
+    return dict(mu=mu,counts=[i[2] for i in stats],priced_share=priced/(priced+unpriced) if priced+unpriced else None)
+
+def forecast_week_totals(days,first,start,limit=52):
+    """Totals of complete Monday-Sunday weeks before start, newest first; the first partial week is dropped."""
+    if first is None:return []
+    week=start-dt.timedelta(7);week-=dt.timedelta(week.weekday());totals=[]
+    while week>=first and len(totals)<limit:
+        totals.append(sum(forecast_value(days,first,week+dt.timedelta(i)) or 0. for i in range(7)));week-=dt.timedelta(7)
+    return totals
+
+def forecast_sum(mu,start,end):
+    return sum(mu[(start+dt.timedelta(i)).weekday()] for i in range((end-start).days))
+
+def t_quantile(p,df):
+    if df<=1:return math.tan(math.pi*(p-.5))
+    if df==2:return (2*p-1)/math.sqrt(2*p*(1-p))
+    z=NormalDist().inv_cdf(p)
+    return z+(z**3+z)/(4*df)+(5*z**5+16*z**3+3*z)/(96*df**2)
+
+def forecast_spread(totals):
+    """Shrunk standard deviation of log weekly totals (no sqrt-of-weeks reduction for months)."""
+    k=len(totals);floor=max(.05*sum(totals)/k,.01);logs=[math.log(max(t,floor)) for t in totals]
+    mean=sum(logs)/k;variance=sum((x-mean)**2 for x in logs)/(k-1)
+    return math.sqrt((FORECAST_PRIOR_WEIGHT*FORECAST_PRIOR_SIGMA**2+(k-1)*variance)/(FORECAST_PRIOR_WEIGHT+k-1))
+
+def forecast_ratios(days,first,start,length,floor):
+    """Ratios actual/forecast of the same method replayed on earlier Monday origins whose outcome is known."""
+    origin=start-dt.timedelta(length);origin-=dt.timedelta(origin.weekday());ratios=[]
+    while len(ratios)<FORECAST_MAX_RATIOS and len(forecast_week_totals(days,first,origin))>=FORECAST_MIN_WEEKS:
+        profile=forecast_profile(days,first,origin);end=origin+dt.timedelta(length)
+        if profile is None:break
+        forecast=forecast_sum(profile['mu'],origin,end)
+        actual=sum(forecast_value(days,first,origin+dt.timedelta(i)) or 0. for i in range(length))
+        ratios.append((actual+floor)/(forecast+floor));origin-=dt.timedelta(7)
+    return ratios
+
+def forecast_period(days,first,start,end,quantile):
+    """Forecast and suggested target for [start,end) from days before start, or an insufficient_data reason."""
+    result=dict(status='insufficient_data',reasons=[])
+    totals=forecast_week_totals(days,first,start);profile=forecast_profile(days,first,start)
+    active=sum(1 for i in range(1,22) if (forecast_value(days,first,start-dt.timedelta(i)) or 0)>0)
+    result['coverage']=dict(complete_weeks=len(totals),active_days_21=active,priced_share=profile['priced_share'] if profile else None)
+    if len(totals)<FORECAST_MIN_WEEKS:result['reasons'].append(f'needs {FORECAST_MIN_WEEKS} complete Monday-Sunday weeks of history, found {len(totals)}')
+    if active<FORECAST_MIN_ACTIVE_DAYS:result['reasons'].append(f'needs {FORECAST_MIN_ACTIVE_DAYS} days with priced spend in the last 21 days, found {active}')
+    if profile is None or not any(profile['mu']):result['reasons'].append('no priced spend in the history window')
+    if result['reasons']:return result
+    length=(end-start).days;point=forecast_sum(profile['mu'],start,end)
+    recent=totals[:FORECAST_SPREAD_WEEKS];floor=max(.05*sum(recent)/len(recent),.01)
+    ratios=forecast_ratios(days,first,start,length,floor)
+    if len(ratios)>=FORECAST_MIN_RATIOS:
+        ordered=sorted(ratios);n=len(ordered);ratio=ordered[min(n-1,math.ceil((n+1)*quantile)-1)]
+        target=(point+floor)*ratio-floor;state='calibrated'
+    else:
+        spread=forecast_spread(recent);k=len(recent)
+        target=point*math.exp(t_quantile(quantile,k-1)*spread*math.sqrt(1+1/k)-spread**2/2);state='uncalibrated'
+    target=max(target,point)
+    flags=[]
+    if len(totals)<5:flags.append('short_history')
+    if min(profile['counts'])<2:flags.append('sparse_weekday')
+    if profile['priced_share'] is not None and profile['priced_share']<.8:flags.append('low_pricing_coverage')
+    older=totals[1:5]
+    if older and sum(older)>0 and not .5<=totals[0]/(sum(older)/len(older))<=2:flags.append('level_shift_suspected')
+    confidence='low' if flags else 'medium' if len(totals)<9 else 'high'
+    result.update(status='ok',forecast_usd=point,target_usd=target,confidence=confidence,flags=flags,profile=profile['mu'],
+                  calibration=dict(state=state,ratios=len(ratios),basis='replayed_history' if state=='calibrated' else 'weekly_log_spread'))
+    return result
+
+def forecast_ledger_read(output):
+    path=Path(output)/FORECAST_LEDGER;data=read_json_file(path)
+    if data and (not isinstance(data,dict) or data.get('schema_version')!=1):
+        raise ValueError('Unsupported forecast ledger; preserve this file and use a compatible AISAD version: '+str(path))
+    entries=data.get('entries') if data else {}
+    return path,entries if isinstance(entries,dict) else {}
+
+def forecast_periods(today):
+    week=today-dt.timedelta(today.weekday());month=today.replace(day=1)
+    following=(month+dt.timedelta(31)).replace(day=1)
+    return [('week',week,week+dt.timedelta(7),week.isoformat()),('month',month,following,month.strftime('%Y-%m'))]
+
+def forecast_command(snapshot,args):
+    path,data=budget_settings(args.output)[1:]
+    enabled,quantile=forecast_settings(data)
+    today=dt.date.fromisoformat(snapshot['as_of_date'])
+    base=dict(schema_version=1,version=VERSION,as_of_date=snapshot['as_of_date'],timezone=snapshot['timezone'],enabled=enabled,
+              quantile=quantile,scope='Known API-equivalent cost, all Claude/Codex sessions and agent pools; idle days count as $0.')
+    if not enabled:
+        return dict(base,status='disabled',messages=['Spend forecast is off. Turn it on with: budget --forecast on'])
+    days,first=forecast_days(snapshot);ledger_path,entries=forecast_ledger_read(args.output);changed=False
+    def total(start,end):
+        return sum(forecast_value(days,first,start+dt.timedelta(i)) or 0. for i in range((end-start).days))
+    periods={};messages=[]
+    for kind,start,end,label in forecast_periods(today):
+        key=kind+':'+label;entry=entries.get(key)
+        if entry is None:
+            computed=forecast_period(days,first,start,end,quantile)
+            if computed['status']!='ok':
+                periods[kind]=dict(computed,period=dict(kind=kind,**{'from':start.isoformat(),'to':(end-dt.timedelta(1)).isoformat()}))
+                messages.append(f"{kind.capitalize()} forecast unavailable: "+'; '.join(computed['reasons'])+'.');continue
+            entry=dict(computed,period=dict(kind=kind,**{'from':start.isoformat(),'to':(end-dt.timedelta(1)).isoformat()}),
+                       frozen_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),data_through=(start-dt.timedelta(1)).isoformat(),
+                       timezone=snapshot['timezone'],collector=VERSION,price_as_of=snapshot.get('price_as_of'),quantile=quantile,
+                       method=dict(half_life_days=FORECAST_HALF_LIFE,kappa=FORECAST_KAPPA,window_days=FORECAST_WINDOW_DAYS))
+            entries[key]=entry;changed=True
+        periods[kind]=dict(entry)
+    for key,entry in entries.items():
+        # A finished period gets its actual once; the frozen forecast fields are never touched.
+        end=dt.date.fromisoformat(entry['period']['to'])+dt.timedelta(1)
+        if 'actual_usd' not in entry and end<=today:
+            start=dt.date.fromisoformat(entry['period']['from']);entry['actual_usd']=total(start,end);changed=True
+    for kind,start,end,label in forecast_periods(today):
+        entry=periods.get(kind)
+        if not entry or entry.get('status')!='ok':continue
+        done=total(start,today+dt.timedelta(1));remaining=forecast_sum(entry['profile'],today+dt.timedelta(1),end)
+        entry.update(actual_to_date_usd=done,pace_usd=done+remaining,pace_vs_forecast_percent=(done+remaining)/entry['forecast_usd']*100-100 if entry['forecast_usd']>0 else None)
+        label_text=f"{kind.capitalize()} {entry['period']['from']}..{entry['period']['to']}"
+        text=f"{label_text}: forecast ${entry['forecast_usd']:,.2f}, suggested target ${entry['target_usd']:,.2f} (P{round(entry['quantile']*100)}, {entry['calibration']['state']}), confidence {entry['confidence']}. To date ${done:,.2f}; on pace for ${done+remaining:,.2f}"
+        if entry['pace_vs_forecast_percent'] is not None:text+=f" ({entry['pace_vs_forecast_percent']:+.0f}% vs forecast)"
+        messages.append(text+'.')
+        if done>entry['target_usd']:messages.append(f"{kind.capitalize()} spend to date already exceeds the suggested target.")
+    closed=[e for e in entries.values() if 'actual_usd' in e and e.get('status')=='ok']
+    accuracy=dict(closed_periods=len(closed),within_target=sum(e['actual_usd']<=e['target_usd'] for e in closed))
+    if changed:atom_json(ledger_path,dict(schema_version=1,entries=entries))
+    for entry in periods.values():entry.pop('profile',None)
+    return dict(base,status='ok' if any(e.get('status')=='ok' for e in periods.values()) else 'insufficient_data',
+                week=periods.get('week'),month=periods.get('month'),accuracy=accuracy,messages=messages,
+                note='Statistical projection of known cost, not an invoice and not advice. Frozen at the start of each period; the budget limit changes only with budget --set.')
 
 def chart_month(value):
     if not re.fullmatch(r'\d{4}-\d{2}',value):raise ValueError('Month must be YYYY-MM')
@@ -2237,7 +2418,7 @@ def render_html(snapshot):
 
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
-    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session','prices','chart','budget'],default='dashboard',help='Offline dashboard, terminal chart, budget settings, usage, session evidence or prices; analyze aliases usage')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session','prices','chart','budget','forecast'],default='dashboard',help='Offline dashboard, terminal chart, budget settings, usage, session evidence or prices; analyze aliases usage')
     p.add_argument('--json',action='store_true',help='Emit one JSON object to stdout')
     p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
     p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
@@ -2253,6 +2434,8 @@ def parser():
     p.add_argument('--monthly-budget',type=float,metavar='USD',help='Override the saved calendar-month budget for this run; default 2000 USD')
     p.add_argument('--set',dest='set_budget',type=float,metavar='USD',help='Budget: save the monthly limit')
     p.add_argument('--reset',dest='reset_budget',action='store_true',help='Budget: restore the 2000 USD default')
+    p.add_argument('--forecast',dest='forecast_switch',choices=['on','off'],help='Budget: turn the frozen weekly/monthly spend forecast on or off')
+    p.add_argument('--quantile',type=float,metavar='Q',help='Budget: forecast target quantile between 0.5 and 0.99, default 0.8')
     p.add_argument('--width',type=int,help='Chart: terminal width, 48–240 columns')
     p.add_argument('--height',type=int,default=8,help='Chart: maximum plot height, 4–30 rows')
     p.add_argument('--month',help='Chart: calendar month YYYY-MM; default current month')
@@ -2298,12 +2481,12 @@ def main(argv=None):
     if args.open and args.command!='dashboard':raise SystemExit('--open is available only for dashboard')
     if args.write_prices:atom_json(Path(args.write_prices),default_prices());print(args.write_prices);return
     output=Path(args.output).expanduser().resolve()
-    if args.command!='budget' and (args.set_budget is not None or args.reset_budget):raise SystemExit('--set and --reset belong to budget')
+    if args.command!='budget' and (args.set_budget is not None or args.reset_budget or args.forecast_switch or args.quantile is not None):raise SystemExit('--set, --reset, --forecast and --quantile belong to budget')
     if args.set_budget is not None and args.reset_budget:raise SystemExit('Choose either --set or --reset')
     if args.command=='budget':
         if args.monthly_budget is not None:raise SystemExit('Use budget --set USD to save a limit')
         result=budget_command(args)
-        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else f"Monthly budget: ${result['monthly_budget_usd']:,.2f} ({result['source']})\n{result['path']}")
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else f"Monthly budget: ${result['monthly_budget_usd']:,.2f} ({result['source']})\nSpend forecast: {'on' if result['forecast']['enabled'] else 'off'}, target P{round(result['forecast']['quantile']*100)}\n{result['path']}")
         return
     if args.command in ('statusline','chart'):args.monthly_budget=resolve_monthly_budget(args)
     if args.command!='chart' and (args.month or args.view!='graph' or args.interactive or args.snapshot):raise SystemExit('--month, --view, --interactive and --snapshot belong to chart')
@@ -2327,6 +2510,10 @@ def main(argv=None):
         return
     if args.refresh:raise SystemExit('--refresh belongs to the prices command; other commands never reach the network')
     snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
+    if args.command=='forecast':
+        result=forecast_command(snap,args)
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else '\n'.join(result['messages']+([result['note']] if result['status']!='disabled' else [])))
+        return
     if args.command=='chart':
         result=terminal_chart_report(snap,args);atom_json(output/'chart.json',result)
         color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))

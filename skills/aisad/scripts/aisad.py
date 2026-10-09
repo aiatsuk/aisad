@@ -334,11 +334,11 @@ def parser():
     install.add_argument('--allow-downgrade', action='store_true', help='Allow an intentional reinstall to a lower version; preserves local edits and data')
     install.add_argument('--archive', help='Local release skill ZIP for offline installation')
     install.add_argument('--checksum-file', help='Local SHA256SUMS (required with --archive)')
-    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget']:
+    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast']:
         command = commands.add_parser(name, allow_abbrev=False,
                                       epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
-        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
+        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
             command.add_argument('--offline', action='store_true', help='Skip all update network requests')
     return cli
 
@@ -371,7 +371,7 @@ def refresh_prices(runtime, data, offline):
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget'):
+    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
     root = Path(__file__).absolute().parents[1]
     if args.command == 'install':
@@ -436,7 +436,7 @@ def main(argv=None):
     runtime = root / 'runtime/agent_usage.py'
     if not runtime.is_file():
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
-    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else []
+    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast') else []
     if args.command not in ('prices', 'budget'):
         refresh_prices(runtime, data, args.offline)
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
