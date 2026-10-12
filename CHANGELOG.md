@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Trim chart footnotes: drop the graph note ("Known API estimates…", "? = unpriced (N observations)"), the weekly legend ("Total = known subtotal…", "Known subtotals; incomplete pricing…") and the "Last 4 weeks" and "Trend history" insights. The budget forecast stays; ranked weekdays and coverage remain in JSON.
+- Bring terminal motion to Codex CLI quality while keeping the line morph: plot particles keep provider/day rank and flow into the next month along a wave in the H/L direction. They hop along arcs, lift toward the camera, glow, flash on landing with a slight overshoot and leave comet tails while the plot tilts gently. Rendering adds a per-dot z-buffer, key/shadow/rim/specular lighting and per-cell truecolor; frames settle to exact glyphs.
+- Keep the plot height fixed across months: always the configured number of rows, with finer tick steps so the top stays within a third of the maximum; in short terminals one fitted height applies to every month.
+- Roll provider legend amounts and the monthly budget amount and percentage between months, with staggered starts, glowing changing digits and a settle flash; a new provider counts up from $0.
+- Grow lines from the $0 baseline when the graph opens, sweep text and weekly cells in with the wave, and add a light band to minimap morphs; reduced-motion, screen-reader, CI, ASCII and no-color modes remain static.
+
 ## 1.2.0 — 2026-10-09
 
 - Add an optional frozen weekly and monthly known-spend forecast with a suggested budget quantile: `budget --forecast on|off`, `budget --quantile Q` and `forecast`. Idle days count as $0, unpriced days stay missing, forecasts are written once per period to `forecast.json`, and pace is shown separately. The saved limit is never changed automatically.

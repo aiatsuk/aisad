@@ -2,7 +2,7 @@ import React from 'react';
 import {describe,expect,test} from 'bun:test';
 import {renderToString} from 'ink';
 import {Rows} from '../src/app.js';
-import {frame,graphRows,weekRows} from '../src/layout.js';
+import {fittedHeight,frame,graphRows,weekRows} from '../src/layout.js';
 import {navigate,parseDataset,widthOf,weekdays,spendColors,type Dataset,type Report,type Series} from '../src/types.js';
 function fixture(month='2026-10',last=31):Report {
   const dates=Array.from({length:last},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
@@ -67,7 +67,7 @@ describe('aggregate graph and week layouts',()=>{
   });
   test('unpriced is distinct from zero and gaps',()=>{
     const r=fixture();r.series[0]!.daily[6]!.observations=1;r.series[0]!.daily[6]!.unpriced_observations=1;r.series[0]!.unpriced_observations=1;
-    expect(text(graphRows(r,100,8))).toContain('? = unpriced (1 observations)');
+    expect(text(graphRows(r,100,8))).toContain('?');expect(text(graphRows(r,100,8))).not.toContain('unpriced (');
     const cell=r.weekday_view.rows[3]!.cells[1]!;cell.observations=1;cell.unpriced_observations=1;cell.incomplete=true;
     expect(weekRows(r,100).find(row=>row[0]?.text.startsWith('Wednesday'))?.slice(1).some(segment=>segment.text.trim()==='?')).toBe(true);
   });
@@ -96,4 +96,14 @@ describe('navigation and contract',()=>{
     for(const bad of [null,{}, {...data,initial_month:'2025-01'},{...data,options:{...options,height:Infinity}}]) expect(()=>parseDataset(bad)).toThrow();
     const corrupt=structuredClone(data);corrupt.months[0]!.report.series[0]!.daily[0]!.cost_usd=NaN;expect(()=>parseDataset(corrupt)).toThrow();
   });
+  test('plot height is the same for every month regardless of its maximum',()=>{
+    const scaled=(factor:number):Report=>{const r=fixture();r.series=r.series.map(s=>({...s,daily:s.daily.map(d=>({...d,cost_usd:d.cost_usd===null?null:d.cost_usd*factor}))}));return r;};
+    const plotRows=(r:Report)=>graphRows(r,110,8).filter(row=>/^\s*\$[\d,.]+ [┤┼] /.test(row[0]?.text??'')).length;
+    const heights=[.01,.37,1,3.3,41,1000].map(f=>plotRows(scaled(f)));
+    expect(new Set(heights).size).toBe(1);expect(heights[0]).toBe(9);
+    for(const f of [.37,3.3,41]){const rows=graphRows(scaled(f),110,8),top=Number(rows[2]![0]!.text.replace(/[^\d.]/g,''));expect(top/(50*f)).toBeLessThanOrEqual(1.34);}
+    expect(fittedHeight(fixture(),options,110,30)).toBe(8);expect(fittedHeight(fixture(),options,110,18)).toBeLessThan(8);
+    expect(frame(fixture(),'graph',options,110,30,6).filter(row=>/[┤┼] /.test(row[0]?.text??'')).length).toBe(7);
+  });
 });
+

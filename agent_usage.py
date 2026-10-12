@@ -1592,8 +1592,10 @@ def terminal_chart_text(report,width=100,height=8,color=False,ascii_only=False):
     width=max(48,min(240,width));height=max(4,min(30,height));days=report['period']['days']
     series=report['series'];maximum=max((d['cost_usd'] or 0 for item in series for d in item['daily']),default=0)
     target=(maximum or 1.)/height;power=10**math.floor(math.log10(target))
-    step=next(n*power for n in (1,2,2.5,5,10) if n*power>=target)
-    rows=max(1,math.ceil((maximum or 1.)/step))
+    # Fixed row count keeps the plot height stable across months; finer nice steps
+    # keep the top tick within a third of the maximum.
+    step=next(n*power for n in (1,1.5,2,2.5,3,4,5,6,8,10) if n*power>=target)
+    rows=height
     precision=max(0,-math.floor(math.log10(step)))
     if not math.isclose(round(step,precision),step,rel_tol=1e-9):precision+=1
     labels=[f'${(rows-i)*step:,.{precision}f}' for i in range(rows+1)]
@@ -1670,11 +1672,6 @@ def terminal_chart_text(report,width=100,height=8,color=False,ascii_only=False):
     if current:lines.append(current)
     lines.extend(['',paint(terminal_budget_text(budget,ascii_only))])
     if not any(d['cost_usd'] is not None for item in series for d in item['daily']):lines.append('No priced daily observations for this month.')
-    note='Known API estimates; gaps/future days stay blank.'
-    missing=sum(item['unpriced_observations'] for item in series)
-    if missing:note+=f' ? = unpriced ({missing:,} observations).'
-    elif any(item['incomplete'] for item in series):note+=' Pricing is incomplete.'
-    lines.extend(paint(piece) for piece in textwrap.wrap(note,width))
     return '\n'.join(lines)
 
 def terminal_budget_text(budget,ascii_only=False):
@@ -1780,14 +1777,6 @@ def terminal_chart_insights(snapshot,args,report):
         if depletion:messages.append(f"Known-cost trend: budget around {stamp(depletion)} (in {(depletion-today).days} days); ~${projected:,.0f} by month end.")
         else:messages.append(f"Known-cost trend: ~${projected:,.0f} by {stamp(last)}; ${max(0,limit-projected):,.0f} below budget.")
     else:messages.append('Budget forecast: not enough priced data (need 7 completed days and current-month spend).')
-    if len(visible)>=7 and ranking:
-        leaders=ranking[:2];labels=[row['weekday']+f" (${row['average_cost_usd']:,.0f}/day)" for row in leaders]
-        messages.append('Last 4 weeks: highest observed daily spend on '+', '.join(labels)+'.')
-    elif len(visible)>=7 and not any(visible.values()):messages.append('Last 4 weeks: no recorded positive priced spend.')
-    else:messages.append('Weekday pattern: not enough repeated priced days in the last 4 weeks.')
-    if current:
-        excluded=missing+budget['unpriced_requests']
-        messages.append(f"Trend history: {len(daily)}/28 priced days; gaps excluded."+(' Unpriced costs excluded.' if excluded else ''))
     return dict(window={'from':start.isoformat(),'to':cutoff.isoformat(),'days':28},basis=report['weekday_view']['basis'],
         busiest_weekdays=ranking[:2] if len(visible)>=7 else [],forecast=forecast,messages=messages)
 
@@ -1833,9 +1822,6 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
     lines.append(paint(terminal_budget_text(report['monthly_budget'],ascii_only)))
     lines.extend(['',paint('Insights','\x1b[1m')])
     for message in report['insights']['messages']:lines.extend(paint(piece) for piece in textwrap.wrap(message,width))
-    note='Total = known subtotal; '+('-' if ascii_only else '—')+' no data; ? unpriced.'
-    lines.extend(paint(piece) for piece in textwrap.wrap(note,width))
-    if any(cell['incomplete'] for row in data['rows'] for cell in row['cells']):lines.extend(paint(piece) for piece in textwrap.wrap('Known subtotals; incomplete pricing remains in JSON.',width))
     return '\n'.join(lines)
 
 @contextlib.contextmanager

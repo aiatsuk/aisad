@@ -1,7 +1,9 @@
 /** React-independent, normalized particle motion; no timers or terminal writes. */
 export type Point = {x: number; y: number; color?: number};
 export type Shape = {points: Float32Array; colors: Uint8Array; visible: boolean};
-export type Raster = {width: number; height: number; masks: Uint8Array; colors: Uint8Array;opacity?:Uint8Array};
+export type Raster = {width: number; height: number; masks: Uint8Array; colors: Uint8Array;opacity?:Uint8Array;
+  /** Optional lit foreground per cell (0xRRGGBB); takes precedence over palette colors. */
+  rgb?:Uint32Array};
 export const DOT_BITS = [[1,8],[2,16],[4,32],[64,128]] as const;
 const clamp = (value: number): number => Math.max(0,Math.min(1,value));
 /** Quintic ease-in-out: zero velocity and acceleration at both endpoints. */
