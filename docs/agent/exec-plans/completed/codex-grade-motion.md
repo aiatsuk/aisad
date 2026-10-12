@@ -1,6 +1,6 @@
 # Codex-grade terminal motion
 
-- Status: implemented locally on branch `feat/codex-grade-motion`; not committed or pushed.
+- Status: delivered in PR #13 (branch `feat/codex-grade-motion`).
 - Base: main at ddac585 (release 1.2.0).
 
 ## Contract
