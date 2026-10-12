@@ -1,5 +1,6 @@
 import {braille,DOT_BITS,type Raster} from './motion.js';
 import {colors,providerColor,type Report,type Row} from './types.js';
+import {rgbToHex} from './light.js';
 export const motionPalette=[colors.coral,colors.lavender,colors.amber,'#d4ad9b',colors.text,'#70c7c7',colors.muted,'#e59b59'];
 export type Curve={provider:string;values:(number|null)[];alpha?:ArrayLike<number>};
 export type Minimap={raster:Raster;curves:Curve[];days:number;unknown:number[];maximum:number};
@@ -61,6 +62,14 @@ export function rasterRows(raster:Raster,ascii=false,unknown:readonly number[]=[
     const row:Row=[];
     for(let x=0;x<raster.width;x++) {
       const index=y*raster.width+x,mask=raster.masks[index]!;
+      if(raster.rgb&&!markers.has(index)) {
+        // Lit rasters: blank cells join the previous segment to keep Ink spans few.
+        const previous=row.at(-1),text=ascii?(mask?'.':' '):braille(mask);
+        if(!mask&&previous){previous.text+=text;continue;}
+        const color=rgbToHex(raster.rgb[index]!);
+        if(previous?.color===color)previous.text+=text;else row.push({text,color});
+        continue;
+      }
       let color=markers.has(index)?colors.muted:motionPalette[raster.colors[index]!]!;
       if(!markers.has(index)&&raster.opacity&&raster.opacity[index]!<255&&mask) {
         const opacity=raster.opacity[index]!/255;

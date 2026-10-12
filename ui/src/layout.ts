@@ -5,6 +5,7 @@ const wrapped = (text: string, width: number): Row[] => {
   for (const word of text.split(' ')) {if (line && line.length + word.length + 1 > width) {rows.push(textRow(line)); line = '';} line += (line ? ' ' : '') + word;}
   if (line) rows.push(textRow(line)); return rows;
 };
+export const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10] as const;
 export function budgetRow(report: Report, ascii = false): Row {
   const b = report.monthly_budget;
   const amount = !b.observed_requests ? 'unavailable' : b.observed_requests === b.unpriced_requests ? 'unpriced' : money(b.known_cost_usd);
@@ -13,8 +14,10 @@ export function budgetRow(report: Report, ascii = false): Row {
 export function graphRows(report: Report, width: number, height: number, ascii = false): Row[] {
   const maximum = Math.max(0, ...report.series.flatMap(s => s.daily.map(d => d.cost_usd ?? 0)));
   const target = (maximum || 1) / height, power = 10 ** Math.floor(Math.log10(target));
-  const step = [1, 2, 2.5, 5, 10].map(n => n * power).find(n => n >= target)!;
-  const count = Math.max(1, Math.ceil((maximum || 1) / step));
+  // Fixed row count keeps the plot height stable across months; finer nice steps keep
+  // the top tick within a third of the maximum.
+  const step = NICE_STEPS.map(n => n * power).find(n => n >= target)!;
+  const count = height;
   let precision = Math.max(0, -Math.floor(Math.log10(step))); if (Number(step.toFixed(precision)) !== step) precision++;
   const labels = Array.from({length: count + 1}, (_, index) => '$' + ((count - index) * step).toLocaleString('en-US', {minimumFractionDigits: precision, maximumFractionDigits: precision}));
   const labelWidth = Math.max(...labels.map(l => l.length)), available = Math.max(3, width - labelWidth - 3), days = report.period.days;
@@ -67,8 +70,6 @@ export function graphRows(report: Report, width: number, height: number, ascii =
   }
   if (legend.length) rows.push(legend); rows.push([],budgetRow(report,ascii));
   if (!report.series.some(s => s.daily.some(d => d.cost_usd !== null))) rows.push(textRow('No priced daily observations for this month.'));
-  const missing = report.series.reduce((sum,s) => sum+s.unpriced_observations,0);
-  rows.push(...wrapped('Known API estimates; gaps/future days stay blank.' + (missing ? ' ? = unpriced ('+missing.toLocaleString('en-US')+' observations).' : report.series.some(s=>s.incomplete) ? ' Pricing is incomplete.' : ''),width));
   return rows;
 }
 export function weekRows(report: Report, width: number, ascii = false): Row[] {
@@ -87,12 +88,16 @@ export function weekRows(report: Report, width: number, ascii = false): Row[] {
   }
   rows.push([{text:'Spend: low ',color:colors.muted},...spendColors.map(color=>({text:ascii?'* ':'● ',color})),{text:'high',color:colors.muted}],budgetRow(report,ascii),[],textRow('Insights',colors.text,true));
   for(const message of report.insights.messages) rows.push(...wrapped(safeText(message),width));
-  rows.push(...wrapped('Total = known subtotal; '+(ascii?'-':'—')+' no data; ? unpriced.',width));
-  if(data.rows.some(row=>row.cells.some(cell=>cell.incomplete))) rows.push(...wrapped('Known subtotals; incomplete pricing remains in JSON.',width));
   return rows;
 }
-export function frame(report: Report, view: 'graph'|'weeks', options: Dataset['options'], columns: number, lines: number): Row[] {
-  const width = Math.max(48,Math.min(240,options.width??columns)); let height=options.height;
+/** Largest plot height (<= options.height) at which this report fits the terminal. */
+export function fittedHeight(report: Report, options: Dataset['options'], columns: number, lines: number): number {
+  const width = Math.max(48,Math.min(240,options.width??columns));
+  for (let height = options.height; height > 4; height--) if (graphRows(report,width,height,options.ascii).length <= lines-3) return height;
+  return 4;
+}
+export function frame(report: Report, view: 'graph'|'weeks', options: Dataset['options'], columns: number, lines: number, stableHeight?: number): Row[] {
+  const width=Math.max(48,Math.min(240,options.width??columns)); let height=stableHeight??options.height;
   let rows = view==='weeks'?weekRows(report,width,options.ascii):graphRows(report,width,height,options.ascii);
   while(rows.length>lines-3) {
     const compact=rows.filter(row=>widthOf(row)>0);
