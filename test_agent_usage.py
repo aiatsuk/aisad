@@ -29,10 +29,10 @@ class UsageTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as home:
    cowork=Path(home)/'Library/Application Support/Claude/local-agent-mode-sessions/s1';cowork.mkdir(parents=True)
    (cowork/'audit.jsonl').write_text('{}\n')
-   found=lambda extra:[str(p) for _,p in app.discover(app.parser().parse_args(['chart','--home',home]+extra))[1]]
-   self.assertTrue(any(p.endswith('s1/audit.jsonl') for p in found([])))
-   self.assertTrue(any(p.endswith('s1/audit.jsonl') for p in found(['--cowork'])))
-   self.assertFalse(any(p.endswith('s1/audit.jsonl') for p in found(['--no-cowork'])))
+   found=lambda extra:[p.parent.name+'/'+p.name for _,p in app.discover(app.parser().parse_args(['chart','--home',home]+extra))[1]]
+   self.assertTrue(any(p=='s1/audit.jsonl' for p in found([])))
+   self.assertTrue(any(p=='s1/audit.jsonl' for p in found(['--cowork'])))
+   self.assertFalse(any(p=='s1/audit.jsonl' for p in found(['--no-cowork'])))
  def test_normalization_not_double_counted(self):
   u=app.normalize_usage(dict(input_tokens=1000,cached_input_tokens=900,output_tokens=100,reasoning_output_tokens=70),'Codex')
   self.assertEqual(u['total'],1100);self.assertEqual(u['uncached'],100)
