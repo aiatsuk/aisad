@@ -81,9 +81,11 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
             elif time.monotonic()-quiet_since>=.3:return out
         raise AssertionError(('Animation did not stop',out[-300:]))
     def expect(marker):
+        # Look at the modelled screen as well: a cell-diff writer resends only changed cells.
         out=b'';deadline=time.monotonic()+8
-        while marker not in out and time.monotonic()<deadline:out+=read(.05)
-        assert marker in out,(marker,out[-500:]);return out
+        shown=lambda:marker in out or marker.decode() in '\n'.join(screen.lines())
+        while not shown() and time.monotonic()<deadline:out+=read(.05)
+        assert shown(),(marker,out[-500:]);return out
     try:
         initial=expect(b'Q quit')+settle()
         animated=not env_overrides and not ascii and color

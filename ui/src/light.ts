@@ -8,8 +8,8 @@ export const pack = (r: number, g: number, b: number): number => (clampByte(r) <
 const clampByte = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
 export const unpack = (rgb: number): RGB => [(rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255];
 export const hexToRgb = (hex: string): number => parseInt(hex.slice(1, 7), 16) || 0;
-/** Quantize to 4-unit steps so neighbouring cells share Ink text segments. */
-export const rgbToHex = (rgb: number): string => '#' + unpack(rgb).map(c => (Math.min(255, (c + 2) & ~3)).toString(16).padStart(2, '0')).join('');
+/** Quantize to 16-unit steps: neighbouring cells share color codes, so frames stay small. */
+export const rgbToHex = (rgb: number): string => '#' + unpack(rgb).map(c => (Math.min(255, (c + 8) & ~15)).toString(16).padStart(2, '0')).join('');
 /** Blend a color toward the background; opacity 1 keeps it exact. */
 export function fade(hex: string, opacity: number): string {
   if (opacity >= 1) return hex;

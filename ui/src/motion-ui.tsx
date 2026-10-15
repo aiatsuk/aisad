@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {useAnimation} from 'ink';
+import {useClock} from './clock.js';
 import {DOT_BITS,easeInOut,shape,type Point,type Raster,type Shape} from './motion.js';
 import {Rows} from './rows.js';
 import {colors,type Report,type Row} from './types.js';
@@ -29,12 +29,12 @@ function useMotion<T>(target:T,key:string,enabled:boolean,create:(target:T)=>Con
     controller.morphTo(target,performance.now(),active?duration:0,direction(stored.key,key));
     motion={controller,key,target,enabled,active};setMotion(motion);
   }
-  // main.tsx permits a render between ticks; idle components never subscribe.
-  const tick=useAnimation({interval:34,isActive:motion.active});
+  // One shared clock drives every animation; it stops when nothing moves.
+  const frame=useClock(motion.active);
   const moving=motion.active&&motion.controller.update(performance.now());
   useEffect(()=>{
     if(motion.active&&!moving)setMotion(current=>current===motion?{...current,active:false}:current);
-  },[tick.frame,motion,moving]);
+  },[frame,motion,moving]);
   return {controller:motion.controller,active:moving};
 }
 export const FADE_MS=420;
@@ -45,9 +45,9 @@ export function useFade(key:string,enabled:boolean,duration=FADE_MS):{t:number;d
   const [state,setState]=useState<Fade>(()=>({key,started:performance.now(),active:enabled,direction:-1}));
   let current=state;
   if(state.key!==key){current={key,started:performance.now(),active:enabled,direction:direction(state.key,key)};setState(current);}
-  const tick=useAnimation({interval:34,isActive:current.active});
+  const frame=useClock(current.active);
   const t=current.active?Math.min(1,(performance.now()-current.started)/duration):1;
-  useEffect(()=>{if(current.active&&t>=1)setState(s=>s===current?{...s,active:false}:s);},[tick.frame,current,t]);
+  useEffect(()=>{if(current.active&&t>=1)setState(s=>s===current?{...s,active:false}:s);},[frame,current,t]);
   return {t,direction:current.direction};
 }
 type Roll={key:string;from:Amounts;started:number;active:boolean};
@@ -58,12 +58,12 @@ export function useAmountRoll(rows:Row[],key:string,enabled:boolean,duration=MOR
   const [state,setState]=useState<Roll>(()=>({key,from:finals,started:0,active:false}));
   let current=state;
   if(state.key!==key){current={key,from:shown.current,started:performance.now(),active:enabled&&finals.size>0};setState(current);}
-  const tick=useAnimation({interval:34,isActive:current.active});
+  const tick=useClock(current.active);
   const t=current.active?Math.min(1,(performance.now()-current.started)/duration):1;
-  useEffect(()=>{if(current.active&&t>=1)setState(s=>s===current?{...s,active:false}:s);},[tick.frame,current,t]);
+  useEffect(()=>{if(current.active&&t>=1)setState(s=>s===current?{...s,active:false}:s);},[tick,current,t]);
   if(!current.active||t>=1){shown.current=finals;return rows;}
-  const frame=amountFrame(current.from,finals,t);shown.current=frame.values;
-  return renderAmounts(rows,frame);
+  const roll=amountFrame(current.from,finals,t);shown.current=roll.values;
+  return renderAmounts(rows,roll);
 }
 const TEXT_STAGGER=.45;
 /** Sweep text in from the background: each segment starts by its column (wave direction)
@@ -71,16 +71,23 @@ const TEXT_STAGGER=.45;
 export function fadeRows(rows:Row[],t:number,floor=.3,direction=-1):Row[] {
   if(t>=1)return rows;
   const width=Math.max(1,...rows.map(row=>row.reduce((n,s)=>n+s.text.length,0))),n=Math.max(1,rows.length);
-  return rows.map((row,index)=>{
+  const delays=rows.map((row,index)=>{
     let column=0;
     return row.map(segment=>{
       const start=column;column+=segment.text.length;
-      if(!segment.color)return segment;
-      const along=direction>0?1-start/width:start/width,delay=TEXT_STAGGER*(.8*along+.2*index/n);
-      const o=easeInOut((t-delay)/(1-TEXT_STAGGER));
-      return o>=1?segment:{...segment,color:fade(segment.color,floor+(1-floor)*o)};
+      if(!segment.color)return -1;
+      const along=direction>0?1-start/width:start/width;
+      return TEXT_STAGGER*(.8*along+.2*index/n);
     });
   });
+  // Start the sweep at the first colored segment, so nothing waits on empty columns.
+  const first=Math.min(TEXT_STAGGER,...delays.flat().filter(d=>d>=0));
+  return rows.map((row,index)=>row.map((segment,j)=>{
+    const delay=delays[index]![j]!;if(delay<0)return segment;
+    // Ease-out: text answers the key press at once, then settles softly.
+    const p=Math.max(0,Math.min(1,(t-(delay-first))/(1-TEXT_STAGGER))),o=1-(1-p)**3;
+    return o>=1?segment:{...segment,color:fade(segment.color!,floor+(1-floor)*o)};
+  }));
 }
 export function FadeRows({rows,fadeKey,enabled,color}:{rows:Row[];fadeKey:string;enabled:boolean;color:boolean}):React.ReactElement {
   const {t,direction:dir}=useFade(fadeKey,enabled);
@@ -90,9 +97,12 @@ export function FadeRows({rows,fadeKey,enabled,color}:{rows:Row[];fadeKey:string
 export function UsageMinimap({report,month,enabled,color,ascii,width=20}: {report:Report;month:string;enabled:boolean;color:boolean;ascii:boolean;width?:number}):React.ReactElement {
   const map=useMemo(()=>usageMinimap(report,width),[report,width]);
   const {controller,active}=useMotion(map,month,enabled,curveController,MORPH_MS);
-  return <Rows rows={rasterRows(active?controller.render(map.raster.width,map.raster.height):map.raster,ascii,map.unknown)} color={color}/>;
+  // Stable identity when idle, so the screen writer skips unchanged frames.
+  const staticRows=useMemo(()=>rasterRows(map.raster,ascii,map.unknown),[map,ascii]);
+  const rows=active?rasterRows(controller.render(map.raster.width,map.raster.height),ascii,map.unknown):staticRows;
+  return <Rows rows={rows} color={color} slot="minimap"/>;
 }
-export type GraphScene={shape:Shape;face:Face;top:number;left:number;width:number;height:number};
+export type GraphScene={shape:Shape;face:Face;points:Point[];top:number;left:number;width:number;height:number};
 const lineMasks:Record<string,number>={'─':0x24,'╶':0x20,'│':0x47,'╭':0x64,'╮':0xa4,'╰':0x27,'╯':0x3c,'┼':0x67,'┴':0x27,'┬':0x64,'┤':0x47,'├':0x67};
 export function graphScene(rows:Row[],width:number):GraphScene|null {
   const indices=rows.flatMap((row,index)=>/^\s*\$[\d,.]+ [┤┼] /.test(row[0]?.text??'')?[index]:[]);
@@ -112,7 +122,7 @@ export function graphScene(rows:Row[],width:number):GraphScene|null {
     }
   }
   if(!points.length)return null;
-  return {shape:shape(points,512),face:face(points,palette),top,left,width:plotWidth,height};
+  return {shape:shape(points,512),face:face(points,palette),points,top,left,width:plotWidth,height};
 }
 export function overlayGraph(rows:Row[],scene:GraphScene,raster:Raster):Row[] {
   const result=[...rows],painted=rasterRows(raster);
@@ -138,7 +148,9 @@ export function MotionGraphRows({rows,width,month,color,enabled}: {rows:Row[];wi
   const target=scene?.face??emptyFace;
   // Lines grow out of the baseline on mount and flow into the next month's lines.
   const {controller,active}=useMotion<Face>(target,month,enabled&&scene!==null,litController,MORPH_MS,ENTER_MS);
-  const {t,direction:dir}=useFade(month,enabled,MORPH_MS);
+  // Labels switch instantly between months (amounts roll instead); the sweep only
+  // plays when the graph view opens, so axes never dim during a morph.
+  const {t,direction:dir}=useFade('graph',enabled,MORPH_MS);
   const rolling=useAmountRoll(rows,month,enabled);
   const faded=fadeRows(rolling,t,.3,dir);
   return <Rows rows={active&&scene?overlayGraph(faded,scene,controller.render(scene.width,scene.height)):faded} color={color}/>;
