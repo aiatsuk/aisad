@@ -1,6 +1,6 @@
 # 60→120 fps terminal motion
 
-- Status: implemented on branch `perf/60fps-motion`.
+- Status: delivered in PR #14 (release 1.3.0).
 - Base: main at 6064898 (PR #13).
 
 ## Contract
