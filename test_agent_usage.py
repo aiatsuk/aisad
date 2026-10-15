@@ -25,6 +25,14 @@ class UsageTests(unittest.TestCase):
  def row(self,model='claude-opus-5',**kw):
   r=dict(id='cl:one',session='Claude:one',provider='Claude',model=model,ts=1788600000,tier='standard',speed='standard',geo='global',web_searches=0)
   r.update(app.normalize_usage(dict(input_tokens=100,cache_read_input_tokens=1000,cache_creation_input_tokens=200,cache_creation=dict(ephemeral_5m_input_tokens=100,ephemeral_1h_input_tokens=100),output_tokens=50),'Claude'));r.update(kw);return r
+ def test_discovery_reads_cowork_by_default(self):
+  with tempfile.TemporaryDirectory() as home:
+   cowork=Path(home)/'Library/Application Support/Claude/local-agent-mode-sessions/s1';cowork.mkdir(parents=True)
+   (cowork/'audit.jsonl').write_text('{}\n')
+   found=lambda extra:[p.parent.name+'/'+p.name for _,p in app.discover(app.parser().parse_args(['chart','--home',home]+extra))[1]]
+   self.assertTrue(any(p=='s1/audit.jsonl' for p in found([])))
+   self.assertTrue(any(p=='s1/audit.jsonl' for p in found(['--cowork'])))
+   self.assertFalse(any(p=='s1/audit.jsonl' for p in found(['--no-cowork'])))
  def test_normalization_not_double_counted(self):
   u=app.normalize_usage(dict(input_tokens=1000,cached_input_tokens=900,output_tokens=100,reasoning_output_tokens=70),'Codex')
   self.assertEqual(u['total'],1100);self.assertEqual(u['uncached'],100)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1 — 2026-10-15
+
+- Read every local source by default: Claude Cowork audit traces under macOS Application Support are included when present (`--no-cowork` skips them; `--cowork` is still accepted).
+- Price internal `codex-auto-review` observations as `gpt-5.6-luna`, the model Codex runs auto-review on with an API key, with the assumption stated on every row; previously they were unpriced. On the author's history this adds $13.29 over 2,745 observations.
+- Publish releases from CI: a merge to main that raises VERSION tags the commit and starts the release workflow.
+
 ## 1.4.0 — 2026-10-15
 
 - Open `chart` without waiting for the scan: the interactive view starts on the last dataset it showed (footer "Updating…") while the collector rescans on a worker thread, then changed months morph and roll to the fresh numbers. Unchanged months stay idle; navigation keeps the selected month. Quitting first exits at once and keeps the shown selection. On the user's real history (820 traces, 37,021 requests, arm64 VM) the first frame arrives after about 0.16 s instead of 2.3 s; fresh data follows at about 1.8 s. The cache (`output/chart-ui.json`) holds only the monthly aggregates the UI already receives and is keyed by version and options.

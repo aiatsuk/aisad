@@ -23,12 +23,23 @@ class PricingCoverageTests(unittest.TestCase):
                 self.assertEqual(result['price_status'], 'priced')
 
     def test_service_and_missing_models_are_not_guessed_or_zeroed(self):
-        for model in ['codex-auto-review', 'unknown', 'gpt-5.3-codex-spark', 'local-model']:
+        for model in ['unknown', 'gpt-5.3-codex-spark', 'local-model']:
             result = app.price_request(self.row(model), app.default_prices())
             self.assertIsNone(result['cost'])
         result = app.price_request(self.row('gpt-5.2-codex', tier='priority'), app.default_prices())
         self.assertIsNone(result['cost'])
         self.assertEqual(result['price_status'], 'unpriced_tier')
+
+    def test_codex_auto_review_is_priced_as_luna_with_a_stated_assumption(self):
+        prices = app.default_prices()
+        review = app.price_request(self.row('codex-auto-review'), prices)
+        luna = app.price_request(self.row('gpt-5.6-luna'), prices)
+        self.assertEqual(review['cost'], luna['cost'])
+        self.assertEqual(review['price_status'], 'priced')
+        self.assertIn('Codex auto-review priced as gpt-5.6-luna, its API-key model', review['assumptions'])
+        # A catalog without the API-key model leaves it unpriced, never free.
+        without = dict(prices, models={k: v for k, v in prices['models'].items() if k != 'gpt-5.6-luna'})
+        self.assertIsNone(app.price_request(self.row('codex-auto-review'), without)['cost'])
 
     def test_gap_counts_preserve_tokens_and_distinguish_reasons(self):
         records = []
@@ -36,7 +47,10 @@ class PricingCoverageTests(unittest.TestCase):
                              ('unknown', {}), ('gpt-5.2-codex', {'tier': 'priority'}),
                              ('gpt-5.2-codex', {})]:
             row = self.row(model, **extra)
-            row.update(app.price_request(row, app.default_prices()))
+            # Without its API-key model in the catalog, auto-review stays an internal gap.
+            prices = app.default_prices()
+            prices['models'].pop('gpt-5.6-luna')
+            row.update(app.price_request(row, prices))
             records.append(row)
         result = app.pricing_coverage(records)
         self.assertEqual((result['observed_requests'], result['priced_requests'],
@@ -49,13 +63,13 @@ class PricingCoverageTests(unittest.TestCase):
         self.assertEqual(app.pricing_coverage(records[-1:])['unpriced_groups'], [])
 
     def test_statistics_keep_pricing_status_and_usage_json_exposes_coverage(self):
-        row = self.row('codex-auto-review', id='x', session='Codex:s', date='2026-09-05',
+        row = self.row('local-model', id='x', session='Codex:s', date='2026-09-05',
                        project='example', role='review')
         row.update(app.price_request(row, app.default_prices()))
         stats = app.request_statistics([row])
         self.assertEqual(stats[0]['price_status'], 'unknown_model')
         period = app.usage_period([], request_stats=stats)
-        self.assertEqual(period['pricing_coverage']['unpriced_groups'][0]['model'], 'codex-auto-review')
+        self.assertEqual(period['pricing_coverage']['unpriced_groups'][0]['model'], 'local-model')
 
 
 if __name__ == '__main__':

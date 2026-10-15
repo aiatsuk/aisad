@@ -1,0 +1,42 @@
+name: Tag release
+
+# A merge to main that raises VERSION tags it and publishes the release, so a
+# release never depends on pushing a tag from a developer machine.
+on:
+  push:
+    branches: [main]
+    paths: ['agent_usage.py', 'CHANGELOG.md']
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Tag a new version and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(python3 scripts/release.py version)"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists; nothing to release."
+            exit 0
+          fi
+          python3 scripts/release.py check --tag "$TAG"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "AISAD ${TAG#v}" "$GITHUB_SHA"
+          git push origin "$TAG"
+          # Tags pushed with GITHUB_TOKEN start no workflows; a dispatch does.
+          gh workflow run release.yml --ref main -f tag="$TAG"
