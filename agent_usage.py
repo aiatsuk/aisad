@@ -9,6 +9,7 @@ import gzip
 import html
 import collections
 import contextlib
+import functools
 import calendar
 import datetime as dt
 from decimal import Decimal
@@ -30,7 +31,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -206,7 +207,14 @@ def timestamp(value):
         return (d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)).timestamp()
     except (ValueError,TypeError,OverflowError,OSError): return None
 
+@functools.lru_cache(maxsize=1024)
+def _canonical_model(model):
+    return canonical_model_uncached(model)
+
 def canonical_model(model):
+    return _canonical_model(str(model or 'unknown'))
+
+def canonical_model_uncached(model):
     # Only known date suffix formats; arbitrary unknown aliases must remain unknown.
     model=str(model or 'unknown').lower()
     model=re.sub(r'-(?:20\d{2}-\d{2}-\d{2}|20\d{6})$','',model)
@@ -215,8 +223,13 @@ def canonical_model(model):
     return model
 
 def project_name(value):
-    # No dependency on a particular checkout folder or username.
-    p=Path(str(value or ''))
+    # No dependency on a particular checkout folder or username. Thousands of threads
+    # share a few working directories; the home folder is part of the cache key.
+    return _project_name(str(value or ''),os.environ.get('HOME',''))
+
+@functools.lru_cache(maxsize=4096)
+def _project_name(value,home):
+    p=Path(value)
     if not value:return 'unknown'
     parts=p.parts
     if '.claude' in parts and 'worktrees' in parts:
@@ -568,15 +581,27 @@ def validate_prices(catalog):
                 if rule.get(field):dt.date.fromisoformat(rule[field])
     return catalog
 
+_RULES={}
+def _dated_rule(catalog,model,day):
+    """(rule, Decimal rates) or a status string; memoized per catalog, model and UTC day."""
+    key=(id(catalog),model,day);hit=_RULES.get(key)
+    if hit is not None and hit[0] is catalog:return hit[1]
+    rules=catalog['models'].get(model)
+    if rules is None:value='unknown_model'
+    else:
+        rules=rules if isinstance(rules,list) else [rules]
+        date=(dt.date(1970,1,1)+dt.timedelta(days=day)).isoformat()
+        matches=[v for v in rules if (not v.get('valid_from') or date>=v['valid_from']) and (not v.get('valid_to') or date<v['valid_to'])]
+        if len(matches)!=1:value='missing_or_overlapping_date_rate'
+        else:value=(matches[0],tuple(Decimal(str(matches[0][k])) for k in ['input','cached','write_5m','write_1h','output']))
+    if len(_RULES)>65536:_RULES.clear()
+    _RULES[key]=(catalog,value);return value
+
 def price_request(row,catalog):
-    model=canonical_model(row['model']);rules=catalog['models'].get(model)
-    if rules is None:return dict(cost=None,cost_high=None,cost_parts=None,price_status='unknown_model',assumptions=[])
-    rules=rules if isinstance(rules,list) else [rules]
-    date=dt.datetime.fromtimestamp(row['ts'],dt.timezone.utc).date().isoformat()
-    matches=[v for v in rules if (not v.get('valid_from') or date>=v['valid_from']) and (not v.get('valid_to') or date<v['valid_to'])]
-    if len(matches)!=1:return dict(cost=None,cost_high=None,cost_parts=None,price_status='missing_or_overlapping_date_rate',assumptions=[])
-    rule=matches[0];d=lambda x:Decimal(str(x));million=Decimal(1000000)
-    ip,cp,wp,one,op=(d(rule[k]) for k in ['input','cached','write_5m','write_1h','output'])
+    model=canonical_model(row['model'])
+    resolved=_dated_rule(catalog,model,int(row['ts']//86400))
+    if isinstance(resolved,str):return dict(cost=None,cost_high=None,cost_parts=None,price_status=resolved,assumptions=[])
+    rule,(ip,cp,wp,one,op)=resolved;d=lambda x:Decimal(str(x));million=Decimal(1000000)
     assumptions=[];mult=Decimal(1)
     if rule.get('no_cache_write_rate') and row['write']:
         return dict(cost=None,cost_high=None,cost_parts=None,price_status='unpriced_cache_write',assumptions=[])
@@ -880,7 +905,10 @@ def registry(codex,include_titles,quality):
             c=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=2);c.row_factory=sqlite3.Row
             if not c.execute("SELECT 1 FROM sqlite_master WHERE name='threads'").fetchone():c.close();continue
             result={}
-            for r in c.execute('SELECT * FROM threads'):
+            # Only the columns used below; threads rows also hold large text fields.
+            available={row[1] for row in c.execute('PRAGMA table_info(threads)')}
+            wanted=[name for name in ('id','model','source','agent_path','cwd')+(('title',) if include_titles else ()) if name in available]
+            for r in c.execute('SELECT '+','.join('"'+name+'"' for name in wanted)+' FROM threads'):
                 r=dict(r);sid='Codex:'+str(r['id']);model=r.get('model') or 'unknown'
                 role='review' if model=='codex-auto-review' else 'subagent' if 'subagent' in str(r.get('source')).lower() or r.get('agent_path','/root') not in ['/root',None,''] else 'main'
                 result[sid]=dict(id=sid,provider='Codex',role=role,project=project_name(r.get('cwd')),title=title_text(r.get('title')) if include_titles else str(r['id'])[:12],trace=False,registry_model=model)
@@ -935,6 +963,18 @@ class ParseCache:
         self.c=sqlite3.connect(path)
         self.c.execute('CREATE TABLE IF NOT EXISTS parsed (path TEXT PRIMARY KEY, fingerprint TEXT, payload TEXT, events TEXT)')
         self.legacy=bool(self.c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'").fetchone())
+        self.rows=None
+    def prefetch(self):
+        """Read every fingerprint and usage payload in one table scan.
+
+        A usage run looks up every trace; one sequential scan replaces hundreds of
+        indexed point queries and still never reads the trailing events column.
+        """
+        self.rows={path:(fingerprint,payload) for path,fingerprint,payload in self.c.execute('SELECT path,fingerprint,payload FROM parsed')}
+    def lookup(self,key,want_events):
+        if self.rows is not None and not want_events:
+            hit=self.rows.get(key);return hit
+        return self.c.execute('SELECT fingerprint,payload'+(',events' if want_events else '')+' FROM parsed WHERE path=?',(key,)).fetchone()
     def store(self,key,fingerprint,result):
         body={field:value for field,value in result.items() if field!='events'}
         encode=lambda value:json.dumps(value,separators=(',',':'))
@@ -943,7 +983,7 @@ class ParseCache:
     def parse(self,provider,path,titles,stats,want_events=True):
         st=path.stat();fp=f'{PARSER_VERSION}:{int(titles)}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}'
         key=str(path)
-        cached=self.c.execute('SELECT fingerprint,payload'+(',events' if want_events else '')+' FROM parsed WHERE path=?',(key,)).fetchone()
+        cached=self.lookup(key,want_events)
         if cached and cached[0]==fp:
             try:
                 result=json.loads(cached[1])
@@ -999,6 +1039,7 @@ def make_snapshot(args, dashboard=True, include_requests=False):
     sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[]
     evidence=evidence_wanted(args)
     cache=ParseCache(output/'parse-cache.sqlite')
+    if not evidence:cache.prefetch()
     try:
         for provider,path in files:
             try:
@@ -1886,31 +1927,119 @@ def terminal_ui_dataset(snapshot,args,color=False):
     return dict(schema_version=1,initial_month=initial.isoformat()[:7],initial_view=args.view,
         options=dict(color=color,ascii=args.ascii_only,width=args.width,height=args.height),months=months)
 
-def terminal_ink_ui(snapshot,args,color=False):
-    """Use the bundled UI when Bun is present; portable Python is the fallback."""
+UI_CACHE='chart-ui.json'
+
+def ui_cache_key(args,color):
+    """Identity of a terminal UI dataset: same code, options and color level."""
+    options={key:value for key,value in vars(args).items()}
+    return hashlib.sha256(json.dumps([VERSION,bool(color),options],sort_keys=True,default=str).encode()).hexdigest()
+
+def ink_runtime():
     if os.environ.get('AISAD_TERMINAL_UI')=='python':return None
     runtime=shutil.which('bun')
     root=Path(__file__).resolve().parent
     bundle=next((path for path in (root/'ui/aisad-ui.mjs',root/'ui/dist/aisad-ui.mjs') if path.is_file()),None)
-    if not runtime or not bundle:return None
+    return (runtime,bundle) if runtime and bundle else None
+
+def run_ink(found,source,state,color,poll=None):
+    """Run the bundled UI on a dataset file; the chosen month and view, or None.
+    `poll` runs about every 50 ms while the UI is open."""
+    runtime,bundle=found
     import subprocess
-    dataset=terminal_ui_dataset(snapshot,args,color)
+    # An empty working directory avoids loading project-specific Bun config.
+    environment={**os.environ,'FORCE_COLOR':'3' if color else '0'}
+    if color:environment.pop('NO_COLOR',None)
+    process=subprocess.Popen([runtime,str(bundle),str(source),str(state)],cwd=source.parent,env=environment)
+    try:
+        while True:
+            try:process.wait(timeout=.05);break
+            except subprocess.TimeoutExpired:
+                if poll:poll()
+    except BaseException:
+        process.wait();raise
+    if process.returncode==130:raise KeyboardInterrupt
+    if process.returncode or not state.is_file():
+        print('Could not start the enhanced terminal view; using the portable view.',file=sys.stderr)
+        return None
+    return read_json_file(state)
+
+def selected_view(selected,dataset):
+    if selected.get('month') not in {item['month'] for item in dataset['months']} or selected.get('view') not in ('graph','weeks'):
+        raise ValueError('Invalid terminal UI selection')
+    return selected['month'],selected['view']
+
+def ink_session(found,args,color,dataset,snapshot=None):
+    """Run the UI on `dataset` and collect fresh numbers in the background.
+
+    Without `snapshot` the dataset is the previous launch's (stale) and one
+    collection starts at once. R in the UI drops a request file next to the
+    dataset; one collection runs at a time on a daemon worker thread, and its
+    result replaces the file the UI watches. Quitting abandons a running worker:
+    its parse-cache writes are uncommitted and roll back.
+    """
+    import threading
+    output=Path(args.output).expanduser().resolve();key=ui_cache_key(args,color)
+    latest=dict(snapshot=snapshot,dataset=dataset);worker=[None]
     with tempfile.TemporaryDirectory(prefix='aisad-ui-') as temporary:
         directory=Path(temporary);source=directory/'aggregates.json';state=directory/'state.json'
-        atom_json(source,dataset)
-        # An empty working directory avoids loading project-specific Bun config.
-        environment={**os.environ,'FORCE_COLOR':'3' if color else '0'}
-        if color:environment.pop('NO_COLOR',None)
-        process=subprocess.run([runtime,str(bundle),str(source),str(state)],cwd=directory,env=environment)
-        if process.returncode==130:raise KeyboardInterrupt
-        if process.returncode or not state.is_file():
-            print('Could not start the enhanced terminal view; using the portable view.',file=sys.stderr)
-            return None
-        selected=read_json_file(state)
-        if selected.get('month') not in {item['month'] for item in dataset['months']} or selected.get('view') not in ('graph','weeks'):
-            raise ValueError('Invalid terminal UI selection')
-        result=terminal_chart_report(snapshot,args,selected['month']);result['view']=selected['view']
-        return result
+        request=directory/'refresh.request'
+        atom_json(source,dict(dataset,refresh=True,**({} if snapshot is not None else {'stale':True})))
+        def publish(value):
+            # Never recreate the directory: after a quit it is already gone.
+            partial=directory/'aggregates.next.json'
+            with partial.open('w',encoding='utf-8') as handle:handle.write(json.dumps(dict(value,refresh=True),ensure_ascii=False,separators=(',',':')))
+            os.replace(partial,source)
+        def refresh():
+            try:
+                fresh=make_snapshot(args,dashboard=False,include_requests=True)
+                prepared=terminal_ui_dataset(fresh,args,color)
+                latest.update(snapshot=fresh,dataset=prepared);latest.pop('error',None)
+                with contextlib.suppress(OSError):atom_json(output/UI_CACHE,dict(key=key,dataset=prepared))
+            except Exception as error:latest['error']=error
+            # On failure the shown numbers return without the stale mark.
+            with contextlib.suppress(OSError):publish(latest['dataset'])
+        def start():
+            if worker[0] is None or not worker[0].is_alive():
+                worker[0]=threading.Thread(target=refresh,name='aisad-refresh',daemon=True);worker[0].start()
+        def poll():
+            if request.exists() and (worker[0] is None or not worker[0].is_alive()):
+                with contextlib.suppress(OSError):request.unlink()
+                start()
+        if snapshot is None:start()
+        selected=run_ink(found,source,state,color,poll)
+        if selected is None:
+            # The portable view needs a snapshot either way.
+            if worker[0] is not None:worker[0].join()
+            if latest['snapshot'] is None:raise latest.get('error') or RuntimeError('No usage snapshot')
+            return terminal_chart_interactive(latest['snapshot'],args,color)
+    if 'error' in latest:print('Could not refresh usage: '+str(latest['error']),file=sys.stderr)
+    shown=latest['dataset'];month,view=selected_view(selected,shown)
+    if latest['snapshot'] is not None:result=terminal_chart_report(latest['snapshot'],args,month)
+    else:result=next(item['report'] for item in shown['months'] if item['month']==month)
+    result['view']=view
+    return result
+
+def terminal_ink_ui(snapshot,args,color=False):
+    """Use the bundled UI when Bun is present; portable Python is the fallback."""
+    found=ink_runtime()
+    if not found:return None
+    dataset=terminal_ui_dataset(snapshot,args,color)
+    output=Path(args.output).expanduser().resolve()
+    with contextlib.suppress(OSError):atom_json(output/UI_CACHE,dict(key=ui_cache_key(args,color),dataset=dataset))
+    return ink_session(found,args,color,dataset,snapshot)
+
+def terminal_ink_live(args,color=False):
+    """Cold start: open on the last dataset shown, then swap in fresh numbers.
+
+    Reading every trace takes seconds on a large history; the previous dataset
+    is on disk already. None when there is no matching cached dataset.
+    """
+    found=ink_runtime()
+    output=Path(args.output).expanduser().resolve()
+    cached=read_json_file(output/UI_CACHE) if found else {}
+    previous=cached.get('dataset') if isinstance(cached,dict) and cached.get('key')==ui_cache_key(args,color) else None
+    if not isinstance(previous,dict) or not isinstance(previous.get('months'),list) or previous.get('initial_month') not in {m.get('month') for m in previous['months'] if isinstance(m,dict)}:return None
+    return ink_session(found,args,color,previous)
 
 def terminal_chart_interactive(snapshot,args,color=False):
     month=chart_month(args.month) if args.month else dt.date.fromisoformat(snapshot['as_of_date']).replace(day=1)
@@ -1921,12 +2050,16 @@ def terminal_chart_interactive(snapshot,args,color=False):
             while True:
                 result=terminal_chart_report(snapshot,args,f'{month.year:04d}-{month.month:02d}');result['view']=view
                 size=shutil.get_terminal_size((100,30));text=terminal_chart_frame(result,args,color,size)
-                controls='W graph/weeks  H previous  L next  Q quit'
+                controls='W graph/weeks  H previous  L next  R refresh  Q quit'
                 sys.stdout.write('\x1b[H\x1b[2J'+text.replace('\n','\r\n')+'\r\n\r\n'+controls+'\r\n');sys.stdout.flush()
                 key=read()
                 if key in ('q','\x04','\x1b'):return result
                 if key=='\x03':raise KeyboardInterrupt
-                if key=='w':view='graph' if view=='weeks' else 'weeks'
+                if key=='r':
+                    sys.stdout.write('\x1b[H\x1b[2J'+text.replace('\n','\r\n')+'\r\n\r\nUpdating…\r\n');sys.stdout.flush()
+                    snapshot=make_snapshot(args,dashboard=False,include_requests=True)
+                    latest=dt.date.fromisoformat(snapshot['as_of_date']).replace(day=1)
+                elif key=='w':view='graph' if view=='weeks' else 'weeks'
                 elif key in ('h','l'):
                     index=month.year*12+month.month-1+(-1 if key=='h' else 1)
                     year,number=divmod(index,12)
@@ -2495,6 +2628,11 @@ def main(argv=None):
               f"{result['status']}: {result['models']} models, rates as of {result['as_of']} ({result.get('basis','models_dev_rates')}). {result['path']}")
         return
     if args.refresh:raise SystemExit('--refresh belongs to the prices command; other commands never reach the network')
+    if args.command=='chart':
+        color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))
+        interactive=args.interactive or (not args.snapshot and not args.json and sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get('TERM')!='dumb')
+        live=terminal_ink_live(args,color) if interactive else None
+        if live is not None:atom_json(output/'chart.json',live);return
     snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
     if args.command=='forecast':
         result=forecast_command(snap,args)
@@ -2502,8 +2640,6 @@ def main(argv=None):
         return
     if args.command=='chart':
         result=terminal_chart_report(snap,args);atom_json(output/'chart.json',result)
-        color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))
-        interactive=args.interactive or (not args.snapshot and not args.json and sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get('TERM')!='dumb')
         if interactive:
             enhanced=terminal_ink_ui(snap,args,color)
             result=enhanced if enhanced is not None else terminal_chart_interactive(snap,args,color)
