@@ -194,7 +194,7 @@ bun run check
 bun run test
 bun run build
 cd ..
-python3 scripts/build_release.py --tag v1.4.0 --with-ui
+python3 scripts/build_release.py --tag v1.4.1 --with-ui
 ```
 
 The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
@@ -215,7 +215,7 @@ To add the `aisad` terminal command when installing a local bundle, use `--cli-d
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.4.0.zip --checksum-file dist/SHA256SUMS \
+  --archive dist/aisad-skill-v1.4.1.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 
@@ -325,7 +325,7 @@ The launcher (`skills/aisad/scripts/aisad.py`) refreshes at most once every 24 h
 
 Missing tiers default to Standard and missing geography defaults to global. An unknown model or unsupported mode has a missing price, not a zero price; the request is excluded from the displayed cost subtotal and comparison, with its count disclosed separately. If a Claude cache-write TTL is unknown, cost is shown as a 5-minute to 1-hour range.
 
-The dashboard explains partial pricing in **Excluded from cost**, with counts, tokens and reasons for the selected filters. `current.pricing_coverage` and `previous.pricing_coverage` expose the same grouping in usage JSON. Internal `codex-auto-review` observations remain counted but unpriced until a verified rate is provided; they are never silently treated as free.
+The dashboard explains partial pricing in **Excluded from cost**, with counts, tokens and reasons for the selected filters. `current.pricing_coverage` and `previous.pricing_coverage` expose the same grouping in usage JSON. Internal `codex-auto-review` observations have no published rate. They are priced as `gpt-5.6-luna`, the model Codex runs auto-review on with an API key, and every such row carries the assumption "Codex auto-review priced as gpt-5.6-luna, its API-key model"; they are never silently treated as free.
 
 ## Local pricing overrides
 
@@ -348,7 +348,7 @@ Sources: [OpenAI pricing](https://developers.openai.com/api/docs/pricing), [Clau
 
 - **Codex:** `$CODEX_HOME` or `~/.codex`; `sessions`, `archived_sessions` and the newest readable `state_*.sqlite` registry.
 - **Claude Code:** `$CLAUDE_CONFIG_DIR` or `~/.claude`; `projects`, including nested `subagents`.
-- **Optional `--cowork`:** local Claude Cowork audit traces under macOS Application Support.
+- **Claude Cowork:** local audit traces under macOS Application Support, read by default when present; `--no-cowork` skips them.
 
 Override the directories when needed:
 
@@ -407,18 +407,12 @@ python3 -m unittest discover -v
 python3 scripts/build_release.py --tag v1.1.0
 ```
 
-The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. Push the matching tag after the code is committed; the release workflow runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
+The builder uses an explicit source-file list and deterministic ZIP metadata. Local reports, caches and session history are never included. A merge that raises `VERSION` tags the release (see Releasing); a tag push runs the cross-platform and browser suites before publishing the assets. Stable releases are the skill updater's source; it does not install arbitrary branch changes or prereleases.
 
 ### Releasing
 
 1. In the release pull request, bump `VERSION` in `agent_usage.py` (the only version file) and add a `## X.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md`. `python3 scripts/release.py check --tag vX.Y.Z` confirms they agree.
-2. After the merge, tag the merged commit on main and push the tag:
-
-   ```sh
-   git tag -a vX.Y.Z -m "AISAD X.Y.Z" <merged main sha>
-   git push origin vX.Y.Z
-   ```
-
+2. Merge it. The `Tag release` workflow sees the new `VERSION` on main, tags the merged commit `vX.Y.Z` and starts the release workflow. To tag by hand instead, push `git tag -a vX.Y.Z -m "AISAD X.Y.Z" <merged main sha>`.
 3. The release workflow checks the tag with `scripts/release.py check`, runs the tests, builds the assets and publishes the GitHub Release with that version's changelog section (`scripts/release.py notes`) as its notes.
 4. To republish an existing tag, for example after a failed run, use `gh workflow run release.yml -f tag=vX.Y.Z`. It updates the existing release's notes and assets instead of failing.
 

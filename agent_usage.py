@@ -31,7 +31,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.4.0'
+VERSION = '1.4.1'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -597,8 +597,19 @@ def _dated_rule(catalog,model,day):
     if len(_RULES)>65536:_RULES.clear()
     _RULES[key]=(catalog,value);return value
 
+# Internal model slugs with no published price, priced as the model the same
+# feature uses with an API key. The assumption is stated on every such row.
+PRICE_ALIASES={'codex-auto-review':('gpt-5.6-luna','Codex auto-review priced as gpt-5.6-luna, its API-key model')}
+
 def price_request(row,catalog):
-    model=canonical_model(row['model'])
+    model=canonical_model(row['model']);alias=None
+    if model not in catalog['models'] and model in PRICE_ALIASES and PRICE_ALIASES[model][0] in catalog['models']:
+        model,alias=PRICE_ALIASES[model]
+    result=_price_request(row,catalog,model)
+    if alias and result['cost'] is not None:result['assumptions']=[alias]+result['assumptions']
+    return result
+
+def _price_request(row,catalog,model):
     resolved=_dated_rule(catalog,model,int(row['ts']//86400))
     if isinstance(resolved,str):return dict(cost=None,cost_high=None,cost_parts=None,price_status=resolved,assumptions=[])
     rule,(ip,cp,wp,one,op)=resolved;d=lambda x:Decimal(str(x));million=Decimal(1000000)
@@ -890,7 +901,8 @@ def discover(args):
     codex=Path(args.codex_dir or (os.environ.get('CODEX_HOME') if not args.home else '') or home/'.codex').expanduser().resolve()
     claude=Path(args.claude_dir or (os.environ.get('CLAUDE_CONFIG_DIR') if not args.home else '') or home/'.claude').expanduser().resolve()
     roots=[('Codex',codex/'sessions'),('Codex',codex/'archived_sessions'),('Claude',claude/'projects')]
-    if args.cowork:roots.append(('Claude',home/'Library/Application Support/Claude/local-agent-mode-sessions'))
+    # Every local source by default; Cowork's folder exists only on macOS with Claude Desktop.
+    if not getattr(args,'no_cowork',False):roots.append(('Claude',home/'Library/Application Support/Claude/local-agent-mode-sessions'))
     files={}
     for provider,root in roots:
         if root.is_dir():
@@ -2577,7 +2589,8 @@ def parser():
     p.add_argument('--home',help='Local profile root (for another user or tests)')
     p.add_argument('--codex-dir',help='Codex directory; defaults to CODEX_HOME or ~/.codex')
     p.add_argument('--claude-dir',help='Claude directory; defaults to CLAUDE_CONFIG_DIR or ~/.claude')
-    p.add_argument('--cowork',action='store_true',help='Also read local Claude Cowork audit traces on macOS')
+    p.add_argument('--cowork',action='store_true',help=argparse.SUPPRESS)  # kept for old scripts; Cowork is read by default
+    p.add_argument('--no-cowork',action='store_true',help='Skip local Claude Cowork audit traces on macOS (read by default)')
     p.add_argument('--timezone',help='IANA timezone, e.g. Europe/Amsterdam; defaults to the system timezone')
     p.add_argument('--prices',help='Local pricing JSON; --write-prices creates a template')
     p.add_argument('--refresh',action='store_true',help='Prices: read current published rates from models.dev into the local catalog')
