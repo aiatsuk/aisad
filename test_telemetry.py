@@ -183,6 +183,84 @@ class TelemetryTests(unittest.TestCase):
             with patch.object(app.shutil,'which',return_value=None):self.assertIsNone(app.terminal_ink_ui({},None))
             with patch.dict(os.environ,{'AISAD_TERMINAL_UI':'python'}):self.assertIsNone(app.terminal_ink_ui({},None))
 
+    def test_chart_opens_on_the_cached_dataset_then_swaps_in_fresh_numbers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output=Path(temporary);args=app.parser().parse_args(['chart','--output',temporary])
+            def row(date,cost):
+                return dict(date=date,cost=cost,cost_high=cost,provider='Claude',requests=1,unpriced=0,
+                    model='claude-opus-5',project='p',role='main',pool='interactive')
+            def snapshot(cost):
+                rows=[row('2026-09-06',20),row('2026-10-04',cost)]
+                return dict(as_of_date='2026-10-08',generated='2026-10-08T12:00:00Z',timezone='UTC',rows=rows,request_stats=rows,grok_records=[])
+            old=app.terminal_ui_dataset(snapshot(10),args,False)
+            found=('bun',output/'aisad-ui.mjs')
+            with patch.object(app,'ink_runtime',return_value=found):
+                # No cache yet, or a cache for other options: the ordinary start.
+                self.assertIsNone(app.terminal_ink_live(args,False))
+                app.atom_json(output/app.UI_CACHE,dict(key=app.ui_cache_key(args,True),dataset=old))
+                self.assertIsNone(app.terminal_ink_live(args,False))
+                app.atom_json(output/app.UI_CACHE,dict(key=app.ui_cache_key(args,False),dataset=old))
+                seen=[]
+                def ui(found,source,state,color,poll=None):
+                    seen.append(json.loads(source.read_text()))
+                    worker=next(t for t in __import__('threading').enumerate() if t.name=='aisad-refresh');worker.join(5)
+                    seen.append(json.loads(source.read_text()))
+                    return dict(month='2026-10',view='weeks')
+                with patch.object(app,'make_snapshot',return_value=snapshot(99)),patch.object(app,'run_ink',side_effect=ui):
+                    result=app.terminal_ink_live(args,False)
+                self.assertTrue(seen[0]['stale']);self.assertNotIn('stale',seen[1])
+                self.assertEqual(seen[0]['months'][1]['report']['monthly_budget']['known_cost_usd'],10)
+                self.assertEqual(seen[1]['months'][1]['report']['monthly_budget']['known_cost_usd'],99)
+                self.assertEqual((result['view'],result['monthly_budget']['known_cost_usd']),('weeks',99))
+                # The fresh dataset is the next start's cache.
+                self.assertEqual(app.read_json_file(output/app.UI_CACHE)['dataset']['months'][1]['report']['monthly_budget']['known_cost_usd'],99)
+                # Quitting before the refresh ends keeps the shown numbers and does not wait.
+                import threading;gate=threading.Event()
+                def slow(*unused,**ignored):gate.wait(5);return snapshot(5)
+                with patch.object(app,'make_snapshot',side_effect=slow),patch.object(app,'run_ink',return_value=dict(month='2026-09',view='graph')):
+                    early=app.terminal_ink_live(args,False)
+                gate.set()
+                for worker in [t for t in threading.enumerate() if t.name=='aisad-refresh']:worker.join(5)
+                self.assertEqual((early['view'],early['monthly_budget']['known_cost_usd']),('graph',20))
+
+    def test_r_in_the_ui_requests_one_background_collection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output=Path(temporary);args=app.parser().parse_args(['chart','--output',temporary])
+            def row(date,cost):
+                return dict(date=date,cost=cost,cost_high=cost,provider='Claude',requests=1,unpriced=0,
+                    model='claude-opus-5',project='p',role='main',pool='interactive')
+            def snapshot(cost):
+                rows=[row('2026-10-04',cost)]
+                return dict(as_of_date='2026-10-08',generated='2026-10-08T12:00:00Z',timezone='UTC',rows=rows,request_stats=rows,grok_records=[])
+            import threading
+            calls=[]
+            def collect(*unused,**ignored):calls.append(1);return snapshot(50)
+            def ui(found,source,state,color,poll):
+                shown=json.loads(source.read_text());self.assertTrue(shown['refresh']);self.assertNotIn('stale',shown)
+                for _ in range(3):poll()
+                self.assertEqual(calls,[])
+                (source.parent/'refresh.request').write_text('');poll()
+                next(t for t in threading.enumerate() if t.name=='aisad-refresh').join(5)
+                poll()
+                self.assertFalse((source.parent/'refresh.request').exists())
+                fresh=json.loads(source.read_text())
+                self.assertEqual(fresh['months'][-1]['report']['monthly_budget']['known_cost_usd'],50)
+                return dict(month='2026-10',view='graph')
+            with patch.object(app,'ink_runtime',return_value=('bun',output/'ui.mjs')),patch.object(app,'run_ink',side_effect=ui),patch.object(app,'make_snapshot',side_effect=collect):
+                result=app.terminal_ink_ui(snapshot(10),args,False)
+            self.assertEqual(calls,[1]);self.assertEqual(result['monthly_budget']['known_cost_usd'],50)
+            # A failed collection returns the shown numbers without the stale mark.
+            def broken(*unused,**ignored):raise ValueError('bad trace')
+            def ui_fail(found,source,state,color,poll):
+                (source.parent/'refresh.request').write_text('');poll()
+                next(t for t in threading.enumerate() if t.name=='aisad-refresh').join(5)
+                shown=json.loads(source.read_text());self.assertNotIn('stale',shown)
+                self.assertEqual(shown['months'][-1]['report']['monthly_budget']['known_cost_usd'],10)
+                return dict(month='2026-10',view='graph')
+            with patch.object(app,'ink_runtime',return_value=('bun',output/'ui.mjs')),patch.object(app,'run_ink',side_effect=ui_fail),patch.object(app,'make_snapshot',side_effect=broken),contextlib.redirect_stderr(io.StringIO()) as errors:
+                result=app.terminal_ink_ui(snapshot(10),args,False)
+            self.assertIn('Could not refresh usage: bad trace',errors.getvalue());self.assertEqual(result['monthly_budget']['known_cost_usd'],10)
+
     def test_watch_and_hook_modes_are_rejected_before_collecting(self):
         for args in [['--watch', '60'], ['statusline', '--watch', '5'], ['statusline', '--stdin']]:
             with patch.object(app, 'make_snapshot', side_effect=AssertionError('Unexpected collection')), self.assertRaisesRegex(SystemExit, 'on demand'):

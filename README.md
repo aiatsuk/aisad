@@ -194,7 +194,7 @@ bun run check
 bun run test
 bun run build
 cd ..
-python3 scripts/build_release.py --tag v1.3.0 --with-ui
+python3 scripts/build_release.py --tag v1.4.0 --with-ui
 ```
 
 The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
@@ -202,6 +202,8 @@ The UI bundle includes its dependencies and third-party notices; no package inst
 In the terminal, press **W** to switch between the graph and a weekday table, **H** for the previous month, **L** for the next month (up to the current month), and **Q** or Escape to exit. Left/right arrow keys also change months. `--interactive` requires a terminal; `--view weeks --snapshot` prints the table without waiting for keys. Navigation reuses the initial local snapshot; it does not poll, rescan, start a server or reach the network. Exiting restores the terminal.
 
 The Ink UI animates in the style of the Codex CLI welcome mark. When the graph opens, its lines grow out of the $0 baseline from left to right; between months they flow into the next month's lines. Particles are bound to provider and day and transfer from the dots on screen: a day's dots move up or down in place, split off when its line grows and merge when it shrinks, and new days flow in from neighbouring days; only a provider with nothing within about four days dissolves or grows from $0. The plot keeps one height and one y-axis width for every month, so each morph starts exactly on the dots shown. A wave crosses the occupied span in the navigation direction (H and L mirror it); particles hop along arcs, lift toward the camera with perspective, glow in flight, flash as they land with a slight overshoot and leave short comet tails where they move fast. Colors blend between providers and the plot tilts slightly. Rendering uses a per-dot z-buffer and studio lighting (key, shadow, cool rim and a warm specular glint) averaged into one truecolor foreground per Braille cell. Text and table cells sweep in from a dimmed state in the same direction. Provider amounts in the legend and the monthly budget amount and percentage roll from the previous month's values (a new provider counts up from $0) with a slight stagger; digits that are still changing glow warm and flash as they settle. A 20-cell, two-row minimap shows the selected month's real daily costs in provider colors. It stays visible in both graph and weekly views; left to right covers the full calendar month, with a shared vertical scale based on that month's largest provider daily cost. Gaps/future days stay blank and unpriced days retain `?`; thin connected lines retain provider/day correspondence while morphing, missing samples fade in place, and a light band sweeps across during the morph. Coincident lines share a terminal cell's foreground color. The plot keeps the same number of rows for every month (finer 1/1.5/2/2.5/3/4/5/6/8 ticks keep the top within a third of the maximum), so navigation never moves the legend or footer. Exact costs, axes and table cells stay ordinary text, and every animation settles to the exact colors and glyphs. Transitions prepare before the first new-month frame: plot and minimap morphs and graph text take 620 ms, the opening growth 700 ms and weekly-table sweeps 420 ms, all with quintic easing (zero endpoint velocity and acceleration). Animation stops at rest; rapid input retargets from the visible particle positions. Lighting assumes a dark terminal background; 256- and 16-color terminals receive the nearest palette colors. Set `AISAD_REDUCED_MOTION=1` to disable movement. Screen readers, CI, ASCII, no-color output and the Python fallback stay static. Narrow/multi-panel graphs switch directly while the minimap provides the transition. Resizing settles graph geometry immediately; narrow terminals use a 16-cell minimap. Animations share one 8 ms clock (about 120 fps); unchanged rows are cached, so a frame costs about 2 ms even on a slow machine. Outside screen-reader mode the dashboard writes frames itself: it rewrites only changed lines inside a synchronized terminal update, while Ink keeps input, resize and terminal restoration (see [ADR 0003](docs/agent/adr/0003-direct-frame-writer.md)). To measure actual terminal pacing on your machine, run `python3 ui/test/pty_performance.py` after building the UI.
+
+The interactive chart opens on the dataset it showed last time (`output/chart-ui.json`, monthly aggregates only, keyed by version and options), marked "Updating…" in the footer, while the collector rescans traces in the background. When fresh numbers arrive, changed months morph and roll to them; unchanged months stay still and the selected month is kept (or follows today's month if you have not navigated). Quitting before the refresh ends exits immediately. The first launch, or a launch with other options, waits for the scan as before. Press R at any time to collect again without leaving the chart; the footer shows "Updating…" until the new numbers arrive (one collection at a time; a failure keeps the shown numbers and is reported on exit).
 
 The weekday table has seven rows, Sunday through Saturday, and a column per Sunday–Saturday calendar week. Each cell shows only that day's known USD subtotal. Partial first/last weeks keep dates outside the month blank; unknown/future days show `—`, wholly unpriced days show `?`, and observed zero spend shows `$0.00`. Daily cells use five equal spend bands relative to the month's largest known daily subtotal: primary text, muted warm, coral, orange and amber; the highest band is bold. A final Total row shows each column's known weekly subtotal, keeping empty/unpriced columns distinct from observed zero. Below the table, Python generates a deterministic Insights line with the budget forecast; the highest average spending weekdays over the last four completed weeks stay in JSON (`insights.busiest_weekdays`). Default cells combine Claude/Codex API estimates; Grok remains separate. With `--provider grok`, cells show Grok's reported cost. `chart --json` includes the same matrix in `weekday_view`.
 
@@ -213,7 +215,7 @@ To add the `aisad` terminal command when installing a local bundle, use `--cli-d
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.3.0.zip --checksum-file dist/SHA256SUMS \
+  --archive dist/aisad-skill-v1.4.0.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 
@@ -264,7 +266,7 @@ python3 ~/.codex/skills/aisad/scripts/aisad.py sessions --offline --json
 python3 ~/.codex/skills/aisad/scripts/aisad.py run -- --open
 ```
 
-Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline` and `run` check for a newer stable release at most once every 24 hours when invoked. They update the skill, launcher and collector together before running. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Existing HTML files remain fixed until another dashboard command generates a new snapshot.
+Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline`, `chart` and `run` check for a newer stable release at most once every 24 hours when invoked. The check runs in a detached background helper (`aisad.py maintain`, output in `maintenance.log` in the data directory), so a report never waits for it; a newer release replaces the skill, launcher and collector together and applies from the next launch. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Existing HTML files remain fixed until another dashboard command generates a new snapshot.
 
 Checks and downloads contact only the public GitHub repository for release metadata and code. They transmit no traces, metrics or device identifiers. `--offline` skips those requests. Set `AISAD_AUTO_UPDATE=0` to disable automatic checks persistently in your environment; explicit `check-update` and `update` still work. If an automatic check fails, the installed version remains usable. No scheduler or startup service is installed.
 
@@ -319,7 +321,7 @@ python3 agent_usage.py prices --json       # what is stored locally
 
 Only the `anthropic` and `openai` providers are read, so a reseller entry never shadows a first-party rate. Published base rates, context tiers and fast-mode rates become `input`/`cached`/`write_5m`/`output`, `long_threshold` with its multipliers, and `fast_multiplier`. What that source does not publish — Anthropic's one-hour cache writes, the flex and batch discounts — stays at its built-in value, and a model missing from the source keeps its built-in rate rather than turning historical observations unpriced. Models it publishes that AISAD did not know about are added.
 
-The launcher (`skills/aisad/scripts/aisad.py`) refreshes at most once every 24 hours, alongside its existing update check. `--offline` or `AISAD_AUTO_PRICES=0` disables that; the refresh never blocks or fails a report.
+The launcher (`skills/aisad/scripts/aisad.py`) refreshes at most once every 24 hours in the background, alongside its existing update check; new rates apply from the next report. `--offline` or `AISAD_AUTO_PRICES=0` disables that; the refresh never blocks or fails a report.
 
 Missing tiers default to Standard and missing geography defaults to global. An unknown model or unsupported mode has a missing price, not a zero price; the request is excluded from the displayed cost subtotal and comparison, with its count disclosed separately. If a Claude cache-write TTL is unknown, cost is shown as a 5-minute to 1-hour range.
 
@@ -368,6 +370,8 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `usage.json` | Normalized usage evidence and local source metadata, written by evidence commands |
 | `usage-report.json` | Filtered text/JSON command report, written by headless commands |
 | `chart.json` | Calendar-month daily costs and provider coverage from `chart` |
+| `chart-ui.json` | Monthly aggregates last shown by the interactive chart, used to open it instantly |
+| `maintenance.log` | Background update check and price refresh messages (data directory) |
 | `budget.json` | Saved monthly limit shared by the local helpers |
 | `statusline.json` | Period/day summary, monthly budget, session/provider/pool and context/cache counters from `statusline` |
 | `parse-cache.sqlite` | Local cache of parsed files; observations and events in separate columns |

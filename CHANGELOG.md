@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 — 2026-10-15
+
+- Open `chart` without waiting for the scan: the interactive view starts on the last dataset it showed (footer "Updating…") while the collector rescans on a worker thread, then changed months morph and roll to the fresh numbers. Unchanged months stay idle; navigation keeps the selected month. Quitting first exits at once and keeps the shown selection. On the user's real history (820 traces, 37,021 requests, arm64 VM) the first frame arrives after about 0.16 s instead of 2.3 s; fresh data follows at about 1.8 s. The cache (`output/chart-ui.json`) holds only the monthly aggregates the UI already receives and is keyed by version and options.
+- Press R in the interactive chart to collect fresh usage without leaving it: the footer shows "Updating…" and changed months morph to the new numbers (about 1.7 s on the real history above). One collection runs at a time; a failed one keeps the shown numbers. The portable Python view supports R too, synchronously.
+- Never wait on the network at launch: the daily update check and price refresh run in a detached helper (`maintain`, logged to `maintenance.log`); an update applies from the next launch. A first install without a collector still installs before running.
+- Cut collector work for usage runs by about 8–10%: one table scan instead of a point query per trace, only the used registry columns, cached project and model names, and price rules memoized per model and day. Output is byte-identical on real data.
+
 ## 1.3.0 — 2026-10-13
 
 - Run terminal motion at about 120 fps: one shared 8 ms animation clock replaces four offset 34 ms subscribers, and a direct frame writer rewrites only changed lines inside a synchronized update instead of Ink re-rendering the whole screen. Measured on the user's real data on an arm64 VM at 170×58: about 121 fps (previously about 24 fps), with a ceiling near 495 fps; screen readers keep Ink's text output. The writer diffs cells and emits a color code only when the style changes (≈4.2 KB per frame at 170×58, half the earlier size).

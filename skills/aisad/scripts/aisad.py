@@ -334,6 +334,9 @@ def parser():
     install.add_argument('--allow-downgrade', action='store_true', help='Allow an intentional reinstall to a lower version; preserves local edits and data')
     install.add_argument('--archive', help='Local release skill ZIP for offline installation')
     install.add_argument('--checksum-file', help='Local SHA256SUMS (required with --archive)')
+    maintain = commands.add_parser('maintain', allow_abbrev=False, help='Run the daily update check and price refresh now (launches do this in the background)')
+    maintain.add_argument('--data-dir', help='Local reports and update-state directory')
+    maintain.add_argument('tasks', nargs='*', metavar='{update,prices}', help='Default: both')
     for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast']:
         command = commands.add_parser(name, allow_abbrev=False,
                                       epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else None)
@@ -343,29 +346,77 @@ def parser():
     return cli
 
 
-def refresh_prices(runtime, data, offline):
-    """Read published rates at most once a day, and never in place of a report.
+def update_due(root, data):
+    """Whether update(automatic=True) would reach the network now (same throttle)."""
+    previous = read_json(state_path(root, data))
+    installed = read_json(root / 'manifest.json').get('version')
+    age = time.time() - previous.get('checked_at', 0)
+    if previous.get('installed') == installed and 0 <= age < CHECK_INTERVAL and (root / 'runtime/agent_usage.py').is_file():
+        return bool(previous.get('available')) and previous.get('attempted_at', 0) < previous['checked_at']
+    return True
 
-    The collector itself stays offline; this launcher already owns the one
-    throttled network moment per day, so the price refresh rides along with it.
-    A failed refresh keeps the rates already stored locally.
-    """
-    if offline or os.environ.get('AISAD_AUTO_PRICES', '1') == '0':
-        return
-    meta = data / 'output/prices-models-dev.meta.json'
-    checked = read_json(meta).get('checked_at')
+
+def prices_due(data):
+    checked = read_json(data / 'output/prices-models-dev.meta.json').get('checked_at')
     if checked:
         try:
             age = time.time() - datetime.datetime.fromisoformat(checked).timestamp()
-            if 0 <= age < CHECK_INTERVAL:
-                return
+            return not 0 <= age < CHECK_INTERVAL
         except ValueError:
             pass
+    return True
+
+
+def refresh_prices(runtime, data):
+    """Read published rates; a failed refresh keeps the rates already stored locally.
+
+    The collector itself stays offline; this launcher owns the one throttled
+    network moment per day, so the price refresh rides along with it.
+    """
     try:
         subprocess.run([sys.executable, str(runtime), 'prices', '--refresh', '--json', '--output', str(data / 'output')],
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60, check=True)
     except (OSError, subprocess.SubprocessError) as error:
         print('Price refresh skipped; keeping stored rates: ' + str(error), file=sys.stderr)
+
+
+def maintenance_tasks(root, data, command, offline):
+    if offline:
+        return []
+    tasks = []
+    if command != 'budget' and os.environ.get('AISAD_AUTO_UPDATE', '1') != '0' and update_due(root, data):
+        tasks.append('update')
+    if command not in ('prices', 'budget') and os.environ.get('AISAD_AUTO_PRICES', '1') != '0' and prices_due(data):
+        tasks.append('prices')
+    return tasks
+
+
+def start_maintenance(root, data, tasks):
+    """Run the daily network work in a detached helper; a report never waits on it.
+
+    An update found here applies from the next launch: the running report keeps
+    the code it started with. Output goes to a log, never into a terminal view.
+    """
+    data.mkdir(parents=True, exist_ok=True)
+    options = dict(start_new_session=True) if os.name != 'nt' else dict(creationflags=0x00000008 | 0x00000200)
+    try:
+        with (data / 'maintenance.log').open('ab') as log:
+            subprocess.Popen([sys.executable, str(root / 'scripts/aisad.py'), 'maintain', '--data-dir', str(data)] + tasks,
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, **options)
+    except OSError as error:
+        print('Background update check skipped: ' + str(error), file=sys.stderr)
+
+
+def maintain(root, data, tasks):
+    print(datetime.datetime.now().isoformat(timespec='seconds') + ' maintain ' + ' '.join(tasks), file=sys.stderr, flush=True)
+    if 'update' in tasks:
+        try:
+            update(root, data, automatic=True)
+        except (OSError, ValueError, UpdateError, zipfile.BadZipFile) as error:
+            print('Update skipped; keeping installed code: ' + str(error), file=sys.stderr)
+    runtime = root / 'runtime/agent_usage.py'
+    if 'prices' in tasks and runtime.is_file() and prices_due(data):
+        refresh_prices(runtime, data)
 
 
 def main(argv=None):
@@ -422,25 +473,28 @@ def main(argv=None):
     if args.command == 'update':
         update(root, data)
         return 0
+    if args.command == 'maintain':
+        if set(args.tasks) - {'update', 'prices'}:
+            cli.error('maintain tasks are update and prices')
+        maintain(root, data, args.tasks or ['update', 'prices'])
+        return 0
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
-    changed = False
-    if args.command != 'budget' and not args.offline and os.environ.get('AISAD_AUTO_UPDATE', '1') != '0':
+    runtime = root / 'runtime/agent_usage.py'
+    tasks = maintenance_tasks(root, data, args.command, args.offline)
+    if not runtime.is_file() and 'update' in tasks:
+        # Nothing to run yet: the first install has to finish before the report.
         try:
-            changed = update(root, data, automatic=True)
+            update(root, data, automatic=True)
         except (OSError, ValueError, UpdateError, zipfile.BadZipFile) as error:
             print('Update skipped; keeping installed code: ' + str(error), file=sys.stderr)
-    if changed:
-        # Execute the new helper so changes to launch behavior take effect immediately.
-        return subprocess.call([sys.executable, str(root / 'scripts/aisad.py'), args.command, '--offline', '--data-dir', str(data), '--'] + forwarded)
-    runtime = root / 'runtime/agent_usage.py'
+        tasks.remove('update')
     if not runtime.is_file():
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
+    if tasks:
+        start_maintenance(root, data, tasks)
     mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast') else []
-    if args.command not in ('prices', 'budget'):
-        refresh_prices(runtime, data, args.offline)
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
-
 
 if __name__ == '__main__':
     try:

@@ -214,26 +214,44 @@ class SkillTests(unittest.TestCase):
             download.assert_called_once()
         skill.verify_replaceable(self.installed, self.files)
 
-    def test_usage_launch_offline_fallback_and_new_helper(self):
+    def test_launch_never_waits_on_the_network(self):
         self.install()
         arguments = ['usage', '--data-dir', str(self.data), '--json', '--provider', 'claude']
-        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')):
-            with patch.object(skill, 'update', side_effect=OSError('Offline')), patch.object(skill.subprocess, 'call', return_value=0) as invoke:
-                with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(skill.main(arguments), 0)
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             patch.object(skill, 'update', side_effect=AssertionError('Foreground network check')), \
+             patch.object(skill, 'refresh_prices', side_effect=AssertionError('Foreground price refresh')):
+            with patch.object(skill.subprocess, 'Popen') as background, patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                self.assertEqual(skill.main(arguments), 0)
                 self.assertEqual(invoke.call_args[0][0], [sys.executable, str(self.installed / 'runtime/agent_usage.py'),
                                  'usage', '--output', str(self.data.resolve() / 'output'), '--json', '--provider', 'claude'])
-            with patch.object(skill, 'update', return_value=True), patch.object(skill.subprocess, 'call', return_value=0) as invoke:
-                self.assertEqual(skill.main(arguments), 0)
-                self.assertIn('--offline', invoke.call_args[0][0])
-                self.assertEqual(invoke.call_args[0][0][2], 'usage')
-            with patch.object(skill, 'update', side_effect=AssertionError('Network check used')), patch.object(skill.subprocess, 'call', return_value=0):
+                command = background.call_args[0][0]
+                self.assertEqual(command[1:5], [str(self.installed / 'scripts/aisad.py'), 'maintain', '--data-dir', str(self.data.resolve())])
+                self.assertEqual(command[5:], ['update', 'prices'])
+                self.assertIs(background.call_args[1]['stdin'], skill.subprocess.DEVNULL)
+            with patch.object(skill.subprocess, 'Popen', side_effect=AssertionError('Network work offline')), \
+                 patch.object(skill.subprocess, 'call', return_value=0):
                 self.assertEqual(skill.main(arguments + ['--offline']), 0)
+
+    def test_background_maintenance_runs_update_then_prices(self):
+        self.install()
+        calls = []
+        with patch.object(skill, 'update', side_effect=lambda *a, **k: calls.append(('update', k))), \
+             patch.object(skill, 'refresh_prices', side_effect=lambda *a: calls.append(('prices',))), \
+             patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(skill.main(['maintain', '--data-dir', str(self.data)]), 0)
+        self.assertEqual(calls, [('update', {'automatic': True}), ('prices',)])
+        # Failures are logged, never raised: the report already ran.
+        with patch.object(skill, 'update', side_effect=OSError('Offline')), \
+             patch.object(skill, 'refresh_prices'), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            skill.maintain(self.installed, self.data, ['update'])
+        self.assertIn('Update skipped', errors.getvalue())
 
     def test_every_forwarding_command_reaches_the_collector_with_its_options(self):
         self.install()
         with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
-             patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'run'):
+             patch.object(skill, 'maintenance_tasks', return_value=[]):
             for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
                     self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
@@ -242,25 +260,33 @@ class SkillTests(unittest.TestCase):
 
     def test_price_refresh_is_daily_offline_aware_and_never_blocks_a_report(self):
         self.install()
-        arguments = ['usage', '--data-dir', str(self.data), '--json']
         meta = self.data.resolve() / 'output/prices-models-dev.meta.json'
-        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
-             patch.object(skill, 'update', return_value=False), patch.object(skill.subprocess, 'call', return_value=0):
-            with patch.object(skill.subprocess, 'run') as refresh:
-                self.assertEqual(skill.main(arguments), 0)
-                self.assertEqual(refresh.call_args[0][0][2:4], ['prices', '--refresh'])
-            # A refresh checked today is not repeated, and --offline skips it.
+        with patch.object(skill, 'update_due', return_value=False):
+            self.assertEqual(skill.maintenance_tasks(self.installed, self.data, 'usage', False), ['prices'])
+            self.assertEqual(skill.maintenance_tasks(self.installed, self.data, 'prices', False), [])
+            self.assertEqual(skill.maintenance_tasks(self.installed, self.data, 'usage', True), [])
+            # A refresh checked today is not repeated.
             meta.parent.mkdir(parents=True, exist_ok=True)
             meta.write_text(json.dumps({'checked_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}))
-            with patch.object(skill.subprocess, 'run', side_effect=AssertionError('Refreshed twice in a day')):
-                self.assertEqual(skill.main(arguments), 0)
-                self.assertEqual(skill.main(arguments + ['--offline']), 0)
-            # A stale check refreshes again, and a failure leaves the report running.
+            self.assertEqual(skill.maintenance_tasks(self.installed, self.data, 'usage', False), [])
             meta.write_text(json.dumps({'checked_at': '2020-01-01T00:00:00+00:00'}))
-            with patch.object(skill.subprocess, 'run', side_effect=OSError('No network')):
-                with contextlib.redirect_stderr(io.StringIO()) as errors:
-                    self.assertEqual(skill.main(arguments), 0)
-                self.assertIn('Price refresh skipped', errors.getvalue())
+            self.assertEqual(skill.maintenance_tasks(self.installed, self.data, 'usage', False), ['prices'])
+        # The refresh itself keeps stored rates when the network fails.
+        with patch.object(skill.subprocess, 'run', side_effect=OSError('No network')), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            skill.refresh_prices(self.installed / 'runtime/agent_usage.py', self.data.resolve())
+        self.assertIn('Price refresh skipped', errors.getvalue())
+
+    def test_update_due_matches_the_automatic_throttle(self):
+        self.install()
+        self.assertTrue(skill.update_due(self.installed, self.data))
+        with patch.object(skill, 'check_update', return_value=({'installed': '9.9.9', 'latest': '9.9.9', 'available': False}, None)), \
+             contextlib.redirect_stderr(io.StringIO()):
+            skill.update(self.installed, self.data, automatic=True)
+        state = skill.read_json(skill.state_path(self.installed, self.data))
+        state['installed'] = skill.read_json(self.installed / 'manifest.json').get('version')
+        skill.atomic_json(skill.state_path(self.installed, self.data), state)
+        self.assertFalse(skill.update_due(self.installed, self.data))
 
     def test_copied_bundle_cli_and_json_without_dependencies(self):
         installer = ROOT / 'skills/aisad/scripts/aisad.py'
