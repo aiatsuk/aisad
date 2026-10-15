@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-10-13
 
+- Run terminal motion at about 120 fps: one shared 8 ms animation clock replaces four offset 34 ms subscribers, and a direct frame writer rewrites only changed lines inside a synchronized update instead of Ink re-rendering the whole screen. Measured on the user's real data on an arm64 VM at 170×58: about 121 fps (previously about 24 fps), with a ceiling near 495 fps; screen readers keep Ink's text output. The writer diffs cells and emits a color code only when the style changes (≈4.2 KB per frame at 170×58, half the earlier size).
+- Make the morph transfer the dots on screen: particles stay with their provider and day, split when a day's line grows, merge when it shrinks and flow in from neighbouring days; only a provider with nothing nearby dissolves or grows from $0. One y-axis width for all months keeps the plot origin fixed, so the first morph frame matches the shown plot exactly. Neighbouring particles share start, hop and lift; axis labels no longer dim during month changes.
 - Trim chart footnotes: drop the graph note ("Known API estimates…", "? = unpriced (N observations)"), the weekly legend ("Total = known subtotal…", "Known subtotals; incomplete pricing…") and the "Last 4 weeks" and "Trend history" insights. The budget forecast stays; ranked weekdays and coverage remain in JSON.
 - Bring terminal motion to Codex CLI quality while keeping the line morph: plot particles keep provider/day rank and flow into the next month along a wave in the H/L direction. They hop along arcs, lift toward the camera, glow, flash on landing with a slight overshoot and leave comet tails while the plot tilts gently. Rendering adds a per-dot z-buffer, key/shadow/rim/specular lighting and per-cell truecolor; frames settle to exact glyphs.
 - Keep the plot height fixed across months: always the configured number of rows, with finer tick steps so the top stays within a third of the maximum; in short terminals one fitted height applies to every month.

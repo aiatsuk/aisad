@@ -11,16 +11,23 @@ export function budgetRow(report: Report, ascii = false): Row {
   const amount = !b.observed_requests ? 'unavailable' : b.observed_requests === b.unpriced_requests ? 'unpriced' : money(b.known_cost_usd);
   return textRow('Month ' + amount + ' / ' + money(b.budget_usd) + (b.observed_requests > b.unpriced_requests ? (ascii ? ' | ' : ' · ') + (100 * b.known_cost_usd / b.budget_usd).toFixed(1) + '%' : ''));
 }
-export function graphRows(report: Report, width: number, height: number, ascii = false): Row[] {
+/** Width of the widest y-axis label for this report at this plot height. */
+export function axisLabelWidth(report: Report, height: number): number {
+  return Math.max(...axisLabels(report, height).labels.map(l => l.length));
+}
+function axisLabels(report: Report, height: number): {step: number; count: number; labels: string[]} {
   const maximum = Math.max(0, ...report.series.flatMap(s => s.daily.map(d => d.cost_usd ?? 0)));
   const target = (maximum || 1) / height, power = 10 ** Math.floor(Math.log10(target));
+  const step = NICE_STEPS.map(n => n * power).find(n => n >= target)!;
+  let precision = Math.max(0, -Math.floor(Math.log10(step))); if (Number(step.toFixed(precision)) !== step) precision++;
+  return {step, count: height, labels: Array.from({length: height + 1}, (_, index) => '$' + ((height - index) * step).toLocaleString('en-US', {minimumFractionDigits: precision, maximumFractionDigits: precision}))};
+}
+/** `minLabelWidth` pads the y-axis so every month shares one plot origin and width. */
+export function graphRows(report: Report, width: number, height: number, ascii = false, minLabelWidth = 0): Row[] {
   // Fixed row count keeps the plot height stable across months; finer nice steps keep
   // the top tick within a third of the maximum.
-  const step = NICE_STEPS.map(n => n * power).find(n => n >= target)!;
-  const count = height;
-  let precision = Math.max(0, -Math.floor(Math.log10(step))); if (Number(step.toFixed(precision)) !== step) precision++;
-  const labels = Array.from({length: count + 1}, (_, index) => '$' + ((count - index) * step).toLocaleString('en-US', {minimumFractionDigits: precision, maximumFractionDigits: precision}));
-  const labelWidth = Math.max(...labels.map(l => l.length)), available = Math.max(3, width - labelWidth - 3), days = report.period.days;
+  const {step, count, labels} = axisLabels(report, height);
+  const labelWidth = Math.max(minLabelWidth, ...labels.map(l => l.length)), available = Math.max(3, width - labelWidth - 3), days = report.period.days;
   const panelDays = Math.max(1, Math.min(days, Math.floor(available / 3))), stride = Math.max(3, Math.floor(available / panelDays));
   const rows: Row[] = [textRow('Cost per Day' + (ascii ? ' | ' : ' · ') + monthTitle(report.period.from), colors.text, true), []];
   const glyphs: Record<number, string> = {0:'╶',1:'─',2:'─',3:'─',4:'│',8:'│',12:'│',5:'╯',6:'╰',9:'╮',10:'╭',7:'┴',11:'┬',13:'┤',14:'├',15:'┼'};
@@ -96,14 +103,14 @@ export function fittedHeight(report: Report, options: Dataset['options'], column
   for (let height = options.height; height > 4; height--) if (graphRows(report,width,height,options.ascii).length <= lines-3) return height;
   return 4;
 }
-export function frame(report: Report, view: 'graph'|'weeks', options: Dataset['options'], columns: number, lines: number, stableHeight?: number): Row[] {
+export function frame(report: Report, view: 'graph'|'weeks', options: Dataset['options'], columns: number, lines: number, stableHeight?: number, labelWidth = 0): Row[] {
   const width=Math.max(48,Math.min(240,options.width??columns)); let height=stableHeight??options.height;
-  let rows = view==='weeks'?weekRows(report,width,options.ascii):graphRows(report,width,height,options.ascii);
+  let rows = view==='weeks'?weekRows(report,width,options.ascii):graphRows(report,width,height,options.ascii,labelWidth);
   while(rows.length>lines-3) {
     const compact=rows.filter(row=>widthOf(row)>0);
     if(compact.length<=lines-3) return compact;
     if(view==='weeks'||height<=4) return [textRow(report.period.from.slice(0,7)+': enlarge the terminal or use --snapshot.'),textRow('W switches views; this view needs '+(compact.length+3)+' rows.')];
-    height--;rows=graphRows(report,width,height,options.ascii);
+    height--;rows=graphRows(report,width,height,options.ascii,labelWidth);
   }
   return rows;
 }
