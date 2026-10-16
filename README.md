@@ -179,7 +179,7 @@ aisad budget --forecast on --quantile 0.8
 aisad forecast
 ```
 
-`chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. Narrow terminals split the month into panels to keep the labels legible. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
+`chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. The whole month always stays in one plot, so month changes morph at any width: three columns per day from about 100 columns, two columns with odd day numbers and a weekday initial under every day from about 70, and one column with weekly day numbers (01, 08, 15, 22, 29) and initials below that, down to 48 columns. The weekly table likewise keeps every week side by side: it shortens weekday names, then drops cents, before splitting into panels. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
 
 The enhanced terminal view uses strict TypeScript, React and public upstream Ink, built into one module with Bun. Ink manages layout through Yoga, key handling, live terminal resize and alternate-screen cleanup. Python still collects and prices usage; the UI receives only monthly numeric aggregates, never transcript text, source paths or project names. Navigation reuses those aggregates and does not open network connections or rescan sessions.
 
@@ -194,7 +194,7 @@ bun run check
 bun run test
 bun run build
 cd ..
-python3 scripts/build_release.py --tag v1.4.2 --with-ui
+python3 scripts/build_release.py --tag v1.4.3 --with-ui
 ```
 
 The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
@@ -215,7 +215,7 @@ To add the `aisad` terminal command when installing a local bundle, use `--cli-d
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.4.2.zip --checksum-file dist/SHA256SUMS \
+  --archive dist/aisad-skill-v1.4.3.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 

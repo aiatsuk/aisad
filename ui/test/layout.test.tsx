@@ -8,12 +8,26 @@ import {fixture} from './fixture.js';
 const options={color:true,ascii:false,width:null,height:8};
 const text=(rows:ReturnType<typeof graphRows>):string=>rows.map(row=>row.map(s=>s.text).join('')).join('\n');
 describe('aggregate graph and week layouts',()=>{
-  test('all dates and weekdays survive narrow panels without month labels',()=>{
-    for(const width of [48,80,100,110,240]) {
+  test('wide terminals label every day; narrow ones keep one plot with odd days and weekday initials',()=>{
+    const labels=(value:string)=>value.split('\n').filter(line=>/^\s+(?:\d{2}\s*)+$/.test(line)).flatMap(line=>line.trim().split(/\s+/).map(Number));
+    for(const width of [110,240]) {
+      const value=text(graphRows(fixture(),width,8));
+      expect(labels(value)).toEqual(Array.from({length:31},(_,i)=>i+1));expect(value).toMatch(/Th\s+Fr\s+Sa\s+Su/);expect(value).not.toContain('Days ');
+    }
+    for(const width of [72,80,90]) {
       const rows=graphRows(fixture(),width,8),value=text(rows);
-      const labels=value.split('\n').filter(line=>/^\s+(?:\d{2}\s*)+$/.test(line));
-      expect(labels.flatMap(line=>line.trim().split(/\s+/).map(Number))).toEqual(Array.from({length:31},(_,i)=>i+1));
-      expect(value.match(/Oct/g)).toHaveLength(1);expect(value).toMatch(/Th\s+Fr\s+Sa\s+Su/);
+      expect(value).not.toContain('Days ');expect(labels(value)).toEqual(Array.from({length:16},(_,i)=>2*i+1));
+      // One initial per day, under the day's plot column; weekends stay highlighted.
+      const initials=rows.find(row=>row.map(s=>s.text).join('').trim().startsWith('T F S S'))!;
+      expect(initials.slice(1).map(s=>s.text)).toHaveLength(31);
+      expect(initials.slice(1).filter(s=>s.color===spendColors[4]).map(s=>s.text.trim())).toEqual(Array(9).fill('S'));
+      expect(Math.max(...rows.map(widthOf))).toBeLessThanOrEqual(width);
+    }
+    // Below two columns per day: one column per day, weekly day numbers, an initial per day.
+    for(const width of [48,54,60]) {
+      const rows=graphRows(fixture(),width,8),value=text(rows);
+      expect(value).not.toContain('Days ');expect(labels(value)).toEqual([1,8,15,22,29]);
+      expect(value).toContain('TFSSMTWTFSSMTWTFSSMTWTFSSMTWTFS');expect(value.match(/Oct/g)).toHaveLength(1);
       expect(Math.max(...rows.map(widthOf))).toBeLessThanOrEqual(width);
     }
   });
@@ -25,8 +39,14 @@ describe('aggregate graph and week layouts',()=>{
   test('weekday rows keep the requested order, peak and width',()=>{
     for(const width of [48,80,100,110]) {
       const rows=weekRows(fixture(),width);expect(Math.max(...rows.map(widthOf))).toBeLessThanOrEqual(width);
-      expect(rows.flat().find(s=>s.text.includes('$50.00'))?.bold).toBe(true);
+      expect(rows.flat().find(s=>/\$50(?:\.00)?\b/.test(s.text))?.bold).toBe(true);
     }
+    // Narrow terminals keep every week side by side: short names, then whole dollars.
+    const narrow=text(weekRows(fixture(),48));
+    expect(narrow.split('\n').filter(line=>/\d{2}–\d{2}/.test(line))).toHaveLength(1);
+    expect(narrow).toMatch(/^Sun\s/m);expect(narrow).toContain('$50 ');expect(narrow).not.toContain('$50.00');
+    const medium=text(weekRows(fixture(),62));expect(medium).toMatch(/^Sun\s/m);expect(medium).toContain('$50.00');
+    expect(text(weekRows(fixture(),110))).toMatch(/^Sunday\s/m);
     expect(text(weekRows(fixture(),100)).split('\n').filter(l=>weekdays.some(w=>l.startsWith(w))).map(l=>l.split(/\s+/)[0])).toEqual([...weekdays]);
   });
   test('weekly totals align after Saturday and retain unknown weeks',()=>{

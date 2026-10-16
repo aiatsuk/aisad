@@ -31,7 +31,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.4.2'
+VERSION = '1.4.3'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-09-05'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -1653,9 +1653,12 @@ def terminal_chart_text(report,width=100,height=8,color=False,ascii_only=False):
     if not math.isclose(round(step,precision),step,rel_tol=1e-9):precision+=1
     labels=[f'${(rows-i)*step:,.{precision}f}' for i in range(rows+1)]
     label_width=max(map(len,labels));available=width-label_width-3
-    # Three columns per day keep both the number and weekday legible. Narrow
-    # terminals split the month into panels instead of dropping daily labels.
-    panel_days=max(1,min(days,available//3));stride=max(3,available//panel_days)
+    # Three columns per day fit a number and weekday under every day. Narrower
+    # terminals keep the whole month in one plot: two columns per day (odd day
+    # numbers, a weekday initial per day), then one (weekly day numbers, initials).
+    # Panels remain only for axis labels too wide for even one column per day.
+    min_stride=3 if available>=3*days else 2 if available>=2*days else 1
+    fit=max(1,min(days,available//min_stride));panel_days=-(-days//-(-days//fit));stride=max(min_stride,available//panel_days);compact=stride<3
     palette=['215;119;87','165;169;255','229;181;103','112;199;199','194;151;220','125;184;125']
     color_indices=[{'Claude':0,'Codex':1,'Grok':2}.get(item['provider'],3+int(hashlib.sha256(item['provider'].encode()).hexdigest()[:8],16)%3) for item in series]
     muted='\x1b[38;2;112;112;112m';reset='\x1b[0m'
@@ -1704,10 +1707,15 @@ def terminal_chart_text(report,width=100,height=8,color=False,ascii_only=False):
             axis='|' if ascii_only else '┼' if y==rows else '┤'
             lines.append(paint(labels[y].rjust(label_width)+' '+axis+' ')+''.join(parts).rstrip())
         prefix=' '*(label_width+3)
-        lines.append(paint(prefix+''.join(f'{day:02d}'.center(stride) for day in range(start+1,start+length+1)).rstrip()))
+        if stride==1:
+            marks=[' ']*(length+1)
+            for day in range(start+1,start+length+1,7):marks[day-start-1:day-start+1]=list(f'{day:02d}')
+            lines.append(paint(prefix+''.join(marks).rstrip()))
+        else:lines.append(paint(prefix+''.join((f'{day:02d}' if (day-1)%2==0 else '  ') if compact else f'{day:02d}'.center(stride) for day in range(start+1,start+length+1)).rstrip()))
         weekdays=[]
         for day in range(start+1,start+length+1):
-            weekday=first.replace(day=day).weekday();label=('Mo','Tu','We','Th','Fr','Sa','Su')[weekday].center(stride)
+            weekday=first.replace(day=day).weekday();name=('Mo','Tu','We','Th','Fr','Sa','Su')[weekday]
+            label=name[0] if stride==1 else ' '+name[0] if compact else name.center(stride)
             weekdays.append(('\x1b[38;2;229;181;103m'+label+reset) if color and weekday>=5 else paint(label))
         lines.extend([paint(prefix)+''.join(weekdays),''])
     legend=[]
@@ -1842,21 +1850,28 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
     basis='API estimates' if data['basis']=='api_equivalent_estimate' else 'reported cost'
     scope=', '.join(data['providers'])+' ('+basis+')'
     lines.extend(textwrap.wrap(scope,width));lines.append('')
-    def cell_text(cell):
-        if not cell['in_month']:return ''
-        amount='-' if ascii_only else '—'
-        if cell['cost_usd'] is not None:amount=f"${cell['cost_usd']:,.2f}"
-        elif cell['observations']:amount='?'
-        return amount
-    total_width=max((len(f"${total['cost_usd']:,.2f}") for total in data['totals'] if total['cost_usd'] is not None),default=0)+3
-    cell_width=max(11,total_width,max((len(cell_text(cell)) for row in data['rows'] for cell in row['cells']),default=0)+3)
-    per_panel=max(1,(width-11)//cell_width)
+    dash='-' if ascii_only else '—'
+    def dollars(value):return '<$1' if 0<value<.5 else f'${round(value):,}'
+    def layout(name,cents):
+        fmt=(lambda v:f'${v:,.2f}') if cents else dollars
+        cell_text=lambda cell:'' if not cell['in_month'] else fmt(cell['cost_usd']) if cell['cost_usd'] is not None else '?' if cell['observations'] else dash
+        total_text=lambda total:fmt(total['cost_usd']) if total['cost_usd'] is not None else '?' if total['observations'] else dash
+        pad=3 if cents else 2
+        cell_width=max([11 if cents else 7]+[len(cell_text(cell))+pad for row in data['rows'] for cell in row['cells']]+[len(total_text(total))+pad for total in data['totals']])
+        return dict(name=name,cell_text=cell_text,total_text=total_text,cell_width=cell_width,label=name+2)
+    # Widest layout whose weeks fit side by side: full weekday names and cents,
+    # then three-letter names, then whole dollars; panels only after that.
+    layouts=[layout(9,True),layout(5,True),layout(5,False)]
+    chosen=next((item for item in layouts if item['label']+len(data['weeks'])*item['cell_width']<=width),layouts[-1])
+    cell_text=chosen['cell_text'];total_text=chosen['total_text'];cell_width=chosen['cell_width'];label_width=chosen['label']
+    def name(text):return (text[:3] if chosen['name']==5 and text!='Total' else text).ljust(chosen['name'])+'  '
+    per_panel=max(1,(width-label_width)//cell_width)
     for start in range(0,len(data['weeks']),per_panel):
         end=min(start+per_panel,len(data['weeks']))
         headings=[week['from'][-2:]+('-' if ascii_only else '–')+week['to'][-2:] for week in data['weeks'][start:end]]
-        lines.append(paint(' '*11+''.join(label.center(cell_width) for label in headings).rstrip()))
+        lines.append(paint(' '*label_width+''.join(label.center(cell_width) for label in headings).rstrip()))
         for row in data['rows']:
-            parts=[paint(row['weekday'].ljust(9)+'  ','\x1b[38;2;229;181;103m' if row['weekday'] in ('Sunday','Saturday') else muted)]
+            parts=[paint(name(row['weekday']),'\x1b[38;2;229;181;103m' if row['weekday'] in ('Sunday','Saturday') else muted)]
             for cell in row['cells'][start:end]:
                 label=cell_text(cell).rjust(cell_width-2)+'  '
                 amount=cell['cost_usd'];tone=muted
@@ -1865,10 +1880,9 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
                     if level==4:tone='\x1b[1m'+tone
                 parts.append(paint(label,tone))
             lines.append(''.join(parts))
-        total_parts=[paint('Total'.ljust(9)+'  ','\x1b[1m')]
+        total_parts=[paint(name('Total'),'\x1b[1m')]
         for total in data['totals'][start:end]:
-            amount=f"${total['cost_usd']:,.2f}" if total['cost_usd'] is not None else '?' if total['observations'] else '-' if ascii_only else '—'
-            total_parts.append(paint(amount.rjust(cell_width-2)+'  ','\x1b[1m\x1b[38;2;204;204;204m'))
+            total_parts.append(paint(total_text(total).rjust(cell_width-2)+'  ','\x1b[1m\x1b[38;2;204;204;204m'))
         lines.extend([''.join(total_parts),''])
     legend='Spend: low '+''.join(paint('* ' if ascii_only else '● ','\x1b[38;2;'+tone+'m') for tone in SPEND_COLORS)+'high'
     lines.append(legend)
