@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Install, update and run AISAD without transmitting usage data. Python 3.9+."""
+"""Install, update and run AISAD without transmitting usage data. macOS and Linux, Python 3.9+."""
 import argparse
 import ast
 from contextlib import contextmanager
 import datetime
+import fcntl
 import hashlib
 import io
 import json
@@ -215,30 +216,14 @@ def verify_replaceable(root, incoming):
 def update_lock(root):
     root.parent.mkdir(parents=True, exist_ok=True)
     with (root.parent / ('.' + root.name + '.update.lock')).open('a+b') as lock:
-        lock.seek(0)
-        if os.name == 'nt':
-            import msvcrt
-            if not lock.read(1):
-                lock.write(b'0'); lock.flush()
-            lock.seek(0)
-            try:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError as error:
-                raise UpdateError('Another AISAD update is running') from error
-            try:
-                yield
-            finally:
-                lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as error:
-                raise UpdateError('Another AISAD update is running') from error
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise UpdateError('Another AISAD update is running') from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def install_files(root, manifest, files, allow_downgrade=False):
@@ -398,11 +383,10 @@ def start_maintenance(root, data, tasks):
     the code it started with. Output goes to a log, never into a terminal view.
     """
     data.mkdir(parents=True, exist_ok=True)
-    options = dict(start_new_session=True) if os.name != 'nt' else dict(creationflags=0x00000008 | 0x00000200)
     try:
         with (data / 'maintenance.log').open('ab') as log:
             subprocess.Popen([sys.executable, str(root / 'scripts/aisad.py'), 'maintain', '--data-dir', str(data)] + tasks,
-                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, **options)
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, start_new_session=True)
     except OSError as error:
         print('Background update check skipped: ' + str(error), file=sys.stderr)
 

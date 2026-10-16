@@ -22,7 +22,7 @@ python3 agent_usage.py dashboard --open
 
 The command reads existing local files, updates `output/sessions.sqlite`, writes a self-contained HTML file, opens it and exits. Rerun the command when you want fresh data. Opening or interacting with the dashboard does not collect anything.
 
-On macOS, `Run.command` performs the same one-shot action. On Windows, use `py -3` instead of `python3`. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
+AISAD supports macOS and Linux. On macOS, `Run.command` performs the same one-shot action. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
 
 To update a clone, run `git pull --ff-only`. Existing snapshots remain usable offline.
 
@@ -422,7 +422,7 @@ The builder uses an explicit source-file list and deterministic ZIP metadata. Lo
 python3 -m unittest discover -v
 ```
 
-Tests use synthetic profiles only. They cover parsing, pricing, weekly JSON/text reports, filters, missing data, offline operation, release integrity, installation, updates, rollback, preservation of local edits, paths with spaces, event provenance, source deletion and one-shot collection. GitHub Actions runs the suite on macOS, Linux and Windows without collecting any personal history.
+Tests use synthetic profiles only. They cover parsing, pricing, weekly JSON/text reports, filters, missing data, offline operation, release integrity, installation, updates, rollback, preservation of local edits, paths with spaces, event provenance, source deletion and one-shot collection. GitHub Actions runs the suite on macOS and Linux without collecting any personal history.
 
 To generate the example dashboard without reading your sessions:
 
