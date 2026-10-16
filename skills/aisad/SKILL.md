@@ -7,7 +7,7 @@ description: Analyze local Claude Code and Codex usage on demand, with text or J
 
 Use the bundled standalone collector when the user asks about local session usage or requests a report. Each invocation reads existing local files on demand; the interactive chart waits for keyboard input and exits with Q/Escape. Do not install hooks, MCP servers, OpenTelemetry exporters, app-server observers, polling, scheduled tasks or startup services. Do not modify either application's settings. The skill is an optional command launcher, not instrumentation.
 
-Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
+AISAD runs on macOS and Linux. Every command that reads sessions stays offline. `prices --refresh` is the one exception: it reads published rates and sends nothing about local usage.
 
 ## Quick usage
 

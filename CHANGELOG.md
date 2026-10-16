@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Support macOS and Linux only: drop the Windows key reader, update lock and detached-process flags, and the Windows CI jobs.
+
 ## 1.4.1 — 2026-10-15
 
 - Read every local source by default: Claude Cowork audit traces under macOS Application Support are included when present (`--no-cowork` skips them; `--cowork` is still accepted).

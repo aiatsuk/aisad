@@ -1879,27 +1879,19 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
 
 @contextlib.contextmanager
 def terminal_chart_keys():
-    if os.name=='nt':
-        import msvcrt
-        def read():
-            key=msvcrt.getwch()
-            if key in ('\x00','\xe0'):return {'K':'h','M':'l'}.get(msvcrt.getwch(),'')
-            return key.lower()
-        yield read
-    else:
-        import termios,tty,select
-        fd=sys.stdin.fileno();previous=termios.tcgetattr(fd)
-        def read():
-            key=os.read(fd,1).decode('ascii','ignore')
-            if key=='\x1b':
-                if select.select([fd],[],[],.05)[0]:
-                    suffix=os.read(fd,2)
-                    return {b'[D':'h',b'[C':'l'}.get(suffix,'')
-                return 'q'
-            return key.lower()
-        try:
-            tty.setraw(fd);yield read
-        finally:termios.tcsetattr(fd,termios.TCSADRAIN,previous)
+    import termios,tty,select
+    fd=sys.stdin.fileno();previous=termios.tcgetattr(fd)
+    def read():
+        key=os.read(fd,1).decode('ascii','ignore')
+        if key=='\x1b':
+            if select.select([fd],[],[],.05)[0]:
+                suffix=os.read(fd,2)
+                return {b'[D':'h',b'[C':'l'}.get(suffix,'')
+            return 'q'
+        return key.lower()
+    try:
+        tty.setraw(fd);yield read
+    finally:termios.tcsetattr(fd,termios.TCSADRAIN,previous)
 
 def terminal_chart_frame(result,args,color,size):
     width=args.width or size.columns
