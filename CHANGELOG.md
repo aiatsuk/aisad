@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.2 — 2026-10-16
 
 - Support macOS and Linux only: drop the Windows key reader, update lock and detached-process flags, and the Windows CI jobs.
 
