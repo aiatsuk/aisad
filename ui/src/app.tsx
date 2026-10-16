@@ -37,7 +37,7 @@ export function Dashboard({dataset,onExit,onRefresh}: {dataset:Dataset; onExit:(
   // One y-axis width too: the plot keeps its origin, so a morph starts exactly on screen dots.
   const labelWidth=React.useMemo(()=>Math.max(...dataset.months.map(m=>axisLabelWidth(m.report,stableHeight))),[dataset,stableHeight]);
   const rowsForView=React.useMemo(()=>frame(selected.report,state.view,dataset.options,columns,rows,stableHeight,labelWidth),[selected,state.view,dataset.options,columns,rows,stableHeight,labelWidth]);
-  const reload=onRefresh?(columns>=75?'  R refresh':'  R'):'';
+  const reload=onRefresh?'  R refresh':'';
   const keys=ready?(columns>=75?'W graph/weeks  H previous  L next'+reload+'  Q quit':'W view  H/L month'+reload+'  Q quit'):'Preparing keyboard...';
   const hint=dataset.stale?keys+'  Updating…':keys;
   const content=state.view==='graph'?<MotionGraphRows rows={rowsForView} width={width} month={motionKey} color={dataset.options.color} enabled={enabled}/>:<FadeRows rows={rowsForView} fadeKey={motionKey} enabled={enabled} color={dataset.options.color}/>;

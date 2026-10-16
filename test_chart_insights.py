@@ -1,6 +1,7 @@
 """Deterministic week totals, color levels and known-cost forecasts."""
 import datetime as dt
 import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -91,6 +92,23 @@ class ChartInsightsTests(unittest.TestCase):
         report=app.terminal_chart_report(snapshot,self.args)
         unweighted=report['monthly_budget']['known_cost_usd']+23*(21*10+7*100)/28
         self.assertGreater(report['insights']['forecast']['projected_month_cost_usd'],unweighted)
+
+    def test_narrow_terminals_keep_one_graph_and_one_week_table(self):
+        snapshot=self.snapshot([(f'2026-09-{day:02d}',10.0*day) for day in range(1,31)])
+        report=app.terminal_chart_report(snapshot,self.args,'2026-09')
+        def labels(text):return [int(n) for line in text.splitlines() if re.fullmatch(r'\s+(\d{2}\s*)+',line) for n in line.split()]
+        wide=app.terminal_chart_text(report,width=110,height=6)
+        self.assertEqual(labels(wide),list(range(1,31)));self.assertNotIn('Days ',wide)
+        compact=app.terminal_chart_text(report,width=72,height=6)
+        self.assertNotIn('Days ',compact);self.assertEqual(labels(compact),list(range(1,31,2)))
+        self.assertTrue(any(line.strip().startswith('T W T F S S') for line in compact.splitlines()))
+        narrow=app.terminal_chart_text(report,width=48,height=6)
+        self.assertNotIn('Days ',narrow);self.assertEqual(labels(narrow),[1,8,15,22,29])
+        self.assertIn('TWTFSSMTWTFSSMTWTFSSMTWTFSSMTW',narrow)
+        self.assertTrue(all(len(line)<=48 for line in narrow.splitlines()))
+        weeks=app.terminal_week_text(report,width=48)
+        self.assertEqual(len([line for line in weeks.splitlines() if re.search(r'\d{2}–\d{2}',line)]),1)
+        self.assertRegex(weeks,r'(?m)^Sun\s');self.assertRegex(weeks,r'(?m)^Total\s');self.assertNotIn('.00',weeks.split('Month')[0])
 
     def test_ui_dataset_retains_cross_month_history_and_is_aggregate_only(self):
         snapshot=self.snapshot(self.history(lambda date:100)+[('2026-10-08',300)])

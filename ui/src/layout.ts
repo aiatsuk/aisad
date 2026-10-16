@@ -28,7 +28,12 @@ export function graphRows(report: Report, width: number, height: number, ascii =
   // the top tick within a third of the maximum.
   const {step, count, labels} = axisLabels(report, height);
   const labelWidth = Math.max(minLabelWidth, ...labels.map(l => l.length)), available = Math.max(3, width - labelWidth - 3), days = report.period.days;
-  const panelDays = Math.max(1, Math.min(days, Math.floor(available / 3))), stride = Math.max(3, Math.floor(available / panelDays));
+  // Three columns per day fit a number and weekday under every day. Narrower
+  // terminals keep the whole month in one plot: two columns per day (odd day
+  // numbers, a weekday initial per day), then one (weekly day numbers, initials).
+  // Panels remain only for axis labels too wide for even one column per day.
+  const minStride = available >= 3 * days ? 3 : available >= 2 * days ? 2 : 1;
+  const fit = Math.max(1, Math.min(days, Math.floor(available / minStride))), panelDays = Math.ceil(days / Math.ceil(days / fit)), stride = Math.max(minStride, Math.floor(available / panelDays)), compact = stride < 3;
   const rows: Row[] = [textRow('Cost per Day' + (ascii ? ' | ' : ' · ') + monthTitle(report.period.from), colors.text, true), []];
   const glyphs: Record<number, string> = {0:'╶',1:'─',2:'─',3:'─',4:'│',8:'│',12:'│',5:'╯',6:'╰',9:'╮',10:'╭',7:'┴',11:'┬',13:'┤',14:'├',15:'┼'};
   for (let start = 0; start < days; start += panelDays) {
@@ -61,10 +66,20 @@ export function graphRows(report: Report, width: number, height: number, ascii =
       while (row.at(-1)?.text === ' ') row.pop(); rows.push(row);
     });
     const prefix = ' '.repeat(labelWidth+3), numbers: Row = [{text:prefix,color:colors.muted}], names: Row = [{text:prefix,color:colors.muted}];
+    if (stride === 1) {
+      // One column per day: day numbers every week, a weekday initial under every day.
+      const marks = Array.from({length: length + 1}, () => ' ');
+      for (let index=start; index<start+length; index+=7) {const label = String(index+1).padStart(2,'0'); marks[index-start] = label[0]!; marks[index-start+1] = label[1]!;}
+      numbers.push({text:marks.join('').trimEnd(),color:colors.muted});
+    }
     for (let index=start; index<start+length; index++) {
+      if (stride === 1) {
+        const weekday = weekdayIndex(report.period.from.slice(0,8)+String(index+1).padStart(2,'0'));
+        names.push({text:weekdayShort[weekday]![0]!,color:weekday===0||weekday===6 ? colors.amber : colors.muted});continue;
+      }
       const date = report.period.from.slice(0,8)+String(index+1).padStart(2,'0'), weekday = weekdayIndex(date);
-      numbers.push({text:centered(String(index+1).padStart(2,'0'),stride),color:colors.muted});
-      names.push({text:centered(weekdayShort[weekday]!,stride),color:weekday===0||weekday===6 ? colors.amber : colors.muted});
+      numbers.push({text:compact ? (index % 2 === 0 ? String(index+1).padStart(2,'0') : '  ') : centered(String(index+1).padStart(2,'0'),stride),color:colors.muted});
+      names.push({text:compact ? ' '+weekdayShort[weekday]![0]! : centered(weekdayShort[weekday]!,stride),color:weekday===0||weekday===6 ? colors.amber : colors.muted});
     }
     rows.push(numbers,names,[]);
   }
@@ -79,19 +94,31 @@ export function graphRows(report: Report, width: number, height: number, ascii =
   if (!report.series.some(s => s.daily.some(d => d.cost_usd !== null))) rows.push(textRow('No priced daily observations for this month.'));
   return rows;
 }
+/** Whole dollars for narrow tables; a small positive amount never reads as $0. */
+const dollars = (amount: number): string => amount > 0 && amount < .5 ? '<$1' : '$' + Math.round(amount).toLocaleString('en-US');
 export function weekRows(report: Report, width: number, ascii = false): Row[] {
-  const data = report.weekday_view, amount = (cell: typeof data.rows[number]['cells'][number]): string => !cell.in_month ? '' : (cell.cost_usd !== null ? money(cell.cost_usd) : cell.observations ? '?' : ascii ? '-' : '—');
-  const totalAmount = (total: typeof data.totals[number]): string => total.cost_usd!==null?money(total.cost_usd):total.observations?'?':ascii?'-':'—';
-  const cellWidth = Math.max(11,...data.rows.flatMap(row=>row.cells.map(c=>amount(c).length+3)),...data.totals.map(total=>totalAmount(total).length+3)), perPanel = Math.max(1,Math.floor((width-11)/cellWidth));
+  const data = report.weekday_view, dash = ascii ? '-' : '—';
+  // Widest layout whose weeks fit side by side: full weekday names and cents,
+  // then three-letter names, then whole dollars; panels only after that.
+  const layouts = [{name: 9, cents: true}, {name: 5, cents: true}, {name: 5, cents: false}].map(layout => {
+    const format = layout.cents ? money : dollars;
+    const amount = (cell: typeof data.rows[number]['cells'][number]): string => !cell.in_month ? '' : (cell.cost_usd !== null ? format(cell.cost_usd) : cell.observations ? '?' : dash);
+    const totalAmount = (total: typeof data.totals[number]): string => total.cost_usd!==null?format(total.cost_usd):total.observations?'?':dash;
+    const cellWidth = Math.max(layout.cents ? 11 : 7, ...data.rows.flatMap(row=>row.cells.map(c=>amount(c).length+(layout.cents?3:2))), ...data.totals.map(total=>totalAmount(total).length+(layout.cents?3:2)));
+    return {...layout, amount, totalAmount, cellWidth, label: layout.name + 2};
+  });
+  const layout = layouts.find(l => l.label + data.weeks.length * l.cellWidth <= width) ?? layouts.at(-1)!;
+  const {amount, totalAmount, cellWidth, label} = layout, perPanel = Math.max(1, Math.floor((width - label) / cellWidth));
+  const name = (text: string): string => (layout.name === 5 && text !== 'Total' ? text.slice(0, 3) : text).padEnd(layout.name) + '  ';
   const rows: Row[] = [textRow('Cost by Weekday'+(ascii?' | ':' · ')+monthTitle(report.period.from),colors.text,true),[],...wrapped(data.providers.map(safeText).join(', ')+' ('+(data.basis==='api_equivalent_estimate'?'API estimates':'reported cost')+')',width),[]];
   for (let start=0;start<data.weeks.length;start+=perPanel) {
-    rows.push(textRow(' '.repeat(11)+data.weeks.slice(start,start+perPanel).map(w=>centered(w.from.slice(-2)+(ascii?'-':'–')+w.to.slice(-2),cellWidth)).join('')));
+    rows.push(textRow(' '.repeat(label)+data.weeks.slice(start,start+perPanel).map(w=>centered(w.from.slice(-2)+(ascii?'-':'–')+w.to.slice(-2),cellWidth)).join('')));
     data.rows.forEach((row,index)=> {
-      const segments: Row = [{text:weekdays[index]!.padEnd(9)+'  ',color:index===0||index===6?colors.amber:colors.muted}];
+      const segments: Row = [{text:name(weekdays[index]!),color:index===0||index===6?colors.amber:colors.muted}];
       for (const cell of row.cells.slice(start,start+perPanel)) segments.push({text:amount(cell).padStart(cellWidth-2)+'  ',color:cell.intensity_level===null?colors.muted:spendColors[cell.intensity_level]!,bold:cell.intensity_level===4});
       rows.push(segments);
     });
-    rows.push([{text:'Total'.padEnd(9)+'  ',color:colors.text,bold:true},...data.totals.slice(start,start+perPanel).map(total=>({text:totalAmount(total).padStart(cellWidth-2)+'  ',color:colors.text,bold:true}))],[]);
+    rows.push([{text:name('Total'),color:colors.text,bold:true},...data.totals.slice(start,start+perPanel).map(total=>({text:totalAmount(total).padStart(cellWidth-2)+'  ',color:colors.text,bold:true}))],[]);
   }
   rows.push([{text:'Spend: low ',color:colors.muted},...spendColors.map(color=>({text:ascii?'* ':'● ',color})),{text:'high',color:colors.muted}],budgetRow(report,ascii),[],textRow('Insights',colors.text,true));
   for(const message of report.insights.messages) rows.push(...wrapped(safeText(message),width));
