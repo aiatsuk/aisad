@@ -50,7 +50,7 @@ These tools establish useful cross-checks, not an invoice oracle. Results can di
 
 ## Comparing snapshots
 
-Use the same device, source files, dates, timezone, provider/model filters, price catalog and processing modes. The rolling seven-day window changes daily. Newly saved files can add older observations. The README dashboard screenshot is a synthetic example, and the terminal recordings show one person's real history; neither can be compared with other reports.
+Use the same device, source files, dates, timezone, provider/model filters, price catalog and processing modes. The rolling seven-day window changes daily. Newly saved files can add older observations. The README terminal recordings show one person's real history and cannot be compared with other reports.
 
 An audit should independently sum raw usage fields after deduplication, reconcile input buckets and cost components, test repeated counters/resets/streaming/forks, and inspect missing-price and source-coverage diagnostics. Browser totals should then reconcile with the resulting JSON and SQLite observations. No hooks, background polling or tool instrumentation are required.
 

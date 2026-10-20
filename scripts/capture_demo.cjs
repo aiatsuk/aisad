@@ -44,14 +44,14 @@ const { chromium } = require('playwright');
     await page.locator('#chartmetric').blur();
     const height = await page.locator('#token-breakdown').evaluate(element => Math.ceil(element.getBoundingClientRect().bottom + 24));
     await page.setViewportSize({ width: 1440, height });
-    await mkdir(path.join(root, 'docs'), { recursive: true });
-    await page.screenshot({ path: path.join(root, 'docs/dashboard.png') });
+    await mkdir(path.join(root, 'output/demo'), { recursive: true });
+    await page.screenshot({ path: path.join(root, 'output/demo/dashboard.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#comparison-details summary').click();
     assert(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)));
     assert.deepEqual(errors, []);
     assert.deepEqual(requests, []);
-    console.log('English UI, filters, charts, mobile layout and offline rendering passed. Saved docs/dashboard.png.');
+    console.log('English UI, filters, charts, mobile layout and offline rendering passed. Saved output/demo/dashboard.png.');
   } finally {
     await browser.close();
   }
