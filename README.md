@@ -8,6 +8,18 @@ An independent, on-demand analyzer of local Claude Code and Codex session files.
 
 *Example dashboard with synthetic sessions. The screenshot contains no personal usage data.*
 
+## See it work
+
+Interactive terminal chart (`aisad chart`), recorded from the maintainer's real local Claude and Codex history on version 1.4.3: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table with insights.
+
+![Interactive aisad chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
+
+Statusline, the optional spend forecast and its saved setting, recorded on the same real history:
+
+![aisad statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
+
+*These two recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
+
 For the exact token formulas, cache-rate definition, pricing assumptions and comparisons with ccusage and Token Use, see [Usage accounting](docs/ACCOUNTING.md).
 
 ## Quick start
