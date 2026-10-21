@@ -4,13 +4,13 @@ An independent, on-demand analyzer of local Claude Code and Codex session files.
 
 **Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
-![AISAD dashboard with weekly comparisons, usage statistics and model costs](docs/dashboard.png)
-
-*Example dashboard with synthetic sessions. The screenshot contains no personal usage data.*
-
 ## See it work
 
-Interactive terminal chart (`aisad chart`), recorded from the maintainer's real local Claude and Codex history on version 1.4.3: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table with insights.
+Weekday view (`aisad chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
+
+![aisad weekday view: browsing months with weekly totals, spend intensity and insights](docs/terminal-weeks.gif)
+
+Daily graph (`aisad chart`), same history: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table.
 
 ![Interactive aisad chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
 
@@ -18,7 +18,7 @@ Statusline, the optional spend forecast and its saved setting, recorded on the s
 
 ![aisad statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
 
-*These two recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
+*These recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
 
 For the exact token formulas, cache-rate definition, pricing assumptions and comparisons with ccusage and Token Use, see [Usage accounting](docs/ACCOUNTING.md).
 
@@ -442,7 +442,7 @@ To generate the example dashboard without reading your sessions:
 python3 scripts/make_demo.py
 ```
 
-Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions. The README screenshot was captured from this page. Playwright is needed only if you choose to recreate the screenshot with `scripts/capture_demo.cjs`; it is not a dashboard dependency.
+Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions. Playwright is needed only for the browser checks in `scripts/test_*.cjs` and `scripts/capture_demo.cjs`, which also saves a screenshot to `output/demo/dashboard.png`; it is not a dashboard dependency.
 
 Optional browser regression checks and screenshot generation:
 
