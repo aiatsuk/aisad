@@ -37,3 +37,7 @@ node_modules/
 
 # Optional TypeScript terminal UI build output.
 /ui/dist/
+
+# Optional native macOS companion build caches.
+/macos/.build/
+/macos/.swiftpm/

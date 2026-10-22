@@ -2,7 +2,7 @@
 
 An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Commands run on demand; the terminal dashboard waits for keyboard input and exits with Q/Escape. The optional skill invokes the same standalone commands.
 
-**Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
+**Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional macOS menu bar app refreshes locally while explicitly running. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
 ## See it work
 
@@ -37,6 +37,99 @@ The command reads existing local files, updates `output/sessions.sqlite`, writes
 AISAD supports macOS and Linux. On macOS, `Run.command` performs the same one-shot action. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
 
 To update a clone, run `git pull --ff-only`. Existing snapshots remain usable offline.
+
+## macOS menu bar (optional)
+
+On macOS 14 or later, the native companion shows **Today** and **This week** in USD,
+plus **This month** with its saved monthly budget, percentage and progress bar.
+The menu bar label contains only two compact monochrome lines, for example
+**claude: 0%** and **codex: 75%**, showing aggregate weekly allowance remaining.
+Each line uses natural text spacing. A dash means unavailable/expired; a tilde marks a
+last-known reading. The label reuses existing quota data without extra provider requests.
+Weeks start Monday; periods use your Mac's timezone.
+
+Each total includes a USD/percent change: today versus yesterday at the same local time,
+this week versus the same weekdays and time last week, and this month versus the same dates
+and time last month. If the previous month is shorter, both comparisons use the common
+complete days. Changes use a compact USD · percent line; hover to inspect the comparison
+label, common day count and both exact windows.
+Missing observations or uncertain prices show an unavailable comparison. A recorded zero
+baseline shows the USD change without an undefined percentage.
+
+From a clone, with Xcode Command Line Tools and Python 3.9+ installed:
+
+```sh
+./script/build_and_run.sh
+```
+
+This builds `dist/AISADMenuBar.app` and opens it as a menu bar accessory (no Dock icon).
+The Codex Run action uses the same script. No login item is installed. Quit from the menu
+stops the app and its refresh task. Use `--build-only` to build without launching.
+This is a local development bundle; distribution signing is not configured.
+
+On macOS Tahoe, AISAD must be enabled in **System Settings → Menu Bar → Allow in the
+Menu Bar** to show its icon. The app owns its insertion state and keeps running if macOS
+hides the item. Reopening it does not override the system's visibility choice.
+Snapshot export runs without constructing the menu-bar scene and does not stop the normal app.
+
+The app refreshes local usage on launch, every five minutes while running, and when you click
+the refresh icon with its last-update age (for example, **3 min ago**).
+**Dashboard** collects current local usage before opening the offline HTML in your browser.
+The page shows its collection timestamp and stays a snapshot until you open Dashboard again. Each Dashboard open also updates menu-bar spending from that same collection. The dashboard's calendar summary shows today, this week, this month and the saved monthly limit across all Claude/Codex sessions; filters apply to the detailed views below.
+If collection fails, the app shows an error and preserves the previous HTML.
+The monthly progress bar spans the row, with the limit, percentage and reset countdown above it.
+Dollar reports use the bundled local Python collector and make no network requests. **Monthly budget…**
+edits the same `budget.json` as `aisad budget --set USD`, preserving forecast settings.
+There are no day/week limits. The default shared data root is `~/.local/share/aisad`;
+`AISAD_DATA_DIR` overrides it and `AISAD_PYTHON` can select a Python interpreter.
+The clone's CLI normally uses `./output`: pass `--output ~/.local/share/aisad/output`
+to share settings with the app and installed `aisad` command.
+
+A compact row of **Claude**, **Codex** and **Grok** rings shows subscription limits below the
+spend summary. A compact second line below each provider shows its aggregate weekly percentage
+remaining; missing or expired weekly readings show a dash. There is no separate Limits tab.
+Each ring is an independent remaining allowance:
+the **outer ring** represents the short-term limit (normally 5 hours), and the **inner ring**
+represents the long-term limit (normally weekly). A weekly-only provider keeps its inner ring;
+no short-term allowance is invented. Hover or press a provider
+to open its native popover with **every** reported window, plan, percentage left, reset time
+and freshness. Model-specific windows, including Fable when supplied, stay in the details only:
+they never add a third ring or replace a missing aggregate limit. An exhausted scoped limit
+still shows a small warning indicator on the provider icon.
+Details keep the same short-term-first order, followed by the aggregate weekly limit and
+model-specific windows. Warnings consider all windows, including ones not drawn as rings:
+orange below 20% remaining, red at 10% or below. Rings are never averaged.
+
+Provider data refreshes every minute while AISAD runs. Hovering uses the latest reading and
+does not send requests. The single footer refresh action updates both dollar usage and plan limits,
+respecting provider cooldowns. Details refresh their time display every 30 seconds.
+Unknown quotas show a question mark; stale/expired readings show a clock and never invent a refill.
+Temporary failures retain the last reading; authentication failures clear it.
+Provider details use text rows without progress bars; the monthly dollar-budget bar remains.
+
+Limits use the existing signed-in Codex/Grok CLI over stdio and Claude's existing OAuth login
+from its credentials file or macOS Keychain. Authenticated usage reads contact the provider;
+credentials stay transient, are never logged or saved by AISAD, and are never refreshed or
+replaced by AISAD. The app does not start model turns, import browser cookies, or change login
+or system settings. A missing or inaccessible sign-in is shown explicitly.
+
+Amounts are API-equivalent estimates for all local Claude/Codex sessions and pools,
+not provider subscription quotas. Empty periods show **No data**; fully unpriced periods
+show **Unpriced**. Ranges and unpriced subtotals stay visible, and progress caps at a full bar
+while the percentage can exceed 100%. Errors retain the last successful report and its timestamp.
+
+The [quota and cost audit](docs/agent/reports/provider-quotas-cost-audit.md) records live-source verification,
+pricing checks and remaining estimation assumptions.
+
+For aggregate JSON without the app:
+
+```sh
+python3 agent_usage.py menubar --json --output ~/.local/share/aisad/output
+```
+
+Development checks: `python3 -m unittest discover -q`, `swift test --package-path macos`,
+and `./script/build_and_run.sh --verify`. To render the actual native view in both
+appearances without screen-capture access, use `./script/build_and_run.sh --snapshot /absolute/output/path`.
 
 ## Quick usage without a dashboard
 
@@ -308,7 +401,7 @@ Session titles are excluded by default; the dashboard uses session IDs and proje
 
 The default **Last 7 days** includes the snapshot date and the six preceding calendar days, using the report's timezone. For example, a September 5 snapshot shows August 30–September 5 against August 23–29. An old trace does not move the window backward. The window advances when you next run the collector.
 
-Choose **This week (Mon–today)** for the current calendar week so far, compared with the same weekdays last week. **Last week (Mon–Sun)** shows the previous complete calendar week, compared with the calendar week before it. Both use the snapshot date in the report's timezone.
+Choose **This week (Mon–today)** for the current calendar week so far, compared with the same weekdays last week. **Last week (Mon–Sun)** shows the previous complete calendar week, compared with the calendar week before it. Both use the snapshot date in the report's timezone. **Today**, **This week** and **This month** compare up to the same local time as the snapshot, matching the menu bar. If the previous month is shorter, the month comparison uses the same complete dates in both months. The displayed month total still includes the full month to date. Incomplete pricing suppresses monetary deltas; known subtotals carry a plus sign.
 
 You can also choose **Last 30 days**, **All time**, or enter a custom date range. Rolling and custom ranges are compared with the immediately preceding range of equal length. All time has no comparison, and Reset restores the last seven days with all providers selected.
 
@@ -442,7 +535,18 @@ To generate the example dashboard without reading your sessions:
 python3 scripts/make_demo.py
 ```
 
-Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions. Playwright is needed only for the browser checks in `scripts/test_*.cjs` and `scripts/capture_demo.cjs`, which also saves a screenshot to `output/demo/dashboard.png`; it is not a dashboard dependency.
+Open `output/demo/dashboard.html` in a browser. The demo is deterministic and uses synthetic sessions. The dashboard starts with your system appearance and remembers a manual theme choice when browser storage is available. Playwright is a browser-test dependency, not a dashboard dependency.
+
+Logic checks that require only Node, without a browser or server:
+
+```sh
+node scripts/test_dashboard_states.cjs
+node scripts/test_calendar_periods.cjs
+node scripts/test_pricing_view.cjs
+node scripts/test_offline_loader.cjs
+```
+
+These checks exercise the actual report functions with synthetic data; they do not verify layout or real browser interaction.
 
 Optional browser regression checks and screenshot generation:
 
