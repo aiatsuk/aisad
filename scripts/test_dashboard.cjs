@@ -213,6 +213,16 @@ const rows = [
         assert(!/recommendations|scenario savings|review next|possible rebuilds|flagged|benchmark/i.test(await page.locator('main').innerText()));
       }
     });
+    for (const [basis, label] of [['models_dev_rates', 'models.dev rates (2026-10-22) for all dates'],
+                                  ['current_rates', 'Current rates (2026-10-22) for all dates'],
+                                  ['custom_rates', 'Custom rates']]) {
+      await check('visible snapshot time and price source: ' + basis,
+        {price_basis: basis, price_as_of: '2026-10-22'}, async page => {
+          assert.ok(await page.locator('header #subtitle').isVisible());
+          assert.match(await page.locator('#subtitle').textContent(), /Snapshot 3\/10\/2026/);
+          assert.ok((await page.locator('#money-note').textContent()).includes(label));
+        });
+    }
     assert.deepEqual(errors, []);
     assert.deepEqual(network, []);
     console.log(`${passed} dashboard regression scenarios passed; no browser errors or network requests.`);

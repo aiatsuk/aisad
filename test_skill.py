@@ -252,7 +252,7 @@ class SkillTests(unittest.TestCase):
         self.install()
         with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
              patch.object(skill, 'maintenance_tasks', return_value=[]):
-            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
                     self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
                     self.assertEqual(invoke.call_args[0][0][2], command)
@@ -304,7 +304,7 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(report['current']['totals']['requests'], 0)
         self.assertEqual(report['current']['requests'], [])
         self.assertFalse((self.data / 'output/dashboard.html').exists())
-        for command in ['analyze', 'statusline', 'collect', 'sessions']:
+        for command in ['analyze', 'statusline', 'collect', 'sessions', 'menubar']:
             run = subprocess.run([sys.executable, '-I', str(helper), command, '--offline', '--json',
                                   '--data-dir', str(self.data), '--home', str(self.root / 'empty profile'),
                                   *(['--session', 'Claude:empty'] if command == 'statusline' else [])],
@@ -316,6 +316,10 @@ class SkillTests(unittest.TestCase):
                 self.assertEqual(result['schema_version'], 2)
                 self.assertEqual(result['current']['telemetry']['total_records'], 0)
                 self.assertNotIn('analysis_rules', result)
+            elif command == 'menubar':
+                self.assertEqual([p['id'] for p in result['periods']], ['today','week','month'])
+                self.assertEqual(result['periods'][2]['budget_usd'], 2000)
+                self.assertIsNone(result['periods'][2]['used_percent'])
             elif command == 'statusline':
                 self.assertEqual(result['session']['id'], 'Claude:empty')
                 self.assertEqual(result['session']['observed_requests'], 0)

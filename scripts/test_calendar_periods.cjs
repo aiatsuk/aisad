@@ -41,6 +41,20 @@ for (const [today,monday,priorMonday,priorSunday,sameDay,days] of cases) {
   assert.equal(d.run("new Date(previousRange(selectedRange()).to+'T00:00:00Z').getUTCDay()"),0);
   assert.equal(d.run('previousRange(selectedRange()).days'),7);
 }
+
+// Calendar month comparison clamps to matching complete dates in shorter months.
+for (const [today,from,to,days] of [
+  ['2027-03-31','2027-02-01','2027-02-28',28],
+  ['2028-03-31','2028-02-01','2028-02-29',29],
+  ['2027-01-01','2026-12-01','2026-12-01',1],
+]) {
+  const c=dashboard(today);
+  assert.deepEqual(c.select('this-month').previous,range(from,to,days));
+  assert.deepEqual(c.select('today'),{
+    current:range(today,today,1),
+    previous:range(c.run("shiftDate(today,-1)"),c.run("shiftDate(today,-1)"),1),
+  });
+}
 const d = dashboard('2026-09-05');
 assert.deepEqual(d.select('last-week'), {
   current:range('2026-08-24','2026-08-30',7),previous:range('2026-08-17','2026-08-23',7),

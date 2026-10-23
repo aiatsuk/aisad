@@ -322,11 +322,11 @@ def parser():
     maintain = commands.add_parser('maintain', allow_abbrev=False, help='Run the daily update check and price refresh now (launches do this in the background)')
     maintain.add_argument('--data-dir', help='Local reports and update-state directory')
     maintain.add_argument('tasks', nargs='*', metavar='{update,prices}', help='Default: both')
-    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast']:
+    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar']:
         command = commands.add_parser(name, allow_abbrev=False,
-                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget') else None)
+                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'menubar') else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
-        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
+        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
             command.add_argument('--offline', action='store_true', help='Skip all update network requests')
     return cli
 
@@ -406,7 +406,7 @@ def maintain(root, data, tasks):
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast'):
+    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
     root = Path(__file__).absolute().parents[1]
     if args.command == 'install':
@@ -477,7 +477,7 @@ def main(argv=None):
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
     if tasks:
         start_maintenance(root, data, tasks)
-    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast') else []
+    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar') else []
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
 
 if __name__ == '__main__':

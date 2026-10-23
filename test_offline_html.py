@@ -58,6 +58,16 @@ class OfflineHtmlTests(unittest.TestCase):
             self.assertNotIn('$0.00', summary)
             self.assertIn('—', summary)
 
+    def test_fallback_identifies_the_price_source(self):
+        for basis, label in [('models_dev_rates', 'models.dev rates for all dates'),
+                             ('current_rates', 'Current rates for all dates'),
+                             ('custom_rates', 'Custom rates')]:
+            with self.subTest(basis=basis):
+                summary = app.saved_summary(dict(as_of_date='2026-10-22', price_basis=basis))
+                self.assertIn(label, summary)
+                if basis != 'custom_rates':
+                    self.assertNotIn('Custom rates', summary)
+
     def test_fallback_text_is_escaped(self):
         summary=app.saved_summary(dict(as_of_date='2026-09-05',generated='<img src=x onerror=alert(1)>'))
         self.assertNotIn('<img', summary)
