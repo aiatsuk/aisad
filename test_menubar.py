@@ -237,5 +237,71 @@ class MenuBarComparisonTests(unittest.TestCase):
         self.assertIsNone(comparison['absolute_usd'])
 
 
+class MenuBarHistoryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.args = app.parser().parse_args(['menubar', '--output', temporary.name, '--timezone', 'UTC'])
+
+    def snapshot(self, records=(), today='2026-10-23'):
+        return dict(as_of_date=today, generated=today+'T12:00:00Z', timezone='UTC',
+                    request_stats=list(records))
+
+    def test_calendar_bounds_and_future_days_do_not_invent_zeroes(self):
+        snap = self.snapshot([dict(date='2026-10-23',cost=0,cost_high=0),
+                              dict(date='2026-10-24',cost=999,cost_high=999),
+                              dict(date='2026-09-30',cost=3,cost_high=3)])
+        history = app.menubar_report(snap,self.args)['monthly_history']
+        self.assertEqual((history['current']['days'],history['previous']['days']),(31,30))
+        self.assertEqual(history['previous']['from'],'2026-09-01')
+        self.assertEqual(history['previous']['daily'][-1]['cost_usd'],3)
+        self.assertEqual(history['current']['daily'][22]['cost_usd'],0)
+        self.assertEqual(history['current']['daily'][22]['observations'],1)
+        for index in [0,23,30]:
+            self.assertIsNone(history['current']['daily'][index]['cost_usd'])
+            self.assertEqual(history['current']['daily'][index]['observations'],0)
+
+    def test_daily_totals_and_ranges_match_cards_without_private_fields(self):
+        records = [dict(date='2026-10-02',cost=2,cost_high=3,session='PRIVATE',project='PRIVATE'),
+                   dict(date='2026-10-02',cost=None,cost_high=None),
+                   dict(date='2026-10-03',cost=5,cost_high=5),
+                   dict(date='2026-09-02',cost=9,cost_high=10)]
+        report = app.menubar_report(self.snapshot(records),self.args)
+        daily = report['monthly_history']['current']['daily']
+        self.assertEqual((daily[1]['cost_usd'],daily[1]['cost_high_usd']),(2,3))
+        self.assertEqual((daily[1]['observations'],daily[1]['unpriced_observations']),(2,1))
+        month = report['periods'][2]
+        self.assertEqual(sum(d['cost_usd'] or 0 for d in daily),month['known_cost_usd'])
+        self.assertEqual(sum(d['cost_high_usd'] or 0 for d in daily),month['cost_high_usd'])
+        self.assertEqual(sum(d['observations'] for d in daily),month['observed_requests'])
+        self.assertNotIn('PRIVATE',json.dumps(report))
+
+    def test_short_month_leap_year_and_year_rollover(self):
+        for today,previous,count in [('2027-03-31','2027-02-01',28),
+                                     ('2028-03-31','2028-02-01',29),
+                                     ('2027-01-01','2026-12-01',31)]:
+            history = app.menubar_history(self.snapshot(today=today))
+            self.assertEqual(history['previous']['from'],previous)
+            self.assertEqual(len(history['previous']['daily']),count)
+            self.assertEqual(history['previous']['days'],count)
+
+    def test_daily_values_match_existing_cli_chart_and_exclude_reported_grok(self):
+        records = [dict(date='2026-10-02',provider='Claude',cost=2,cost_high=3),
+                   dict(date='2026-10-02',provider='Codex',cost=None,cost_high=None),
+                   dict(date='2026-09-30',provider='Codex',cost=4,cost_high=4)]
+        snap = self.snapshot(records)
+        snap['rows'] = [dict(r,cost=r['cost'] or 0,cost_high=r['cost_high'] or 0,
+                             requests=1,unpriced=int(r['cost'] is None)) for r in records]
+        snap['grok_records'] = [dict(date='2026-10-02',reported_cost_usd=100,
+                                    incomplete=False,project='test',models=[])]
+        history = app.menubar_history(snap)
+        for key,month in [('current','2026-10'),('previous','2026-09')]:
+            chart = app.terminal_chart_report(snap,self.args,month=month)
+            for day in history[key]['daily']:
+                source = [d for series in chart['series'] if series['provider'] in ['Claude','Codex']
+                          for d in series['daily'] if d['date']==day['date'] and d['cost_usd'] is not None]
+                self.assertEqual(day['cost_usd'],sum(d['cost_usd'] for d in source) if source else None)
+
+
 if __name__ == '__main__':
     unittest.main()

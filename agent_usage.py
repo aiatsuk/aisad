@@ -2144,6 +2144,30 @@ def menubar_comparison(records,kind,today,now,timezone):
     return dict(result,status='available' if percent is not None else 'zero_baseline')
 
 
+
+def menubar_history(snapshot):
+    """Bounded aggregate history from the same priced observations as the cards."""
+    today=dt.date.fromisoformat(snapshot['as_of_date'])
+    first=today.replace(day=1);previous_last=first-dt.timedelta(days=1)
+    def month(start):
+        count=calendar.monthrange(start.year,start.month)[1];last=start.replace(day=count)
+        by_date=collections.defaultdict(list)
+        for row in snapshot['request_stats']:
+            if start.isoformat()<=row['date']<=min(today,last).isoformat():
+                by_date[row['date']].append(row)
+        daily=[]
+        for number in range(1,count+1):
+            date=start.replace(day=number).isoformat();records=by_date[date]
+            priced=[r for r in records if r['cost'] is not None]
+            daily.append(dict(date=date,observations=len(records),
+                unpriced_observations=len(records)-len(priced),
+                cost_usd=sum(r['cost'] for r in priced) if priced else None,
+                cost_high_usd=sum(r['cost_high'] for r in priced) if priced else None))
+        return dict(**{'from':start.isoformat(),'to':last.isoformat()},days=count,daily=daily)
+    return dict(schema_version=1,as_of_date=today.isoformat(),
+                current=month(first),previous=month(previous_last.replace(day=1)))
+
+
 def menubar_report(snapshot,args):
     """Aggregate-only native companion report, independent of display filters."""
     today=dt.date.fromisoformat(snapshot['as_of_date'])
@@ -2168,7 +2192,7 @@ def menubar_report(snapshot,args):
                             resets_at=midnight.isoformat(),
                             comparison=menubar_comparison(records,key,today,now,timezone),**status))
     return dict(schema_version=1,version=VERSION,generated=snapshot['generated'],timezone=snapshot['timezone'],
-                as_of_date=today.isoformat(),periods=periods,
+                as_of_date=today.isoformat(),periods=periods,monthly_history=menubar_history(snapshot),
                 scope='All discovered Claude/Codex sessions and agent pools; calendar week starts Monday.',
                 note='Estimated API-equivalent cost, not subscription usage or invoices.')
 

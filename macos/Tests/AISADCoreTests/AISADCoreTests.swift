@@ -157,6 +157,8 @@ final class CollectorIntegrationTests: XCTestCase {
         let before = try await client.report()
         XCTAssertEqual(before.month?.budgetUsd, 3210)
         XCTAssertEqual(before.month?.amountText, "No data")
+        XCTAssertNotNil(before.monthlyHistory)
+        XCTAssertTrue(before.monthlyHistory?.points.isEmpty == true)
         try await client.saveBudget(4567)
         let after = try await client.report()
         XCTAssertEqual(after.month?.budgetUsd, 4567)
@@ -187,6 +189,8 @@ final class CollectorIntegrationTests: XCTestCase {
         XCTAssertEqual(freshDashboard.report.generated, persistedReport.generated)
         XCTAssertEqual(freshDashboard.report.month?.budgetUsd, 4567)
         XCTAssertEqual(freshDashboard.report.month?.knownCostUsd, 3)
+        XCTAssertEqual(freshDashboard.report.monthlyHistory?.curves[0].points.last?.cost, 3)
+        XCTAssertEqual(freshDashboard.report.monthlyHistory?.asOfDate, persistedReport.monthlyHistory?.asOfDate)
         XCTAssertNotEqual(firstDashboard.report.generated, freshDashboard.report.generated)
         XCTAssertEqual(try XCTUnwrap(summary["cost"] as? Double), 3, accuracy: 0.000001)
 

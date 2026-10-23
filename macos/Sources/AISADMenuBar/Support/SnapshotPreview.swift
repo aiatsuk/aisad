@@ -1,6 +1,7 @@
 #if DEBUG
 import AISADCore
 import Foundation
+import SwiftUI
 
 /// Isolated visual-QA inputs. Normal app startup always uses the live collector.
 @MainActor
@@ -25,6 +26,15 @@ enum SnapshotPreview {
                           saving: object["saving"] as? Bool ?? false,
                           saved: object["saved"] as? Bool ?? false,
                           openingDashboard: object["opening_dashboard"] as? Bool ?? false)
+    }
+}
+private struct SnapshotChartDayKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+extension EnvironmentValues {
+    var snapshotChartDay: Int? {
+        get { self[SnapshotChartDayKey.self] }
+        set { self[SnapshotChartDayKey.self] = newValue }
     }
 }
 #endif

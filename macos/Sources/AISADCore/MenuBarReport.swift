@@ -6,6 +6,7 @@ public struct MenuBarReport: Decodable, Sendable {
     public let generated: Date
     public let timezone: String
     public let periods: [SpendPeriod]
+    public let monthlyHistory: MonthlySpendHistory?
 
     public var month: SpendPeriod? { periods.first { $0.id == "month" } }
 
@@ -41,6 +42,8 @@ public struct MenuBarReport: Decodable, Sendable {
                 throw CollectorError.invalidReport
             }
         }
+        if let history = report.monthlyHistory, let month = report.month,
+           !history.matches(month) { throw CollectorError.invalidReport }
         return report
     }
 }

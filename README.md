@@ -77,7 +77,14 @@ the refresh icon with its last-update age (for example, **3 min ago**).
 **Dashboard** collects current local usage before opening the offline HTML in your browser.
 The page shows its collection timestamp and stays a snapshot until you open Dashboard again. Each Dashboard open also updates menu-bar spending from that same collection. The dashboard's calendar summary shows today, this week, this month and the saved monthly limit across all Claude/Codex sessions; filters apply to the detailed views below.
 If collection fails, the app shows an error and preserves the previous HTML.
-The monthly progress bar spans the row, with the limit, percentage and reset countdown above it.
+Today and this week sit in two compact cards. The larger monthly card contains a cumulative
+spend chart: solid blue for the current month, dashed gray for the previous calendar month,
+aligned by day number. The labelled horizontal line is the saved monthly budget; percentage
+and reset countdown sit below the chart. Hover a day for both exact cumulative amounts,
+or focus the chart and use Left/Right; Escape clears selection. The chart does not draw a focus ring. Today's point is partial,
+while previous-month points include each whole day. Numeric comparison labels still use
+the matched local-calendar windows described above. The chart and cards come from one
+collection; refreshing or opening Dashboard updates them together.
 Dollar reports use the bundled local Python collector and make no network requests. **Monthly budget…**
 edits the same `budget.json` as `aisad budget --set USD`, preserving forecast settings.
 There are no day/week limits. The default shared data root is `~/.local/share/aisad`;
@@ -105,7 +112,7 @@ does not send requests. The single footer refresh action updates both dollar usa
 respecting provider cooldowns. Details refresh their time display every 30 seconds.
 Unknown quotas show a question mark; stale/expired readings show a clock and never invent a refill.
 Temporary failures retain the last reading; authentication failures clear it.
-Provider details use text rows without progress bars; the monthly dollar-budget bar remains.
+Provider details use text rows without progress bars; the monthly dollar-budget threshold stays in the spending chart.
 
 Limits use the existing signed-in Codex/Grok CLI over stdio and Claude's existing OAuth login
 from its credentials file or macOS Keychain. Authenticated usage reads contact the provider;
@@ -115,8 +122,7 @@ or system settings. A missing or inaccessible sign-in is shown explicitly.
 
 Amounts are API-equivalent estimates for all local Claude/Codex sessions and pools,
 not provider subscription quotas. Empty periods show **No data**; fully unpriced periods
-show **Unpriced**. Ranges and unpriced subtotals stay visible, and progress caps at a full bar
-while the percentage can exceed 100%. Errors retain the last successful report and its timestamp.
+show **Unpriced**. Ranges and unpriced subtotals stay visible, and missing days remain gaps. Spending can exceed the budget, and its percentage can exceed 100%. Errors retain the last successful report and its timestamp.
 
 The [quota and cost audit](docs/agent/reports/provider-quotas-cost-audit.md) records live-source verification,
 pricing checks and remaining estimation assumptions.

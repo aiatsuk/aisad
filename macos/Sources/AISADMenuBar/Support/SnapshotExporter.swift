@@ -27,7 +27,29 @@ enum SnapshotExporter {
                 ? (scheme == .dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua)
                 : (scheme == .dark ? .darkAqua : .aqua))
             NSApp.appearance = appearance
-            try capture(MenuBarView(store: store), name: "menubar-" + name,
+            #if DEBUG
+            let chart = try MonthlyChartPreview.fromArguments()
+            let args = CommandLine.arguments
+            let selectedDay = args.firstIndex(of: "--chart-day").flatMap {
+                args.indices.contains($0 + 1) ? Int(args[$0 + 1]) : nil
+            }
+            let menu = Group {
+                if let style = MenuCardsPreview.Style.fromArguments, let chart {
+                    MenuCardsPreview(store: store, chart: chart, style: style)
+                } else {
+                    MenuBarView(store: store, chartPreview: chart)
+                        .environment(\.snapshotChartDay, selectedDay)
+                }
+            }
+            if CommandLine.arguments.contains("--card-board"), let chart {
+                try capture(MenuCardsComparisonPreview(store: store, chart: chart),
+                            name: "cards-comparison-" + name,
+                            scheme: scheme, appearance: appearance, directory: directory)
+            }
+            #else
+            let menu = MenuBarView(store: store)
+            #endif
+            try capture(menu, name: "menubar-" + name,
                         scheme: scheme, appearance: appearance, directory: directory)
             for kind in QuotaProvider.allCases {
                 let provider = store.limits.providers.first { $0.id == kind.id }

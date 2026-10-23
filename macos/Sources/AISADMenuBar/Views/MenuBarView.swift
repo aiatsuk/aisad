@@ -4,9 +4,12 @@ import OSLog
 
 struct MenuBarView: View {
     let store: UsageStore
+    #if DEBUG
+    var chartPreview: MonthlyChartPreview? = nil
+    #endif
     private let logger = Logger(subsystem: "com.aiatsuk.aisad.menubar", category: "menu")
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 10) {
                 Text("AISAD")
                     .font(.system(size: 12, weight: .semibold))
@@ -37,11 +40,8 @@ struct MenuBarView: View {
                 .accessibilityLabel("Open dashboard")
                 .keyboardShortcut("o")
             }
-            Divider()
             if let report = store.report {
-                ForEach(report.periods) { period in
-                    SpendPeriodView(period: period)
-                }
+                SpendCardsView(report: report)
                 if !Calendar.current.isDateInToday(report.generated) {
                     Label("Snapshot is from a previous day", systemImage: "clock.badge.exclamationmark")
                         .font(.caption).foregroundStyle(.orange)
@@ -55,14 +55,22 @@ struct MenuBarView: View {
                 Text("Usage is not available yet.").foregroundStyle(.secondary)
             }
             if let error = store.dashboardError ?? store.error {
-                Label(error, systemImage: "exclamationmark.triangle")
+                Label {
+                    Text("Update failed · " + error.replacingOccurrences(of: "Error: ", with: ""))
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.red)
+                }
                     .lineLimit(4)
                     .help(error)
-                    .font(.caption).foregroundStyle(.red)
+                    .font(.system(size: 9.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
+            #if DEBUG
+            if let chartPreview { MonthlySpendChartPreview(preview: chartPreview) }
+            #endif
             ProviderLimitsView(store: store.limits)
+                .padding(.horizontal, 2).padding(.vertical, 3)
             Divider()
             HStack(spacing: 10) {
                 RefreshUsageButton(store: store)
@@ -88,7 +96,7 @@ struct MenuBarView: View {
         .padding(.horizontal, 10)
         .padding(.top, 8)
         .padding(.bottom, 6)
-        .frame(width: 280)
+        .frame(width: 300)
         .onAppear { logger.notice("Usage menu appeared") }
         .onDisappear { logger.notice("Usage menu disappeared") }
     }
