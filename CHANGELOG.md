@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4 — 2026-10-24
+
+- Skill frontmatter sets `model: sonnet` and `effort: medium`.
+
 ## 1.4.3 — 2026-10-16
 
 - Fit small terminals: the daily graph keeps the whole month in one plot at any width down to 48 columns (three, two or one column per day, with every-day, odd-day or weekly day numbers and a weekday initial per day), instead of two panels that did not fit and showed "enlarge the terminal". Month changes keep their morph. The weekly table keeps all weeks side by side by shortening weekday names to three letters and then showing whole dollars. The Ink footer always says "R refresh".
