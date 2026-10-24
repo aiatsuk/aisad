@@ -1,6 +1,8 @@
 ---
 name: aisad
 description: Analyze local Claude Code and Codex usage on demand, with text or JSON reports, session evidence and an offline dashboard. Uses existing files without hooks, MCP integration or background monitoring.
+model: sonnet
+effort: medium
 ---
 
 # AISAD
