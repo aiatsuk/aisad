@@ -8,38 +8,46 @@ struct MenuBarView: View {
     var chartPreview: MonthlyChartPreview? = nil
     #endif
     private let logger = Logger(subsystem: "com.aiatsuk.aisad.menubar", category: "menu")
+    private var appHelp: String {
+        let version = store.report?.version ?? ""
+        let timezone = store.report?.timezone ?? "System local timezone"
+        return ["Claude + Codex · API cost estimates", "AISAD " + version, timezone].joined(separator: "\n")
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text("AISAD")
+                .font(.system(size: 12, weight: .semibold))
+                .help(appHelp)
+            Spacer(minLength: 8)
+            Button {
+                store.openDashboard()
+            } label: {
+                HStack(spacing: 4) {
+                    Text(store.isOpeningDashboard ? "Opening…" : "Dashboard")
+                    if store.isOpeningDashboard {
+                        ProgressView().controlSize(.mini).frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.quaternary, in: Capsule())
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(store.isBusy)
+            .help("Collect current local usage and open the offline dashboard in your browser")
+            .accessibilityLabel("Open dashboard")
+            .keyboardShortcut("o")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                Text("AISAD")
-                    .font(.system(size: 12, weight: .semibold))
-                    .help("Claude + Codex · API cost estimates\nAISAD " +
-                          (store.report?.version ?? "") + "\n" +
-                          (store.report?.timezone ?? "System local timezone"))
-                Spacer(minLength: 8)
-                Button {
-                    store.openDashboard()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(store.isOpeningDashboard ? "Opening…" : "Dashboard")
-                        if store.isOpeningDashboard {
-                            ProgressView().controlSize(.mini).frame(width: 12, height: 12)
-                        } else {
-                            Image(systemName: "arrow.up.right.square")
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isBusy)
-                .help("Collect current local usage and open the offline dashboard in your browser")
-                .accessibilityLabel("Open dashboard")
-                .keyboardShortcut("o")
-            }
+            header
             if let report = store.report {
                 SpendCardsView(report: report)
                 if !Calendar.current.isDateInToday(report.generated) {

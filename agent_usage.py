@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import textwrap
 import urllib.error
 import urllib.request
@@ -1052,7 +1053,88 @@ def evidence_wanted(args):
     """
     return bool(getattr(args,'include_events',False)) or getattr(args,'command','') in ('collect','sessions','session','dashboard')
 
+SHARED_USAGE = 'usage-state.json'
+
+def shared_usage_enabled(args):
+    # Explicit alternative sources and rate/timezone experiments stay isolated.
+    return not any(getattr(args,key,None) for key in
+        ('home','codex_dir','claude_dir','no_cowork','timezone','prices','managed_session'))
+
+LIVE_PREFIX='globalThis.aisadLiveRevision?.('
+
+def read_shared_commit(output):
+    try:
+        text=(Path(output)/'usage-live.js').read_text()
+        if not text.startswith(LIVE_PREFIX) or not text.endswith(');'):return {}
+        value=json.loads(text[len(LIVE_PREFIX):-2])
+        revision=value.get('revision')
+        if value.get('schema_version')!=1 or not isinstance(revision,str) or not re.fullmatch(r'[0-9]{20}',revision):return {}
+        return value
+    except (OSError,ValueError,TypeError,AttributeError):return {}
+
+def read_shared_usage(output, after=None):
+    committed=read_shared_commit(output)
+    if not committed or (after is not None and committed['revision']<=after):return None
+    for name in (SHARED_USAGE,'usage-state.previous.json'):
+        value=read_json_file(Path(output)/name)
+        if value.get('schema_version')!=1 or value.get('revision')!=committed['revision']:continue
+        snapshot=value.get('snapshot')
+        if isinstance(snapshot,dict) and isinstance(snapshot.get('rows'),list) and isinstance(snapshot.get('request_stats'),list):
+            return value
+    return None
+
+def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
+    """One committed local read model; no scans, listeners or provider requests."""
+    if not shared_usage_enabled(args):return None
+    output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
+    collection_revision=revision or f'{time.time_ns():020d}'
+    # SQLite only arbitrates local publication. The lock covers all atomic file
+    # replacements, so late completion of an older collection cannot roll back.
+    with contextlib.closing(sqlite3.connect(output/'usage-sync.sqlite',timeout=30)) as lock:
+        with lock:
+            lock.execute('BEGIN IMMEDIATE')
+            previous=read_shared_usage(output)
+            committed=read_shared_commit(output)
+            if budget_only:
+                if not previous:return None
+                snapshot=previous['snapshot'];collection_revision=snapshot['collection_revision']
+            elif committed.get('collection_revision','')>=collection_revision:return previous
+            revision=f'{time.time_ns():020d}'
+            fields=('version','generated','as_of_date','timezone','price_as_of','price_sources','price_basis',
+                    'history_coverage','summary','quality','scan','rows','request_stats','budgets','grok_records',
+                    'unknown_models','titles','measurement_basis','session_details','event_previews','evidence_generated')
+            data={key:snapshot[key] for key in fields if key in snapshot}
+            if not data.get('evidence_generated') and previous:
+                for key in ('session_details','event_previews','evidence_generated'):
+                    if key in previous['snapshot']:data[key]=previous['snapshot'][key]
+            data.update(sync_revision=revision,collection_revision=collection_revision,live_updates=True)
+            canonical=argparse.Namespace(**vars(args));canonical.monthly_budget=None
+            data['spend_summary']=menubar_report(data,canonical)
+            report=data['spend_summary']
+            value=dict(schema_version=1,revision=revision,snapshot=data)
+            # The public sidecar is the same normalized data already embedded in
+            # the dashboard. Never publish source paths, transcripts or payloads.
+            packed=dict(encoding='gzip-base64',data=base64.b64encode(
+                gzip.compress(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode(),mtime=0)).decode())
+            atom_write(output/'usage-live-data.js',
+                ('globalThis.aisadLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
+            if previous and read_json_file(output/SHARED_USAGE).get('revision')==previous['revision']:
+                os.replace(output/SHARED_USAGE,output/'usage-state.previous.json')
+            atom_json(output/SHARED_USAGE,value)
+            atom_json(output/'usage-menubar.json',report)
+            atom_json(output/'menubar.json',report)
+            commit=dict(schema_version=1,revision=revision,collection_revision=collection_revision,
+                        report_base64=base64.b64encode(json.dumps(report,separators=(',',':')).encode()).decode())
+            # All readers follow this one small atomic commit marker. Prepared
+            # payloads from interrupted publications are never accepted.
+            atom_write(output/'usage-live.js',(LIVE_PREFIX+json.dumps(commit)+');').encode())
+            return value
+
+def republish_shared_budget(args):
+    publish_shared_usage({},args,budget_only=True)
+
 def make_snapshot(args, dashboard=True, include_requests=False):
+    revision=f'{time.time_ns():020d}'
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices,output)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
@@ -1138,6 +1220,9 @@ def make_snapshot(args, dashboard=True, include_requests=False):
                   evidence_schema_version=EVIDENCE_SCHEMA,measurement_basis=MEASUREMENT_BASIS,
                   session_details=session_details,
                   budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)))
+    snapshot['sync_revision']=revision
+    snapshot['live_updates']=shared_usage_enabled(args)
+    if evidence:snapshot['evidence_generated']=snapshot['generated']
     if dashboard:snapshot['spend_summary']=menubar_report(snapshot,args)
     if evidence:
         write_event_store(output/'sessions.sqlite',source_files,events,rows,session_details,tool_calls,turns,catalog,snapshot['generated'])
@@ -1154,6 +1239,7 @@ def make_snapshot(args, dashboard=True, include_requests=False):
         atom_json(output/'status.json',{'generated':snapshot['generated'],'version':VERSION})
     if getattr(args,'include_events',False) or args.command in ('collect','sessions','session'):
         snapshot.update(events=events,tool_calls=tool_calls,turns=turns,source_files=source_files)
+    publish_shared_usage(snapshot,args,revision)
     return dict(snapshot,requests=rows) if include_requests else snapshot
 
 def usage_totals(rows):
@@ -1904,7 +1990,8 @@ def terminal_week_text(report,width=100,color=False,ascii_only=False):
 def terminal_chart_keys():
     import termios,tty,select
     fd=sys.stdin.fileno();previous=termios.tcgetattr(fd)
-    def read():
+    def read(timeout=None):
+        if timeout is not None and not select.select([fd],[],[],timeout)[0]:return ''
         key=os.read(fd,1).decode('ascii','ignore')
         if key=='\x1b':
             if select.select([fd],[],[],.05)[0]:
@@ -2006,7 +2093,7 @@ def ink_session(found,args,color,dataset,snapshot=None):
     """
     import threading
     output=Path(args.output).expanduser().resolve();key=ui_cache_key(args,color)
-    latest=dict(snapshot=snapshot,dataset=dataset);worker=[None]
+    latest=dict(snapshot=snapshot,dataset=dataset,revision='');worker=[None]
     with tempfile.TemporaryDirectory(prefix='aisad-ui-') as temporary:
         directory=Path(temporary);source=directory/'aggregates.json';state=directory/'state.json'
         request=directory/'refresh.request'
@@ -2019,8 +2106,10 @@ def ink_session(found,args,color,dataset,snapshot=None):
         def refresh():
             try:
                 fresh=make_snapshot(args,dashboard=False,include_requests=True)
+                shared=read_shared_usage(output) if shared_usage_enabled(args) else None
+                if shared and shared['revision']>=fresh.get('sync_revision',''):fresh=shared['snapshot']
                 prepared=terminal_ui_dataset(fresh,args,color)
-                latest.update(snapshot=fresh,dataset=prepared);latest.pop('error',None)
+                latest.update(snapshot=fresh,dataset=prepared,revision=fresh.get('sync_revision',''));latest.pop('error',None)
                 with contextlib.suppress(OSError):atom_json(output/UI_CACHE,dict(key=key,dataset=prepared))
             except Exception as error:latest['error']=error
             # On failure the shown numbers return without the stale mark.
@@ -2028,7 +2117,22 @@ def ink_session(found,args,color,dataset,snapshot=None):
         def start():
             if worker[0] is None or not worker[0].is_alive():
                 worker[0]=threading.Thread(target=refresh,name='aisad-refresh',daemon=True);worker[0].start()
+        signature=[None]
+        def follow_shared():
+            if not shared_usage_enabled(args):return
+            path=output/'usage-live.js'
+            try:
+                stat=path.stat();current=(stat.st_ino,stat.st_size,stat.st_mtime_ns)
+            except OSError:return
+            if signature[0]==current:return
+            signature[0]=current
+            shared=read_shared_usage(output,latest['revision'])
+            if not shared:return
+            prepared=terminal_ui_dataset(shared['snapshot'],args,color)
+            latest.update(snapshot=shared['snapshot'],dataset=prepared,revision=shared['revision'])
+            publish(prepared)
         def poll():
+            follow_shared()
             if request.exists() and (worker[0] is None or not worker[0].is_alive()):
                 with contextlib.suppress(OSError):request.unlink()
                 start()
@@ -2079,7 +2183,13 @@ def terminal_chart_interactive(snapshot,args,color=False):
                 size=shutil.get_terminal_size((100,30));text=terminal_chart_frame(result,args,color,size)
                 controls='W graph/weeks  H previous  L next  R refresh  Q quit'
                 sys.stdout.write('\x1b[H\x1b[2J'+text.replace('\n','\r\n')+'\r\n\r\n'+controls+'\r\n');sys.stdout.flush()
-                key=read()
+                while True:
+                    key=read(1)
+                    if key:break
+                    shared=read_shared_usage(Path(args.output),snapshot.get('sync_revision','')) if shared_usage_enabled(args) else None
+                    if shared:
+                        snapshot=shared['snapshot'];latest=dt.date.fromisoformat(snapshot['as_of_date']).replace(day=1)
+                        break
                 if key in ('q','\x04','\x1b'):return result
                 if key=='\x03':raise KeyboardInterrupt
                 if key=='r':
@@ -2192,6 +2302,7 @@ def menubar_report(snapshot,args):
                             resets_at=midnight.isoformat(),
                             comparison=menubar_comparison(records,key,today,now,timezone),**status))
     return dict(schema_version=1,version=VERSION,generated=snapshot['generated'],timezone=snapshot['timezone'],
+                sync_revision=snapshot.get('sync_revision'),
                 as_of_date=today.isoformat(),periods=periods,monthly_history=menubar_history(snapshot),
                 scope='All discovered Claude/Codex sessions and agent pools; calendar week starts Monday.',
                 note='Estimated API-equivalent cost, not subscription usage or invoices.')
@@ -2376,7 +2487,7 @@ async function loadSnapshot(node){
     return new Response(stream).json();
 }
 (async()=>{
-const D=await loadSnapshot(document.getElementById('snapshot'));const $=id=>document.getElementById(id);
+let D=await loadSnapshot(document.getElementById('snapshot'));const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const compact=n=>new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n||0);const integer=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);const pct=n=>n==null?'—':(n*100).toFixed(1)+'%';
 // Calendar dates use UTC arithmetic to avoid DST and browser-timezone shifts.
@@ -2384,9 +2495,9 @@ const shiftDate=(date,days)=>{const value=new Date(date+'T00:00:00Z');value.setU
 const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
 const rangeLabel=range=>range?range.from+' – '+range.to:'';
 const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
-let page=0,modelSort='cost',ascending=false;
-const allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
-const today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
+let page=0,modelSort='cost',ascending=false,activeSession=null;
+let allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
+let today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
 function setPeriod(value){
     $('period').value=value;
     $('custom-dates').hidden=value!=='custom';
@@ -2422,15 +2533,19 @@ function previousRange(range){
     const offset=$('period').value==='this-week'?7:range.days;
     return {from:shiftDate(range.from,-offset),to:shiftDate(range.to,-offset),days:range.days};
 }
+function updateSnapshotHeader(){
 for(const field of ['provider','model','project']){
+    const selected=$(field).value;
     const values=[...new Set([...D.rows,...(field==='model'?[]:D.session_details||[])].map(r=>r[field]).filter(Boolean))].sort();
     $(field).innerHTML='<option value="">All</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(field==='provider'?providerLabel(v):v)+'</option>').join('');
+    $(field).value=values.includes(selected)?selected:'';
 }
-setPeriod('7');
 let generatedLabel;try{generatedLabel=new Date(D.generated).toLocaleString('en-US',{timeZone:D.timezone==='System local timezone'?undefined:D.timezone,timeZoneName:'short'})}catch{generatedLabel=D.generated}
 $('subtitle').textContent='Snapshot '+generatedLabel;
 if(D.demo){document.querySelector('.badge').textContent='Synthetic demo';$('demo-notice').hidden=false;document.querySelector('h1').textContent='Demo usage statistics'}
 $('coverage').textContent=Object.entries(D.history_coverage||{}).map(([provider,h])=>provider+': '+(h.first_date?h.first_date+' – '+h.last_date:'no records')).join(' · ')+(D.quality.registry_without_trace?' · '+integer(D.quality.registry_without_trace)+' registered Codex sessions have no trace. ':' · ')+(D.summary.files?`Found ${integer(D.summary.files)} local files. Codex: ${D.summary.traces_codex} traces across ${D.summary.registry_codex} registered threads. Missing traces are not estimated. Cloud chats are not included.`:'No local traces found. Run Codex or Claude Code on this device, or set --codex-dir / --claude-dir.');
+}
+updateSnapshotHeader();setPeriod('7');
 function chosen(r,range=selectedRange()){
     return Boolean(range&&r.date>=range.from&&r.date<=range.to&&['provider','model','project'].every(f=>!$(f).value||r[f]===$(f).value)&&(!$('role').value||r.role===$('role').value)&&(!$('pool').value||(r.pool||'interactive')===$('pool').value));
 }
@@ -2510,7 +2625,7 @@ function daily(rows,priorRows,metric,range,previous){
     $('daily').innerHTML=svg+'</svg>'+`<div class="legend"><span><i class="dot"></i>Selected period</span>${compare?'<span><i class="dot previous"></i>Previous period, aligned by day</span>':''}</div><small>Missing bars mean no observations${metric==='cost'?' or unavailable prices':''}; today may be incomplete. Hover for the value; select a bar to inspect its sessions.</small>`;
 }
 function modelsTable(rs){let gs=groups(rs,'model').sort((a,b)=>(a[modelSort]-b[modelSort])*(ascending?1:-1));$('models-table').innerHTML='<thead><tr><th>Model</th>'+[['requests','Requests'],['total','Tokens'],['output','Output'],['cached','Cache'],['cost','Cost, USD']].map(([f,l])=>`<th><button data-sort="${f}">${l}${modelSort===f?(ascending?' ↑':' ↓'):''}</button></th>`).join('')+'<th>Unpriced</th></tr></thead><tbody>'+(gs.map(g=>`<tr><td>${esc(g.name)}</td><td>${integer(g.requests)}</td><td>${compact(g.total)}</td><td>${compact(g.output)}</td><td>${pct(g.cache)}</td><td>${cost(g)}</td><td>${g.unpriced||'—'}</td></tr>`).join('')||"<tr><td colspan=\"7\" class=\"empty\">No models in this period.</td></tr>")+'</tbody>';document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{ascending=modelSort===b.dataset.sort?!ascending:false;modelSort=b.dataset.sort;modelsTable(rs)})}
-const records=D.request_stats||[];
+let records=D.request_stats||[];
 const moneyRange=(low,high)=>low==null?'—':usd(low)+(high-low>.005?'–'+usd(high):'');
 const bytes=n=>n>=1e6?(n/1e6).toFixed(1)+' MB':n>=1000?(n/1000).toFixed(1)+' KB':integer(n)+' B';
 function selectedRecords(){return records.filter(r=>chosen(r))}
@@ -2543,6 +2658,7 @@ function showTab(name){
     for(const button of document.querySelectorAll('[data-tab]')){const active=button.dataset.tab===name;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.getAttribute('aria-controls')).hidden=!active}
 }
 function openSession(id){
+    activeSession=id;
     const rs=selectedRecords().filter(r=>r.session===id).sort((a,b)=>a.ts-b.ts||a.step-b.step),a=aggregate(recordRows(rs)),d=telemetry(rs);
     $('session-title').textContent=sessionLabel(id);$('session-caption').textContent=`${rangeLabel(selectedRange())} · Selected filters · ${[...new Set(rs.map(r=>r.model))].join(', ')} · ${integer(d.traceRecords)} of ${integer(rs.length)} usage records have message/tool telemetry.`;
     $('session-cards').innerHTML=miniCards([['API estimate',cost(a),'For requests within these filters'],['Peak input',rs.length?compact(a.max_context):'—','Measured request input, including cache'],['Cache rate',pct(a.cache),'Weighted by input tokens']]);
@@ -2682,7 +2798,7 @@ function renderSessionEvidence(id,rs){
         $('session-lifecycle').innerHTML=`<p>Observed span: ${meta.elapsed_seconds==null?'unavailable':integer(meta.elapsed_seconds)+' seconds'}, including idle time. Active time is unavailable. Last lifecycle event: ${esc(meta.last_recorded_lifecycle||'not recorded')}. ${meta.context_since_compaction==='unavailable'?(meta.compactions?'No fresh input observation after the latest compaction.':'No recorded input observation.'):''}</p>`+links.map(([label,sid])=>`<span>${label}: <button data-session="${esc(sid)}">${esc(sessionLabel(sid))}</button></span>`).join(' ');
     }else $('session-lifecycle').textContent='No lifecycle evidence in this snapshot.';
     const preview=D.event_previews?.[id]||[],events=preview.filter(e=>e.date&&range&&e.date>=range.from&&e.date<=range.to&&(!$('model').value||!e.model||e.model===$('model').value));
-    $('events-note').textContent=`${integer(events.length)} events shown for these dates from the latest ${integer(preview.length)} retained in this session’s offline preview. Full history and pagination: session --session ${id} --json. The database contains ${integer(meta?.event_count||preview.length)} lifetime events. Missing timestamps cannot be placed in this date range.`;
+    $('events-note').textContent=(D.evidence_generated?'Evidence collected '+D.evidence_generated+'. ':'')+`${integer(events.length)} events shown for these dates from the latest ${integer(preview.length)} retained in this session’s offline preview. Full history and pagination: session --session ${id} --json. The database contains ${integer(meta?.event_count||preview.length)} lifetime events. Missing timestamps cannot be placed in this date range.`;
     $('events-table').innerHTML='<thead><tr><th>Observed time</th><th>Event</th><th>Recorded details</th><th>Evidence</th></tr></thead><tbody>'+(events.map(e=>`<tr><td>${esc(observedTime(e.ts))}</td><td>${esc(e.kind.replaceAll('_',' '))}</td><td>${esc(e.tool||e.role||e.service_tier||e.model||'')}${e.result_bytes!=null?' · '+bytes(e.result_bytes):e.kind==='tool_result'?' · size unavailable':''}${e.error===true?' · error recorded':''}</td><td><details><summary>Source ${integer(e.evidence[0]?.line||0)}</summary>${sourceReferences(e.evidence)}</details></td></tr>`).join('')||"<tr><td colspan=\"4\" class=\"empty\">No recorded events in this date range or preview.</td></tr>")+'</tbody>';
 }
 function inspectObservation(id){
@@ -2701,7 +2817,7 @@ function navigateEvidence(target){
 document.addEventListener('click',event=>{const target=event.target.closest('[data-day],[data-observation],[data-breakdown]');if(target)navigateEvidence(target)});
 document.addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key)||event.target.tagName.toLowerCase()==='button')return;const target=event.target.closest('[data-day],[data-observation]');if(target){event.preventDefault();navigateEvidence(target)}});
 $('measurement-basis').innerHTML=Object.entries(D.measurement_basis||{}).map(([name,value])=>`<p><span class="tag">${esc(value.kind)}</span> <b>${esc(name.replaceAll('_',' '))}</b> — ${esc(value.basis)}</p>`).join('');
-$('close-session').onclick=()=>$('session-dialog').close();
+$('close-session').onclick=()=>{activeSession=null;$('session-dialog').close()};
 function applyTheme(dark){
     document.documentElement.dataset.theme=dark?'dark':'light';
     $('theme').textContent=dark?'Light theme':'Dark theme';
@@ -2714,13 +2830,69 @@ $('theme').onclick=()=>{
     applyTheme(document.documentElement.dataset.theme!=='dark');
     try{localStorage.setItem('aisad-theme',document.documentElement.dataset.theme)}catch{}
 };
+function updatePricingNotice(){
 $('method').innerHTML=`<p>Local Claude and Codex traces. Duplicate usage records are removed. Missing traces cannot be recovered; chat contents stay on this device.</p><p>API-equivalent prices as of ${esc(D.price_as_of)}, not subscription charges. Unknown prices stay unknown; cache-write uncertainty is shown as a range. Input includes cached tokens.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a></p>`;
+}
+updatePricingNotice();
 renderSpendSummary();
 $('footer').textContent=`AISAD ${D.version} · Saved snapshot · Open Dashboard in AISAD or rerun aisad dashboard to update`;render();
 $('interactive-dashboard').hidden=false;$('saved-summary').hidden=true;
 // Release the serialized copy after the interactive report is ready.
 $('snapshot').textContent='';
-// A saved snapshot makes no polling or collection requests.
+// Apply only committed newer generations, retaining filters and the active tab.
+function applyLiveSnapshot(next){
+    if(!next||!Array.isArray(next.rows)||!Array.isArray(next.request_stats)||
+       !next.summary||!next.quality||!Number.isFinite(Date.parse(next.generated))||
+       !/^[0-9]{20}$/.test(next.sync_revision||'')||next.sync_revision<=(D.sync_revision||''))return false;
+    const period=$('period').value;
+    D=next;records=D.request_stats||[];
+    allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
+    today=D.as_of_date||D.generated.slice(0,10);first=allDates[0]||shiftDate(today,-6);last=allDates[allDates.length-1]||today;
+    sessionMetadata.clear();for(const item of D.session_details||[])sessionMetadata.set(item.id,item);
+    updateSnapshotHeader();updatePricingNotice();setPeriod(period);
+    renderSpendSummary();render();
+    if(activeSession&&$('session-dialog').open)openSession(activeSession);
+    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    return true;
+}
+function startLiveUpdates(){
+    if(!D.live_updates||globalThis.location?.protocol!=='file:')return;
+    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    let stopped=false,timer,loading=false,requested='';
+    const scripts=new Set();
+    function script(name,done){
+        const tag=document.createElement('script');scripts.add(tag);
+        tag.src=name+'?t='+Date.now();tag.onload=tag.onerror=()=>{tag.remove();scripts.delete(tag);done?.()};
+        document.head.append(tag);
+    }
+    globalThis.aisadLiveRevision=manifest=>{
+        const revision=manifest?.revision;
+        if(stopped||loading||!/^[0-9]{20}$/.test(revision)||revision<=(D.sync_revision||''))return;
+        loading=true;requested=revision;script('usage-live-data.js',()=>{loading=false});
+    };
+    globalThis.aisadLiveData=async(revision,packed)=>{
+        try{
+            const next=await loadSnapshot({textContent:JSON.stringify(packed)});
+            if(!stopped&&revision===requested&&next.sync_revision===revision)applyLiveSnapshot(next);
+        }catch{/* Keep the last complete snapshot on corrupt or interrupted writes. */}
+    };
+    function poll(){
+        if(stopped)return;
+        script('usage-live.js');
+        timer=setTimeout(poll,document.hidden?15000:1000);
+    }
+    function stop(){
+        stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);
+        for(const tag of scripts)tag.remove();scripts.clear();
+        delete globalThis.aisadLiveRevision;delete globalThis.aisadLiveData;
+    }
+    function visible(){if(!document.hidden){clearTimeout(timer);poll()}}
+    document.addEventListener('visibilitychange',visible);
+    globalThis.addEventListener('pagehide',stop,{once:true});
+    poll();
+}
+startLiveUpdates();
+// Dashboard initialization complete.
 })().catch(error=>{
     console.error('AISAD report could not initialize',error);
     document.getElementById('startup-note').textContent='Interactive charts could not load. The saved totals below remain available. Try reopening this file in an up-to-date browser.';
@@ -2836,9 +3008,9 @@ def main(argv=None):
     if args.command=='budget':
         if args.monthly_budget is not None:raise SystemExit('Use budget --set USD to save a limit')
         result=budget_command(args)
+        if args.set_budget is not None or args.reset_budget:republish_shared_budget(args)
         print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else f"Monthly budget: ${result['monthly_budget_usd']:,.2f} ({result['source']})\nSpend forecast: {'on' if result['forecast']['enabled'] else 'off'}, target P{round(result['forecast']['quantile']*100)}\n{result['path']}")
         return
-    if args.command in ('statusline','chart'):args.monthly_budget=resolve_monthly_budget(args)
     if args.command!='chart' and (args.month or args.view!='graph' or args.interactive or args.snapshot):raise SystemExit('--month, --view, --interactive and --snapshot belong to chart')
     if args.command=='chart':
         if args.date_from or args.date_to or args.all_time or args.days!=7:raise SystemExit('chart uses calendar months; use --month YYYY-MM or usage for custom dates')
@@ -2866,7 +3038,9 @@ def main(argv=None):
         if live is not None:atom_json(output/'chart.json',live);return
     snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
     if args.command=='menubar':
-        result=menubar_report(snap,args);atom_json(output/'menubar.json',result)
+        shared=read_shared_usage(output) if shared_usage_enabled(args) else None
+        result=shared['snapshot']['spend_summary'] if shared else menubar_report(snap,args)
+        if not shared:atom_json(output/'menubar.json',result)
         print(json.dumps(result,ensure_ascii=False,allow_nan=False))
         return
     if args.command=='forecast':

@@ -6,8 +6,8 @@ const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../agent_usage.py'), 'utf8');
 const code = source.split('</script><script>')[1].split('</script>')[0].replace(
-  '// A saved snapshot makes no polling or collection requests.',
-  'Object.assign(testApi,{render,setPeriod,selectedRange,aggregate,showTab,openSession,comparisonData});');
+  '// Dashboard initialization complete.',
+  'Object.assign(testApi,{render,setPeriod,selectedRange,aggregate,showTab,openSession,comparisonData,applyLiveSnapshot,startLiveUpdates});');
 const row = (provider, session, date, cost) => ({
   provider, session, date, cost, cost_high:cost, requests:1, unpriced:0,
   model:provider==='Claude'?'claude-sonnet-5.5':'gpt-6.1-sol', project:'web', role:'main',
@@ -27,7 +27,7 @@ const snapshot = {
     observed_dates:['2026-10-22'],tree_sessions:['Claude:events'],children:[],compactions:0}],
 };
 async function report(overrides={}, preferences={}) {
-  const nodes=new Map(), errors=[], saved=[];
+  const nodes=new Map(), errors=[], saved=[], scripts=[], lifecycle={};
   const node=id=>{
     if(!nodes.has(id)) nodes.set(id,{
       id,value:'',hidden:false,textContent:'',innerHTML:'',dataset:{},
@@ -48,10 +48,14 @@ async function report(overrides={}, preferences={}) {
     document:{
       getElementById:node,querySelector:s=>node(s),
       querySelectorAll:s=>s==='[data-tab]'?tabs:[],
-      addEventListener(){},documentElement:{dataset:{}},
+      addEventListener(name,fn){lifecycle['document:'+name]=fn;},
+      removeEventListener(name){delete lifecycle['document:'+name];},documentElement:{dataset:{}},
+      createElement:()=>({remove(){this.removed=true;}}),head:{append:tag=>scripts.push(tag)},
     },
     console:{error:(...args)=>errors.push(args.map(value=>value?.stack||String(value)).join(' '))},
-    testApi:{},Intl,Date,
+    testApi:{},Intl,Date,Blob,Response,DecompressionStream,atob,Uint8Array,
+    location:{protocol:preferences.live?'file:':'https:'},
+    setTimeout:()=>1,clearTimeout(){},addEventListener:(name,fn)=>{lifecycle[name]=fn;},
     matchMedia:()=>({matches:!!preferences.darkSystem}),
     localStorage:{
       getItem(){if(preferences.storageDenied)throw Error('Storage denied');return preferences.storedTheme;},
@@ -60,7 +64,7 @@ async function report(overrides={}, preferences={}) {
   });
   await vm.runInContext(code,context);
   assert.deepEqual(errors,[],'report initialization');
-  return {node,context,api:context.testApi,saved};
+  return {node,context,api:context.testApi,saved,scripts,lifecycle};
 }
 (async()=>{
   const unknown=await report({grok_records:[{date:'2026-10-22',reported_cost_usd:null,incomplete:true,model_calls:1}]});
@@ -101,6 +105,42 @@ async function report(overrides={}, preferences={}) {
   assert.match(r.node('events-table').innerHTML,/No recorded events/);
   assert.match(r.node('footer').textContent,/Open Dashboard in AISAD/);
   assert.match(r.node('subtitle').textContent,/UTC/);
+
+  // Exercise actual local-script callbacks, including asynchronous compressed
+  // payloads, stale generations and shutdown; no browser or listener is used.
+  const rev=n=>String(n).padStart(20,'0');
+  const live=await report({live_updates:true,sync_revision:rev(1)},{live:true});
+  assert.match(live.scripts[0].src,/^usage-live[.]js/);
+  live.api.setPeriod('today');live.node('provider').value='Claude';live.api.showTab('cache');
+  const updated={...snapshot,live_updates:true,sync_revision:rev(3),
+    generated:'2026-10-22T10:00:00Z',evidence_generated:'2026-10-22T09:00:00Z',
+    rows:rows.map(r=>({...r,cost:r.cost*2,cost_high:r.cost_high*2})),
+    request_stats:snapshot.request_stats.map(r=>({...r,cost:r.cost*2,cost_high:r.cost_high*2}))};
+  live.context.aisadLiveRevision({revision:rev(3)});
+  assert.match(live.scripts[1].src,/^usage-live-data[.]js/);
+  const {gzipSync}=require('node:zlib');
+  await live.context.aisadLiveData(rev(3),{encoding:'gzip-base64',
+    data:gzipSync(JSON.stringify(updated)).toString('base64')});
+  live.scripts[1].onload();
+  assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
+  assert.equal(live.node('provider').value,'Claude');
+  assert.equal(live.node('period').value,'today');
+  assert.equal(live.node('view-cache').hidden,false);
+  assert.match(live.node('footer').textContent,/Shared local data/);
+  assert.equal(live.api.applyLiveSnapshot({...updated,sync_revision:rev(2),rows:[]}),false);
+  await live.context.aisadLiveData(rev(4),{encoding:'gzip-base64',data:'broken'});
+  assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
+  // A prepared payload cannot be accepted before its commit marker.
+  await live.context.aisadLiveData(rev(9),{...updated,sync_revision:rev(9),rows:[]});
+  assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
+  const beforeVisible=live.scripts.length;
+  live.context.document.hidden=false;live.lifecycle['document:visibilitychange']();
+  assert.equal(live.scripts.length,beforeVisible+1);
+  const callback=live.context.aisadLiveData;
+  live.lifecycle.pagehide();
+  assert.equal(live.context.aisadLiveData,undefined);
+  await callback(rev(4),{...updated,sync_revision:rev(4),rows:[]});
+  assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
 
   // Compare real shipped JS with independently computed canonical Python windows.
   // This executes no browser and reads only the synthetic values supplied on stdin.

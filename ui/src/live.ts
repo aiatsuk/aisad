@@ -19,7 +19,7 @@ export function mergeDataset(previous:Dataset,next:Dataset):Dataset {
   return {...next,months};
 }
 /** Poll the dataset file until a fresh (non-stale) version replaces it. */
-export function watchDataset(path:string,onFresh:(dataset:Dataset)=>void,interval=60):()=>void {
+export function watchDataset(path:string,onFresh:(dataset:Dataset)=>void,interval=60,continuous=false):()=>void {
   const signature=():string=>{try{const s=statSync(path);return s.ino+':'+s.size+':'+s.mtimeMs;}catch{return '';}};
   let seen=signature(),stopped=false;
   const timer=setInterval(()=>{
@@ -27,7 +27,7 @@ export function watchDataset(path:string,onFresh:(dataset:Dataset)=>void,interva
     let next:Dataset;
     try{next=parseDataset(JSON.parse(readFileSync(path,'utf8')) as unknown);}catch{return;}
     if(next.stale)return;
-    stop();onFresh(next);
+    if(!continuous)stop();onFresh(next);
   },interval);
   timer.unref?.();
   const stop=():void=>{stopped=true;clearInterval(timer);};

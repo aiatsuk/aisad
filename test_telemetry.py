@@ -200,13 +200,20 @@ class TelemetryTests(unittest.TestCase):
                 app.atom_json(output/app.UI_CACHE,dict(key=app.ui_cache_key(args,True),dataset=old))
                 self.assertIsNone(app.terminal_ink_live(args,False))
                 app.atom_json(output/app.UI_CACHE,dict(key=app.ui_cache_key(args,False),dataset=old))
+                import threading
+                release=threading.Event()
+                def fresh(*unused,**ignored):
+                    if not release.wait(5):raise AssertionError('UI did not release the collector')
+                    return snapshot(99)
                 seen=[]
                 def ui(found,source,state,color,poll=None):
                     seen.append(json.loads(source.read_text()))
-                    worker=next(t for t in __import__('threading').enumerate() if t.name=='aisad-refresh');worker.join(5)
+                    worker=next(t for t in threading.enumerate() if t.name=='aisad-refresh')
+                    release.set();worker.join(5)
+                    self.assertFalse(worker.is_alive())
                     seen.append(json.loads(source.read_text()))
                     return dict(month='2026-10',view='weeks')
-                with patch.object(app,'make_snapshot',return_value=snapshot(99)),patch.object(app,'run_ink',side_effect=ui):
+                with patch.object(app,'make_snapshot',side_effect=fresh),patch.object(app,'run_ink',side_effect=ui):
                     result=app.terminal_ink_live(args,False)
                 self.assertTrue(seen[0]['stale']);self.assertNotIn('stale',seen[1])
                 self.assertEqual(seen[0]['months'][1]['report']['monthly_budget']['known_cost_usd'],10)
@@ -215,7 +222,7 @@ class TelemetryTests(unittest.TestCase):
                 # The fresh dataset is the next start's cache.
                 self.assertEqual(app.read_json_file(output/app.UI_CACHE)['dataset']['months'][1]['report']['monthly_budget']['known_cost_usd'],99)
                 # Quitting before the refresh ends keeps the shown numbers and does not wait.
-                import threading;gate=threading.Event()
+                gate=threading.Event()
                 def slow(*unused,**ignored):gate.wait(5);return snapshot(5)
                 with patch.object(app,'make_snapshot',side_effect=slow),patch.object(app,'run_ink',return_value=dict(month='2026-09',view='graph')):
                     early=app.terminal_ink_live(args,False)

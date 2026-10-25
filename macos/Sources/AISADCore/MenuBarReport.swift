@@ -3,6 +3,7 @@ import Foundation
 public struct MenuBarReport: Decodable, Sendable {
     public let schemaVersion: Int
     public let version: String
+    public let syncRevision: String?
     public let generated: Date
     public let timezone: String
     public let periods: [SpendPeriod]

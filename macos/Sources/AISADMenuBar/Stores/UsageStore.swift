@@ -1,6 +1,7 @@
 import AISADCore
 import AppKit
 import Observation
+import OSLog
 
 @MainActor @Observable
 final class UsageStore {
@@ -14,7 +15,9 @@ final class UsageStore {
     private(set) var budgetWasSaved = false
     let limits: ProviderLimitsStore
     private let client: CollectorClient
+    private let logger = Logger(subsystem: "com.aiatsuk.aisad.menubar", category: "usage-sync")
     private var refreshTask: Task<Void, Never>?
+    private var syncTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
 
     init(client: CollectorClient) {
@@ -36,6 +39,13 @@ final class UsageStore {
     func start() {
         limits.start()
         guard refreshTask == nil else { return }
+        syncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.readSharedReport()
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { break }
+            }
+        }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
@@ -47,6 +57,8 @@ final class UsageStore {
 
     func stop() {
         limits.stop()
+        syncTask?.cancel()
+        syncTask = nil
         refreshTask?.cancel()
         refreshTask = nil
         operationTask?.cancel()
@@ -69,9 +81,7 @@ final class UsageStore {
             do {
                 let snapshot = try await self.client.dashboard()
                 try Task.checkCancellation()
-                self.report = snapshot.report
-                self.monthlyBudget = snapshot.report.month?.budgetUsd
-                self.error = nil
+                self.apply(snapshot.report)
                 guard NSWorkspace.shared.open(snapshot.url) else {
                     throw CollectorError.failed("No browser could open the offline dashboard.")
                 }
@@ -96,9 +106,7 @@ final class UsageStore {
             monthlyBudget = try await client.budget()
             let value = try await client.report()
             try Task.checkCancellation()
-            report = value
-            monthlyBudget = value.month?.budgetUsd
-            error = nil
+            apply(value)
         } catch is CancellationError {
         } catch { self.error = error.localizedDescription }
     }
@@ -113,8 +121,7 @@ final class UsageStore {
             monthlyBudget = value
             budgetWasSaved = true
             do {
-                report = try await client.report()
-                error = nil
+                apply(try await client.report())
             } catch {
                 self.error = "Budget saved. Usage refresh failed: " + error.localizedDescription
             }
@@ -122,6 +129,25 @@ final class UsageStore {
         } catch {
             self.error = error.localizedDescription
             return false
+        }
+    }
+
+    @discardableResult
+    private func apply(_ value: MenuBarReport) -> Bool {
+        if let current = report?.syncRevision, let next = value.syncRevision, next < current { return false }
+        report = value
+        monthlyBudget = value.month?.budgetUsd
+        error = nil
+        return true
+    }
+
+    private func readSharedReport() async {
+        guard !Task.isCancelled else { return }
+        if let value = try? await client.sharedReport(after: report?.syncRevision) {
+            guard !Task.isCancelled else { return }
+            if apply(value) {
+                logger.info("Shared usage applied revision=\(value.syncRevision ?? "unknown", privacy: .public)")
+            }
         }
     }
 

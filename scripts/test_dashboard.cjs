@@ -122,8 +122,8 @@ const rows = [
       assert.equal(await page.locator('#daily rect[data-series="current"]').count(), 0);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 2);
     });
-    await check('unknown prices are excluded from cost delta and retain token comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
-      assert.equal(await delta(page, 0), '+75.0% · prev $4.00');
+    await check('unknown prices suppress cost delta and retain request comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
+      assert.equal(await delta(page, 0), 'Incomplete pricing · no delta');
       assert.equal(await page.locator('#requests-delta').textContent(), 'Requests: +150.0% · prev 2');
     });
     await check('cache TTL price ranges suppress false precision', { rows: rows.map(r => r.date === '2026-03-04' ? { ...r, cost_high: 2 } : r) }, async page => {

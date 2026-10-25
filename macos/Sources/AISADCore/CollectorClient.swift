@@ -9,6 +9,7 @@ public actor CollectorClient {
     public nonisolated let output: URL
     private let collector: URL
     private let python: URL?
+    private let shared: SharedUsageReader
 
     public init(resources: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
         collector = resources.appendingPathComponent("agent_usage.py")
@@ -16,9 +17,14 @@ public actor CollectorClient {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
         } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/aisad")
         output = root.appendingPathComponent("output", isDirectory: true)
+        shared = SharedUsageReader(output: output)
         let paths = environment["AISAD_PYTHON"].map { [$0] } ??
             ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
         python = paths.first { FileManager.default.isExecutableFile(atPath: $0) }.map(URL.init(fileURLWithPath:))
+    }
+
+    public func sharedReport(after revision: String?) async throws -> MenuBarReport? {
+        try await shared.read(after: revision)
     }
 
     public func report() async throws -> MenuBarReport {

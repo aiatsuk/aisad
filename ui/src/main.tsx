@@ -14,16 +14,16 @@ const view=(shown:Dataset)=><Dashboard dataset={shown} onRefresh={shown.refresh?
   writeFileSync(output,JSON.stringify({month:shown.months[state.index]!.month,view:state.view}),{mode:0o600});process.exitCode=code;
 }}/>;
 // A stale dataset is being recollected; the collector replaces the file when fresh numbers are ready.
-function follow():void {stop=watchDataset(source,fresh=>{current=mergeDataset(current,fresh);app.rerender(view(current));});}
+function follow():void {stop();stop=watchDataset(source,fresh=>{current=mergeDataset(current,fresh);app.rerender(view(current));},100,true);}
 /** R: ask the collector (it watches this directory) for one fresh collection. */
 function refresh():void {
   if(current.stale)return;
   try{writeFileSync(join(dirname(source),'refresh.request'),'',{mode:0o600});}catch{return;}
-  current={...current,stale:true};follow();app.rerender(view(current));
+  current={...current,stale:true};app.rerender(view(current));
 }
 // Keep the render throttle (~5 ms) below the 8 ms motion clock; equal
 // clock/throttle intervals can drop alternating ticks after timer rounding.
 const app=render(view(dataset),{exitOnCtrlC:false,patchConsole:false,alternateScreen:true,incrementalRendering:true,interactive:true,maxFps:240});
-if(dataset.stale)follow();
+follow();
 await app.waitUntilExit();
 stop();

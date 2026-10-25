@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../agent_usage.py'), 'utf8');
 const shift = source.slice(source.indexOf('const shiftDate='), source.indexOf('const shortDate='));
-const periods = source.slice(source.indexOf('function setPeriod('), source.indexOf("for(const field of ['provider','model','project'])"));
+const periods = source.slice(source.indexOf("function setPeriod("), source.indexOf("function updateSnapshotHeader("));
 const chosen = source.slice(source.indexOf('function chosen('), source.indexOf('function aggregate('));
 function dashboard(today) {
   const nodes = {};

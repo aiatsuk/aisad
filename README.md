@@ -75,7 +75,7 @@ Snapshot export runs without constructing the menu-bar scene and does not stop t
 The app refreshes local usage on launch, every five minutes while running, and when you click
 the refresh icon with its last-update age (for example, **3 min ago**).
 **Dashboard** collects current local usage before opening the offline HTML in your browser.
-The page shows its collection timestamp and stays a snapshot until you open Dashboard again. Each Dashboard open also updates menu-bar spending from that same collection. The dashboard's calendar summary shows today, this week, this month and the saved monthly limit across all Claude/Codex sessions; filters apply to the detailed views below.
+The page shows its collection timestamp. CLI and menu-bar collections publish a shared local snapshot; open CLI charts, the menu bar and a dashboard opened from its output directory follow that snapshot, normally within about a second. Each Dashboard open also updates spending from that same collection. The dashboard's calendar summary shows today, this week, this month and the saved monthly limit across all Claude/Codex sessions; filters apply to the detailed views below.
 If collection fails, the app shows an error and preserves the previous HTML.
 Today and this week sit in two compact cards. The larger monthly card contains a cumulative
 spend chart: solid blue for the current month, dashed gray for the previous calendar month,
@@ -85,6 +85,16 @@ or focus the chart and use Left/Right; Escape clears selection. The chart does n
 while previous-month points include each whole day. Numeric comparison labels still use
 the matched local-calendar windows described above. The chart and cards come from one
 collection; refreshing or opening Dashboard updates them together.
+Updates from CLI commands (including chart **R**), menu refresh and Dashboard publish the
+same unfiltered spending data. The monthly budget saved from either interface also propagates.
+CLI filters and month selection stay local to that view. Explicit alternative homes, log
+directories, timezones and price files stay isolated. Closed/one-shot terminal output and
+standalone dashboard copies remain snapshots. An already-open old version must be reopened
+once after upgrading to enable synchronization.
+The browser follows local script sidecars in the output directory; it runs no collector,
+server or listener. Session lifecycle/event evidence retains its own collection timestamp
+when a lightweight usage update arrives. Provider quota refresh schedules remain separate.
+
 Dollar reports use the bundled local Python collector and make no network requests. **Monthly budget…**
 edits the same `budget.json` as `aisad budget --set USD`, preserving forecast settings.
 There are no day/week limits. The default shared data root is `~/.local/share/aisad`;
