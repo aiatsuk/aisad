@@ -28,19 +28,19 @@ const script = source.split('</script><script>')[1].split('</script>')[0];
 new vm.Script(script);
 console.log('PASS pricing view: coverage, reason, escaping, filter reset, full script syntax');
 
-// Monetary comparisons use the known subtotal, never an invented zero.
+// Incomplete prices remain known subtotals, with monetary comparisons suppressed.
 context.usd=n=>'$'+n.toFixed(2);
 vm.runInContext(source.slice(source.indexOf('function cost('),source.indexOf('function comparisonNote(')),context);
 context.current={requests:10,unpriced:7,cost:20,cost_high:20};
 context.previous={requests:8,unpriced:3,cost:10,cost_high:10};
-assert.equal(vm.runInContext('cost(current)',context),'$20.00');
-assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'+100.0% · prev $10.00');
+assert.equal(vm.runInContext('cost(current)',context),'$20.00+');
+assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'Incomplete pricing · no delta');
 context.current.unpriced=10;
 assert.equal(vm.runInContext('cost(current)',context),'—');
 assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'No priced current-period data');
 context.current.unpriced=7;context.previous.unpriced=8;
 assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'No priced previous-period data');
-context.previous.unpriced=3;context.current.cost_high=21;
+context.current.unpriced=0;context.previous.unpriced=0;context.current.cost_high=21;
 assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'Price range · no delta');
 context.current.cost_high=20;context.previous.cost=0;context.previous.cost_high=0;
 assert.equal(vm.runInContext("usageDelta(current,previous,'cost',{})",context),'No nonzero baseline · prev $0.00');

@@ -122,8 +122,8 @@ const rows = [
       assert.equal(await page.locator('#daily rect[data-series="current"]').count(), 0);
       assert.equal(await page.locator('#daily rect[data-series="previous"]').count(), 2);
     });
-    await check('unknown prices are excluded from cost delta and retain token comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
-      assert.equal(await delta(page, 0), '+75.0% · prev $4.00');
+    await check('unknown prices suppress cost delta and retain request comparisons', { rows: rows.map(r => r.date === '2026-03-03' ? { ...r, unpriced: r.requests, cost: 0, cost_high: 0 } : r) }, async page => {
+      assert.equal(await delta(page, 0), 'Incomplete pricing · no delta');
       assert.equal(await page.locator('#requests-delta').textContent(), 'Requests: +150.0% · prev 2');
     });
     await check('cache TTL price ranges suppress false precision', { rows: rows.map(r => r.date === '2026-03-04' ? { ...r, cost_high: 2 } : r) }, async page => {
@@ -213,6 +213,16 @@ const rows = [
         assert(!/recommendations|scenario savings|review next|possible rebuilds|flagged|benchmark/i.test(await page.locator('main').innerText()));
       }
     });
+    for (const [basis, label] of [['models_dev_rates', 'models.dev rates (2026-10-22) for all dates'],
+                                  ['current_rates', 'Current rates (2026-10-22) for all dates'],
+                                  ['custom_rates', 'Custom rates']]) {
+      await check('visible snapshot time and price source: ' + basis,
+        {price_basis: basis, price_as_of: '2026-10-22'}, async page => {
+          assert.ok(await page.locator('header #subtitle').isVisible());
+          assert.match(await page.locator('#subtitle').textContent(), /Snapshot 3\/10\/2026/);
+          assert.ok((await page.locator('#money-note').textContent()).includes(label));
+        });
+    }
     assert.deepEqual(errors, []);
     assert.deepEqual(network, []);
     console.log(`${passed} dashboard regression scenarios passed; no browser errors or network requests.`);

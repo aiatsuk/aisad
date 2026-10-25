@@ -105,10 +105,12 @@ class PriceRefreshTests(unittest.TestCase):
     def test_revalidation_sends_the_stored_tag_and_keeps_the_catalog(self):
         self.refresh(etag='"one"')
         first = self.catalog()
-        error = urllib.error.HTTPError(app.MODELS_DEV_URL, 304, 'Not Modified', {}, None)
+        body = io.BytesIO(b'')
+        error = urllib.error.HTTPError(app.MODELS_DEV_URL, 304, 'Not Modified', {}, body)
         with patch('urllib.request.urlopen', side_effect=error) as opened:
             result = app.refresh_prices(self.output)
         self.assertEqual(result['status'], 'revalidated')
+        self.assertTrue(body.closed)
         self.assertEqual(self.catalog(), first)
         request = opened.call_args[0][0]
         self.assertEqual(request.get_header('If-none-match'), '"one"')

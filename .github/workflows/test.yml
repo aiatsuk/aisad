@@ -53,6 +53,7 @@ jobs:
         run: |
           python3 scripts/make_demo.py
           node scripts/test_calendar_periods.cjs
+          node scripts/test_dashboard_states.cjs
           node scripts/test_pricing_view.cjs
           node scripts/test_offline_loader.cjs
           node scripts/test_dashboard.cjs
@@ -83,5 +84,17 @@ jobs:
           python3 test/pty_motion.py
           python3 test/pty_first_frame.py
           python3 test/pty_live.py
+          python3 test/pty_shared.py
       - name: Package the optional UI with manifest checks
         run: python3 scripts/build_release.py --with-ui
+
+  macos-menubar:
+    name: Native macOS menu bar
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test native collector boundary
+        run: swift test --package-path macos
+      - name: Build local app bundle
+        run: ./script/build_and_run.sh --build-only

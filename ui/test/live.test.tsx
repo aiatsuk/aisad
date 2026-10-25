@@ -36,6 +36,19 @@ describe('stale-while-revalidate start',()=>{
     stop();
     expect(seen).toHaveLength(1);expect(seen[0]!.months[0]!.report.series[0]!.known_cost_usd).toBeCloseTo(190.7);
   });
+  test('a continuous reader accepts multiple external commits and stops cleanly',async()=>{
+    const dir=mkdtempSync(join(tmpdir(),'aisad-follow-')),path=join(dir,'data.json');
+    const write=(value:Dataset)=>{writeFileSync(path+'.tmp',JSON.stringify(value));renameSync(path+'.tmp',path);};
+    write(dataset([['2026-10',fixture()]]));
+    const seen:number[]=[];
+    const stop=watchDataset(path,d=>seen.push(d.months[0]!.report.series[0]!.known_cost_usd),5,true);
+    write(dataset([['2026-10',scaled(fixture(),2)]]));await Bun.sleep(35);
+    write(dataset([['2026-10',scaled(fixture(),3)]]));await Bun.sleep(35);
+    stop();
+    write(dataset([['2026-10',scaled(fixture(),4)]]));await Bun.sleep(35);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBeCloseTo(190.7);expect(seen[1]).toBeCloseTo(286.05);
+  });
   test('fresh data follows the new initial month until the user navigates',async()=>{
     process.env.AISAD_REDUCED_MOTION='1';
     const sep=fixture('2026-09',30),oct=fixture('2026-10');

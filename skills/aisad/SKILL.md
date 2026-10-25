@@ -132,3 +132,22 @@ python3 skills/aisad/scripts/aisad.py install --target codex
 ```
 
 `--target claude` installs for Claude Code and `--target both` installs both. Defaults honor `CODEX_HOME` and `CLAUDE_CONFIG_DIR`; `--dest` chooses a custom skills parent. The package includes the standalone collector. A raw skill checkout downloads its runtime on first use; a bundled release works offline immediately. The repository README documents offline archives, checksums and explicit version selection. Use `--allow-downgrade` only for a user-requested lower version; it never bypasses preservation of local edits.
+
+## Optional macOS menu bar
+The repository's `./script/build_and_run.sh` builds a macOS 14+ native companion.
+Today/week show USD spending; all three periods include changes against matching windows
+in the previous day/week/month. The month shows cost and progress against the shared
+`budget.json` monthly limit. Dollar reports refresh locally every five minutes while open.
+A compact Claude/Codex/Grok ring row reads actual subscription quotas about once a minute
+through existing provider logins. Hover or press a provider for all windows, percentages left,
+reset times, plan and freshness in a native popover; there is no separate Limits tab or provider
+progress bar. The outer ring shows the short-term limit (normally 5 hours), the inner ring
+the long-term limit (normally weekly); a weekly-only limit stays inside. Details use the same
+short-term-first order. Orange means below 20% remaining, red 10% or below. All windows affect
+warnings and remain in the details. Model-specific windows such as Fable never occupy a ring;
+exhaustion still warns on the provider icon. One manual Refresh updates costs and quotas while
+respecting cooldowns.
+Only those authenticated quota reads contact providers; standalone session reports remain offline.
+No login state, credentials or provider/system settings are changed.
+`menubar --offline -- --json` returns the same aggregate report without launching UI.
+See the repository README for build/run and shared output-directory details.
