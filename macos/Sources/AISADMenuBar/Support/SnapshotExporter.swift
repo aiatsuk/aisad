@@ -8,7 +8,8 @@ enum SnapshotExporter {
     private static let symbols = [
         "chart.bar.fill", "arrow.clockwise", "gearshape", "arrow.up.right.square", "arrow.up.right",
         "arrow.down.right", "minus", "exclamationmark.triangle", "clock.badge.exclamationmark",
-        "checkmark.circle", "questionmark", "clock", "exclamationmark"
+        "checkmark.circle", "questionmark", "clock", "exclamationmark",
+        "chevron.right"
     ]
 
     static func write(store: UsageStore, to directory: URL, allowEmpty: Bool = false) throws {
@@ -50,6 +51,17 @@ enum SnapshotExporter {
             let menu = MenuBarView(store: store)
             #endif
             try capture(menu, name: "menubar-" + name,
+                        scheme: scheme, appearance: appearance, directory: directory)
+            #if DEBUG
+            for kind in QuotaProvider.allCases {
+                try capture(QuotaPopover(kind: kind, store: store.limits), name: "quota-" + kind.rawValue + "-" + name,
+                            scheme: scheme, appearance: appearance, directory: directory)
+                try capture(QuotaPopover(kind: kind, store: store.limits).environment(\.snapshotQuotaHover, 0.6),
+                            name: "quota-" + kind.rawValue + "-hover-" + name,
+                            scheme: scheme, appearance: appearance, directory: directory)
+            }
+            #endif
+            try capture(AllProvidersPanel(store: store.limits), name: "all-providers-" + name,
                         scheme: scheme, appearance: appearance, directory: directory)
             for kind in QuotaProvider.allCases {
                 let provider = store.limits.providers.first { $0.id == kind.id }

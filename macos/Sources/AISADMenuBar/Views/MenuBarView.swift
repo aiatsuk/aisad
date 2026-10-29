@@ -14,46 +14,25 @@ struct MenuBarView: View {
         return ["Claude + Codex · API cost estimates", "AISAD " + version, timezone].joined(separator: "\n")
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Text("AISAD")
-                .font(.system(size: 12, weight: .semibold))
-                .help(appHelp)
-            Spacer(minLength: 8)
-            Button {
-                store.openDashboard()
-            } label: {
-                HStack(spacing: 4) {
-                    Text(store.isOpeningDashboard ? "Opening…" : "Dashboard")
-                    if store.isOpeningDashboard {
-                        ProgressView().controlSize(.mini).frame(width: 12, height: 12)
-                    } else {
-                        Image(systemName: "arrow.up.right.square")
-                    }
-                }
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(.quaternary, in: Capsule())
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(store.isBusy)
-            .help("Collect current local usage and open the offline dashboard in your browser")
-            .accessibilityLabel("Open dashboard")
-            .keyboardShortcut("o")
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            content(now: context.date)
         }
+        .font(.system(size: 12))
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.top, 11)
+        .padding(.bottom, 11)
+        .frame(width: 300)
+        .onAppear { logger.notice("Usage menu appeared") }
+        .onDisappear { logger.notice("Usage menu disappeared") }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func content(now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             header
             if let report = store.report {
                 SpendCardsView(report: report)
-                if !Calendar.current.isDateInToday(report.generated) {
-                    Label("Snapshot is from a previous day", systemImage: "clock.badge.exclamationmark")
-                        .font(.caption).foregroundStyle(.orange)
-                }
             } else if store.isRefreshing {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -62,7 +41,13 @@ struct MenuBarView: View {
             } else {
                 Text("Usage is not available yet.").foregroundStyle(.secondary)
             }
-            if let error = store.dashboardError ?? store.error {
+            ProviderTilesView(store: store.limits, now: now)
+            AllProvidersRow(store: store.limits)
+            if let report = store.report, !Calendar.current.isDateInToday(report.generated) {
+                Label("Spend snapshot is from a previous day", systemImage: "clock.badge.exclamationmark")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if let error = store.dashboardError ?? store.error ?? store.limits.error {
                 Label {
                     Text("Update failed · " + error.replacingOccurrences(of: "Error: ", with: ""))
                 } icon: {
@@ -77,36 +62,91 @@ struct MenuBarView: View {
             #if DEBUG
             if let chartPreview { MonthlySpendChartPreview(preview: chartPreview) }
             #endif
-            ProviderLimitsView(store: store.limits)
-                .padding(.horizontal, 2).padding(.vertical, 3)
-            Divider()
-            HStack(spacing: 10) {
-                RefreshUsageButton(store: store)
-                Spacer(minLength: 4)
-                SettingsLink {
-                    MenuActionLabel(title: "Budget", symbol: "gearshape")
-                }
-                .accessibilityLabel("Monthly budget")
-                .disabled(store.monthlyBudget == nil)
-                .help("Monthly budget…")
-                .simultaneousGesture(TapGesture().onEnded {
-                    NSApp.activate(ignoringOtherApps: true)
-                })
-                .keyboardShortcut(",")
-
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .font(.system(size: 10.5))
-                    .keyboardShortcut("q")
-            }
+            footer
         }
-        .font(.system(size: 12))
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
-        .frame(width: 300)
-        .onAppear { logger.notice("Usage menu appeared") }
-        .onDisappear { logger.notice("Usage menu disappeared") }
+    }
+
+    private var header: some View {
+        Text("AISAD").font(.system(size: 13, weight: .semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(appHelp)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            RefreshUsageButton(store: store)
+            Spacer(minLength: 4)
+            Button {
+                store.openDashboard()
+            } label: {
+                MenuActionLabel(title: store.isOpeningDashboard ? "Opening…" : "Dashboard",
+                                symbol: "arrow.up.right.square")
+            }
+            .disabled(store.isBusy)
+            .focusable(false)
+            .help("Collect current local usage and open the offline dashboard in your browser")
+            .accessibilityLabel("Open dashboard")
+            .keyboardShortcut("o")
+            SettingsLink {
+                MenuActionLabel(title: "Budget", symbol: "gearshape")
+            }
+            .accessibilityLabel("Monthly budget")
+            .disabled(store.monthlyBudget == nil)
+            .focusable(false)
+            .help("Monthly budget…")
+            .simultaneousGesture(TapGesture().onEnded {
+                NSApp.activate(ignoringOtherApps: true)
+            })
+            .keyboardShortcut(",")
+
+            Button("Quit") { NSApplication.shared.terminate(nil) }
+                .font(.system(size: 10.5))
+                .keyboardShortcut("q")
+                .focusable(false)
+        }
+        // The menu window gives its first borderless button key focus on open, and
+        // focusEffectDisabled does not reach AppKit buttons; shortcuts still work.
+        .focusEffectDisabled()
+        .help(appHelp)
+    }
+}
+
+/// A full-width row that opens a detail popover.
+private struct DisclosureRow<Detail: View>: View {
+    let title: String
+    let value: String
+    var valueColor: Color = .secondary
+    @ViewBuilder let detail: () -> Detail
+    @State private var presented = false
+
+    var body: some View {
+        Button { presented.toggle() } label: {
+            HStack(spacing: 6) {
+                Text(title).font(.system(size: 11.5, weight: .medium))
+                Spacer(minLength: 6)
+                Text(value).font(.system(size: 11)).monospacedDigit().foregroundStyle(valueColor).lineLimit(1)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .popover(isPresented: $presented, arrowEdge: .trailing) { detail() }
+    }
+}
+
+private struct AllProvidersRow: View {
+    let store: ProviderLimitsStore
+
+    var body: some View {
+        let connected = store.providers.filter { !$0.windows.isEmpty }.count
+        DisclosureRow(title: "All providers",
+                      value: store.providers.isEmpty ? "—" : "\(connected) of \(QuotaProvider.allCases.count) connected") {
+            AllProvidersPanel(store: store)
+        }
+        .accessibilityHint("Show every quota window and reset time")
     }
 }
 
@@ -141,6 +181,7 @@ private struct RefreshUsageButton: View {
                 .contentShape(Rectangle())
             }
             .disabled(store.isBusy || store.limits.isRefreshing)
+            .focusable(false)
             .accessibilityLabel("Refresh usage and provider limits")
             .accessibilityValue(date?.formatted() ?? "Not collected yet")
             .help("Refresh usage and provider limits. Age of the oldest displayed reading." +
