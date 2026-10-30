@@ -269,7 +269,6 @@ struct ProviderTilesView: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
         .help(kind.fullTitle + " plan limits and pace")
         .accessibilityLabel(kind.fullTitle)
         .accessibilityValue(accessibilityValue(provider))

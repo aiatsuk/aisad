@@ -96,7 +96,9 @@ struct SpendChartView: View {
                     .accessibilityLabel((point.period == .current ? "Current" : "Previous") +
                                         ", " + chart.selectionTitle(position: point.position))
                     .accessibilityValue(point.amountText)
-                if point.position == selected || point.showsMarker {
+                // Yesterday's point for this hour is off the selection line while today's stops early.
+                if (point.position == selected && point.plotX == chart.plotX(position: point.position)) ||
+                    point.showsMarker {
                     PointMark(x: .value("Position", point.plotX), y: .value("USD", point.cost))
                         .foregroundStyle(tint(point.period))
                         .symbolSize(point.position == selected ? 22 : 10)
@@ -116,7 +118,7 @@ struct SpendChartView: View {
                     .accessibilityValue(SpendPeriod.dollars(budget))
             }
             if let selected {
-                RuleMark(x: .value("Selected", Double(selected)))
+                RuleMark(x: .value("Selected", chart.plotX(position: selected)))
                     .foregroundStyle(Color.secondary.opacity(0.4))
                     .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
                     .accessibilityHidden(true)
@@ -160,8 +162,7 @@ struct SpendChartView: View {
                                 hovered = nil
                                 return
                             }
-                            let position = min(chart.positions.upperBound,
-                                               max(chart.positions.lowerBound, Int(value.rounded())))
+                            let position = chart.position(near: value)
                             if hovered != position { hovered = position }
                         case .ended: hovered = nil
                         }

@@ -307,6 +307,12 @@ class MenuBarHistoryTests(unittest.TestCase):
             self.assertEqual(sum(b['observations'] for b in buckets),period['observed_requests'])
         self.assertNotIn('PRIVATE',json.dumps(report))
 
+    def test_period_curves_end_at_the_minute_of_collection(self):
+        snapshot = self.snapshot()
+        snapshot['generated'] = '2026-10-23T12:30:00Z'
+        today = app.menubar_report(snapshot,self.args)['period_curves']['today']
+        self.assertEqual((today['elapsed'],today['elapsed_hours']),(13,12.5))
+
     def test_period_curves_count_observations_without_a_time(self):
         records = [dict(date='2026-10-23',cost=2,cost_high=2)]
         today = app.menubar_report(self.snapshot(records),self.args)['period_curves']['today']

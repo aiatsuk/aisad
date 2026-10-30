@@ -133,6 +133,31 @@ final class SpendChartTests: XCTestCase {
         XCTAssertEqual(outside.chart(.day)?.curves.first?.points.last?.plotX, 8)
     }
 
+    func testSelectionMeetsTheEndOfTodaysLine() throws {
+        let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
+        let report = try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 8, elapsedHours: 7.1), week: week)
+        let chart = try XCTUnwrap(report.chart(.day))
+        XCTAssertEqual(chart.plotX(position: 8), 7.1)
+        XCTAssertEqual(chart.plotX(position: 3), 3)
+        XCTAssertEqual(chart.selectionTitle(position: 8), "7:06")
+        XCTAssertEqual(chart.selectionTitle(position: 3), "3:00")
+        XCTAssertEqual(chart.position(near: 7.1), 8)
+        XCTAssertEqual(chart.position(near: 7.0), 7)
+        XCTAssertEqual(chart.position(near: 20), 20)
+    }
+
+    func testAbsurdCountsCostOnlyTheChartsAndNeverCrash() throws {
+        let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
+        var huge = comparison([2: 2, 5: 3], count: 24, elapsed: 8)
+        var buckets = huge["current"] as! [[String: Any]]
+        buckets[2]["observations"] = Int.max
+        buckets[5]["observations"] = Int.max
+        huge["current"] = buckets
+        XCTAssertNil(try decode(today: huge, week: week).periodCurves)
+        let untimed = comparison([2: 2, 5: 3], count: 24, elapsed: 8, untimed: Int.max)
+        XCTAssertNil(try decode(today: untimed, week: week).periodCurves)
+    }
+
     func testCurvesMustAgreeWithTheCardOnUnpricedCounts() throws {
         var today = comparison([2: 5], count: 24, elapsed: 8)
         var buckets = today["current"] as! [[String: Any]]

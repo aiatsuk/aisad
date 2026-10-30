@@ -142,7 +142,6 @@ private struct AllProvidersRow: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
         .popover(isPresented: $presented, arrowEdge: .leading) {
             AllProvidersPanel(store: store).presentationBackground(Theme.popover)
         }

@@ -89,7 +89,7 @@ public struct MonthlySpendHistory: Decodable, Sendable {
             }
             for (index, day) in month.daily.enumerated() {
                 let expected = String(month.from.prefix(8)) + String(format: "%02d", index + 1)
-                guard day.date == expected, day.observations >= 0,
+                guard day.date == expected, (0...PeriodCurves.maxObservations).contains(day.observations),
                       day.unpricedObservations >= 0, day.unpricedObservations <= day.observations else {
                     throw CollectorError.invalidReport
                 }

@@ -9,7 +9,8 @@ public struct PeriodCurves: Decodable, Sendable {
         public let costHighUsd: Double?
 
         var isValid: Bool {
-            guard observations >= 0, unpricedObservations >= 0, unpricedObservations <= observations else { return false }
+            guard (0...PeriodCurves.maxObservations).contains(observations), unpricedObservations >= 0,
+                  unpricedObservations <= observations else { return false }
             guard observations > unpricedObservations else { return costUsd == nil && costHighUsd == nil }
             guard let costUsd, let costHighUsd else { return false }
             return costUsd.isFinite && costHighUsd.isFinite && costUsd >= 0 && costHighUsd >= costUsd
@@ -25,7 +26,7 @@ public struct PeriodCurves: Decodable, Sendable {
 
         func isValid(buckets: Int) -> Bool {
             current.count == buckets && previous.count == buckets &&
-                (1...buckets).contains(elapsed) && untimedObservations >= 0 &&
+                (1...buckets).contains(elapsed) && (0...PeriodCurves.maxObservations).contains(untimedObservations) &&
                 (current + previous).allSatisfy(\.isValid) &&
                 current.dropFirst(elapsed).allSatisfy { $0.observations == 0 }
         }
@@ -46,6 +47,9 @@ public struct PeriodCurves: Decodable, Sendable {
 
     public let today: Comparison
     public let week: Comparison
+
+    /// Far above any real count, and low enough that adding them up cannot overflow.
+    static let maxObservations = 1 << 40
 
     func isValid(today todayPeriod: SpendPeriod, week weekPeriod: SpendPeriod) -> Bool {
         today.isValid(buckets: 24) && week.isValid(buckets: 7) &&
@@ -116,11 +120,30 @@ public struct SpendChart: Sendable {
         curves.first { $0.id == .current }?.points.last?.position ?? positions.lowerBound
     }
 
+    private var lastCurrentPoint: Point? { curves.first { $0.id == .current }?.points.last }
+
+    /// Where a selected position sits, so the selection line meets the curve.
+    public func plotX(position: Int) -> Double {
+        curves.first { $0.id == .current }?.points.first { $0.position == position }?.plotX ?? Double(position)
+    }
+
+    /// The position a pointer at `x` selects. The current line can stop partway
+    /// through its last hour, and the pointer must still reach that end.
+    public func position(near x: Double) -> Int {
+        let nearest = min(positions.upperBound, max(positions.lowerBound, Int(x.rounded())))
+        if let last = lastCurrentPoint, let end = last.exactX, x >= end, nearest < last.position { return last.position }
+        return nearest
+    }
+
     public func selectionTitle(position: Int) -> String {
+        if let last = lastCurrentPoint, last.position == position, let end = last.exactX {
+            let hours = Int(end)
+            return String(format: "%d:%02d", hours, min(59, Int(((end - Double(hours)) * 60).rounded())))
+        }
         switch range {
-        case .day: String(format: "%d:00", position)
-        case .week: Self.weekdays[max(0, min(6, position - 1))]
-        case .month: "Day " + String(position)
+        case .day: return String(format: "%d:00", position)
+        case .week: return Self.weekdays[max(0, min(6, position - 1))]
+        case .month: return "Day " + String(position)
         }
     }
 
