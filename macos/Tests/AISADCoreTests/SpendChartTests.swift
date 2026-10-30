@@ -47,6 +47,8 @@ final class SpendChartTests: XCTestCase {
         XCTAssertEqual(chart.curves.last?.points.last?.position, 24)
         XCTAssertEqual(chart.selectionTitle(position: 14), "14:00")
         XCTAssertEqual(chart.axisLabels.map(\.text), ["0:00", "24:00"])
+        // Ranges morph into each other only when their lines share a series name.
+        XCTAssertEqual(Set(current.points.map(\.segment)), ["current-1"])
     }
 
     func testWeekCurveRunsMondayToElapsedDayAndPreviousRunsTheWholeWeek() throws {

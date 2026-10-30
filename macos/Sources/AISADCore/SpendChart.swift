@@ -101,7 +101,7 @@ public struct SpendChart: Sendable {
     public let axisLabels: [AxisLabel]
     public let hasIncompletePrices: Bool
     public let untimedObservations: Int
-    private let range: SpendRange
+    public let range: SpendRange
 
     /// Where the current curve ends; keyboard selection starts here.
     public var latestPosition: Int {
@@ -173,8 +173,9 @@ public struct SpendChart: Sendable {
             func point(_ position: Int, _ cost: Double, _ high: Double, _ lowerBound: Bool) -> Point {
                 let text = SpendPeriod.dollars(cost) +
                     (high - cost > 0.000_001 ? "–" + SpendPeriod.dollars(high) : "") + (lowerBound ? "+" : "")
+                // Named like the first monthly segment, so switching ranges morphs one line.
                 return Point(period: period, position: position, cost: cost, amountText: text,
-                             segment: period.rawValue)
+                             segment: period.rawValue + "-1")
             }
             var total = 0.0, high = 0.0, lowerBound = false
             var points = origin ? [point(0, 0, 0, false)] : []

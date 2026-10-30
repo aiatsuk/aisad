@@ -60,6 +60,7 @@ struct SpendCardsView: View {
                     rangePicker.fixedSize()
                     Text(period.amountText).font(.system(size: 22, weight: .bold))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+                        .contentTransition(.numericText(value: period.knownCostUsd))
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 4)
@@ -67,6 +68,7 @@ struct SpendCardsView: View {
                     VStack(alignment: .trailing, spacing: 2) {
                         ForEach(Array(comparison.text.components(separatedBy: " · ").enumerated()), id: \.offset) { _, text in
                             Text(text).font(.system(size: 11)).monospacedDigit()
+                                .contentTransition(.numericText(value: comparison.absoluteUsd ?? 0))
                         }
                     }
                     .foregroundStyle(.secondary)
@@ -84,21 +86,20 @@ struct SpendCardsView: View {
                 }
             }
             .padding(.top, 4)
-            .id(range)
-            .transition(.opacity)
             Spacer(minLength: 0)
             footer(period, chart: chart)
         }
         .padding(8)
         .frame(minHeight: 171, alignment: .top)
         .modifier(CardBackground())
+        .animation(reduceMotion ? nil : Theme.motion, value: range)
     }
 
     private var rangePicker: some View {
         HStack(spacing: 2) {
             ForEach(SpendRange.allCases) { option in
                 Button {
-                    withAnimation(reduceMotion ? nil : Theme.motion) { storedRange = option.rawValue }
+                    storedRange = option.rawValue
                 } label: {
                     Text(option.title).font(.system(size: 10, weight: .medium))
                         .foregroundStyle(option == range ? .primary : .secondary)
@@ -130,16 +131,26 @@ struct SpendCardsView: View {
                             .foregroundStyle(period.warningLevel >= 3 ? Theme.red : .secondary)
                         Text("of " + budget.formatted(.currency(code: "USD")
                             .locale(Locale(identifier: "en_US")).precision(.fractionLength(0...2))))
+                        if let note = shortNote(period, chart: chart) { Text("· " + note) }
                         Spacer(minLength: 4)
                         Text(resetText(period, at: context.date))
                     }
                 }
                 .help("Monthly API-equivalent budget. Resets " +
-                      period.resetsAt.formatted(date: .abbreviated, time: .shortened))
+                      period.resetsAt.formatted(date: .abbreviated, time: .shortened) +
+                      (note(period, chart: chart).map { "\n" + $0 } ?? ""))
+            } else if let note = note(period, chart: chart) {
+                Text(note)
             }
-            if let note = note(period, chart: chart) { Text(note) }
         }
         .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+        .lineLimit(1).minimumScaleFactor(0.8)
+    }
+
+    /// Shares the budget line, so the card keeps its height across ranges.
+    private func shortNote(_ period: SpendPeriod, chart: SpendChart?) -> String? {
+        if period.unpricedRequests > 0 { return "\(period.unpricedRequests) unpriced" }
+        return chart?.hasIncompletePrices == true ? "partial prices" : nil
     }
 
     private func note(_ period: SpendPeriod, chart: SpendChart?) -> String? {
