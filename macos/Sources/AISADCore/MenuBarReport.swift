@@ -103,6 +103,12 @@ public struct SpendPeriod: Decodable, Identifiable, Sendable {
         return value + range + (isLowerBound ? "+" : "")
     }
 
+    /// One amount for tight spots; "+" stands for any cost not known exactly.
+    public var compactAmountText: String {
+        guard observedRequests > 0, hasPricedData else { return amountText }
+        return Self.dollars(knownCostUsd) + (hasRange || isLowerBound ? "+" : "")
+    }
+
     public var percentText: String {
         guard hasPricedData, let percent = usedPercent else { return "—" }
         let highPercent = budgetUsd.map { costHighUsd / $0 * 100 } ?? percent

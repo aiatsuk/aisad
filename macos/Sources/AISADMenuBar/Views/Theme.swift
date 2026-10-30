@@ -29,8 +29,6 @@ enum Theme {
 
     static let cardRadius: CGFloat = 12
     static let motion = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.25)
-    /// Quick enough to keep up with a pointer moving along a chart.
-    static let selectionMotion = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.14)
 
     private static func isDark(_ appearance: NSAppearance) -> Bool {
         appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua,

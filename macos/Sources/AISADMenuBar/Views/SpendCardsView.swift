@@ -28,7 +28,7 @@ struct SpendCardsView: View {
     private func metricCard(_ period: SpendPeriod) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(period.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-            Text(period.amountText).font(.system(size: 22, weight: .bold))
+            Text(period.compactAmountText).font(.system(size: 22, weight: .bold))
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
             ViewThatFits(in: .horizontal) {
                 Text(period.comparison?.text ?? "No comparison").fixedSize()
@@ -47,9 +47,9 @@ struct SpendCardsView: View {
         .padding(8)
         .modifier(CardBackground())
         .accessibilityElement(children: .combine)
-        .help(period.unpricedRequests > 0
+        .help((period.hasRange ? period.amountText + "\n" : "") + (period.unpricedRequests > 0
               ? "\(period.unpricedRequests) unpriced observations. Known subtotal only."
-              : "Estimated API-equivalent cost, not an invoice.")
+              : "Estimated API-equivalent cost, not an invoice."))
     }
 
     private func chartCard(_ period: SpendPeriod) -> some View {
@@ -58,9 +58,10 @@ struct SpendCardsView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     rangePicker.fixedSize()
-                    Text(period.amountText).font(.system(size: 22, weight: .bold))
+                    Text(period.compactAmountText).font(.system(size: 22, weight: .bold))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
                         .contentTransition(.numericText(value: period.knownCostUsd))
+                        .help(period.hasRange ? period.amountText : "")
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 4)
@@ -86,6 +87,9 @@ struct SpendCardsView: View {
                 }
             }
             .padding(.top, 4)
+            // Hours, weekdays and dates are different axes, so the chart is replaced, not morphed.
+            .id(range)
+            .transition(.opacity)
             Spacer(minLength: 0)
             footer(period, chart: chart)
         }
@@ -100,6 +104,9 @@ struct SpendCardsView: View {
             ForEach(SpendRange.allCases) { option in
                 Button {
                     storedRange = option.rawValue
+                    if let period = report.period(option) {
+                        AccessibilityNotification.Announcement(option.title + ": " + period.compactAmountText).post()
+                    }
                 } label: {
                     Text(option.title).font(.system(size: 10, weight: .medium))
                         .foregroundStyle(option == range ? .primary : .secondary)

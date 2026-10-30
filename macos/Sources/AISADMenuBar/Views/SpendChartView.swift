@@ -9,7 +9,6 @@ struct SpendChartView: View {
     @State private var hovered: Int?
     @State private var keyboard: Int?
     @FocusState private var focused: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     #if DEBUG
     @Environment(\.snapshotChartDay) private var snapshotDay
@@ -23,7 +22,6 @@ struct SpendChartView: View {
         #endif
     }
     private var upperBound: Double { chart.upperBound(budget: budget) }
-    private var selectionMotion: Animation? { reduceMotion ? nil : Theme.selectionMotion }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -39,24 +37,20 @@ struct SpendChartView: View {
                                 lineWidth: curve.id == .previous ? 1.5 : 2, lineCap: .round,
                                 dash: curve.id == .previous ? [3, 3] : []))
                             .frame(width: 11, height: 2)
-                            Text(curve.title)
-                            if let selected {
-                                Text(curve.detail(position: selected)).monospacedDigit()
-                                    .contentTransition(.numericText())
-                            }
+                            // While inspecting, the value replaces the name to keep the row short.
+                            Text(selected.map(curve.detail(position:)) ?? curve.title).monospacedDigit()
                         }
                         .help(curve.span ?? "")
                     }
                 }
-                .lineLimit(1).minimumScaleFactor(0.8)
+                .lineLimit(1)
                 Spacer(minLength: 4)
                 Text(selected.map(chart.selectionTitle(position:)) ?? "Cumulative")
+                    .monospacedDigit()
                     .fixedSize()
-                    .contentTransition(.numericText())
             }
             .font(.system(size: 10)).foregroundStyle(.secondary)
             .frame(height: 12)
-            .animation(selectionMotion, value: selected)
             if chart.points.isEmpty {
                 Text(chart.hasIncompletePrices ? "Prices unavailable for this range" : "No usage recorded in either range")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -64,7 +58,6 @@ struct SpendChartView: View {
             } else {
                 // The top axis label is centered on its line, so it needs the legend clear of it.
                 plot.frame(height: 68).padding(.top, 4)
-                    .animation(selectionMotion, value: selected)
                     .focusable().focusEffectDisabled().focused($focused)
                     .onTapGesture {
                         focused = true
@@ -82,7 +75,6 @@ struct SpendChartView: View {
                     .onExitCommand { hovered = nil; keyboard = nil; focused = false }
             }
         }
-        .onChange(of: chart.range) { _, _ in hovered = nil; keyboard = nil }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Cumulative API-equivalent spend")
         .accessibilityHint("Select a point with the pointer or left and right arrow keys. Escape clears the selection.")

@@ -47,8 +47,6 @@ final class SpendChartTests: XCTestCase {
         XCTAssertEqual(chart.curves.last?.points.last?.position, 24)
         XCTAssertEqual(chart.selectionTitle(position: 14), "14:00")
         XCTAssertEqual(chart.axisLabels.map(\.text), ["0:00", "24:00"])
-        // Ranges morph into each other only when their lines share a series name.
-        XCTAssertEqual(Set(current.points.map(\.segment)), ["current-1"])
     }
 
     func testWeekCurveRunsMondayToElapsedDayAndPreviousRunsTheWholeWeek() throws {
@@ -120,5 +118,12 @@ final class SpendChartTests: XCTestCase {
         let chart = try XCTUnwrap(report.chart(.day))
         XCTAssertTrue(chart.hasIncompletePrices)
         XCTAssertEqual(chart.curves.first?.points.last?.amountText, "$5.00–$7.00")
+        // The legend keeps one amount, so two curves always fit beside each other.
+        XCTAssertEqual(chart.curves.first?.detail(position: 8), "$5.00+")
+        XCTAssertEqual(chart.curves.first?.detail(position: 3), "$2.00+")
+        XCTAssertEqual(chart.curves.first?.detail(position: 9), "No data")
+        XCTAssertEqual(report.period(.day)?.amountText, "$5.00–$7.00")
+        XCTAssertEqual(report.period(.day)?.compactAmountText, "$5.00+")
+        XCTAssertEqual(report.period(.week)?.compactAmountText, "$8.00")
     }
 }

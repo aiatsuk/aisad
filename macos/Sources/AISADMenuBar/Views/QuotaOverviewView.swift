@@ -9,7 +9,6 @@ struct QuotaOverviewView: View {
     let refreshing: Bool
     let now: Date
     @State private var selection: QuotaPaceChart.Point?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if DEBUG
     @Environment(\.snapshotQuotaHover) private var snapshotHover
     #endif
@@ -97,7 +96,6 @@ struct QuotaOverviewView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(percent(shown?.remaining ?? window.remainingPercent))
                             .font(.system(size: 26, weight: .bold)).monospacedDigit()
-                            .contentTransition(.numericText(value: shown?.remaining ?? window.remainingPercent))
                         Text(window.windowName + " left").font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 8) {
@@ -111,7 +109,6 @@ struct QuotaOverviewView: View {
                         }
                     }
                     .font(.system(size: 12)).monospacedDigit().lineLimit(1)
-                    .contentTransition(.numericText())
                     Text(window.windowName + " " + window.resetText(now: now))
                         .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
                         .padding(.top, 2)
@@ -125,7 +122,6 @@ struct QuotaOverviewView: View {
                 QuotaChartLegend(tint: tint, showsProjection: pace.hasUsage)
             }
         }
-        .animation(reduceMotion ? nil : Theme.selectionMotion, value: selection)
     }
 
     private var unavailable: some View {

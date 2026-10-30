@@ -72,6 +72,7 @@ public struct SpendChart: Sendable {
         public let position: Int
         public let cost: Double
         public let amountText: String
+        public let shortText: String
         public let segment: String
         public fileprivate(set) var showsMarker = false
         public var id: String { period.rawValue + "-" + String(position) }
@@ -84,7 +85,7 @@ public struct SpendChart: Sendable {
         fileprivate let unpriced: Set<Int>
 
         public func detail(position: Int) -> String {
-            if let point = points.first(where: { $0.position == position }) { return point.amountText }
+            if let point = points.first(where: { $0.position == position }) { return point.shortText }
             return unpriced.contains(position) ? "Unpriced" : "No data"
         }
     }
@@ -101,7 +102,7 @@ public struct SpendChart: Sendable {
     public let axisLabels: [AxisLabel]
     public let hasIncompletePrices: Bool
     public let untimedObservations: Int
-    public let range: SpendRange
+    private let range: SpendRange
 
     /// Where the current curve ends; keyboard selection starts here.
     public var latestPosition: Int {
@@ -129,13 +130,19 @@ public struct SpendChart: Sendable {
 
     private static let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+    /// One amount for the legend; "+" stands for any cost not known exactly.
+    private static func shortAmount(_ cost: Double, high: Double, lowerBound: Bool) -> String {
+        SpendPeriod.dollars(cost) + (lowerBound || high - cost > 0.000_001 ? "+" : "")
+    }
+
     public init(history: MonthlySpendHistory) {
         var charted: [Curve] = []
         for curve in history.curves {
             let period: Period = curve.id == .current ? .current : .previous
             let points = curve.points.map {
-                var point = Point(period: period, position: $0.day, cost: $0.cost,
-                                  amountText: $0.amountText, segment: $0.segment)
+                var point = Point(period: period, position: $0.day, cost: $0.cost, amountText: $0.amountText,
+                                  shortText: Self.shortAmount($0.cost, high: $0.high, lowerBound: $0.isLowerBound),
+                                  segment: $0.segment)
                 point.showsMarker = $0.showsMarker
                 return point
             }
@@ -173,9 +180,9 @@ public struct SpendChart: Sendable {
             func point(_ position: Int, _ cost: Double, _ high: Double, _ lowerBound: Bool) -> Point {
                 let text = SpendPeriod.dollars(cost) +
                     (high - cost > 0.000_001 ? "–" + SpendPeriod.dollars(high) : "") + (lowerBound ? "+" : "")
-                // Named like the first monthly segment, so switching ranges morphs one line.
                 return Point(period: period, position: position, cost: cost, amountText: text,
-                             segment: period.rawValue + "-1")
+                             shortText: Self.shortAmount(cost, high: high, lowerBound: lowerBound),
+                             segment: period.rawValue)
             }
             var total = 0.0, high = 0.0, lowerBound = false
             var points = origin ? [point(0, 0, 0, false)] : []

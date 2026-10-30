@@ -54,7 +54,8 @@ enum SnapshotExporter {
                         scheme: scheme, appearance: appearance, directory: directory)
             #if DEBUG
             for range in SpendRange.allCases {
-                try capture(MenuBarView(store: store).environment(\.snapshotSpendRange, range),
+                try capture(MenuBarView(store: store).environment(\.snapshotSpendRange, range)
+                                .environment(\.snapshotChartDay, selectedDay),
                             name: "menubar-" + range.rawValue + "-" + name,
                             scheme: scheme, appearance: appearance, directory: directory)
             }
