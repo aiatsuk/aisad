@@ -277,7 +277,7 @@ class MenuBarHistoryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE',json.dumps(report))
 
     def test_period_curves_match_cards_and_stay_aggregate(self):
-        noon = app.dt.datetime(2026,10,23,12,30,tzinfo=app.dt.timezone.utc).timestamp()
+        noon = app.dt.datetime(2026,10,23,12,tzinfo=app.dt.timezone.utc).timestamp()
         records = [dict(date='2026-10-23',ts=noon,cost=2,cost_high=3,session='PRIVATE'),
                    dict(date='2026-10-23',ts=noon,cost=None,cost_high=None),
                    dict(date='2026-10-22',ts=noon-86_400,cost=7,cost_high=7),
@@ -311,6 +311,16 @@ class MenuBarHistoryTests(unittest.TestCase):
         today = app.menubar_report(self.snapshot(records),self.args)['period_curves']['today']
         self.assertEqual(today['untimed_observations'],1)
         self.assertEqual(sum(b['observations'] for b in today['current']),0)
+
+    def test_period_curves_leave_readings_after_now_off_the_time_axis(self):
+        later = app.dt.datetime(2026,10,23,15,tzinfo=app.dt.timezone.utc).timestamp()
+        records = [dict(date='2026-10-23',ts=later,cost=1,cost_high=1)]
+        report = app.menubar_report(self.snapshot(records),self.args)
+        today = report['period_curves']['today']
+        self.assertEqual(today['elapsed'],13)
+        self.assertEqual(today['untimed_observations'],1)
+        self.assertEqual(sum(b['observations'] for b in today['current']),0)
+        self.assertEqual(report['periods'][0]['observed_requests'],1)
 
     def test_short_month_leap_year_and_year_rollover(self):
         for today,previous,count in [('2027-03-31','2027-02-01',28),

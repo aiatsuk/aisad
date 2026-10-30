@@ -2290,15 +2290,17 @@ def menubar_curves(records,today,now,timezone):
             cost_high_usd=sum(r['cost_high'] for r in priced) if priced else None)
     def week(start):
         return [bucket(by_date[(start+dt.timedelta(days=index)).isoformat()]) for index in range(7)]
+    def timed(row):
+        # A clock-skewed reading stays in the card totals but cannot sit on the time axis.
+        return isinstance(row.get('ts'),(int,float)) and row['ts']<=now.timestamp()
     def hours(date):
         by_hour=collections.defaultdict(list)
-        for row in by_date[date.isoformat()]:
-            if isinstance(row.get('ts'),(int,float)):
-                by_hour[dt.datetime.fromtimestamp(row['ts'],timezone).hour].append(row)
+        for row in filter(timed,by_date[date.isoformat()]):
+            by_hour[dt.datetime.fromtimestamp(row['ts'],timezone).hour].append(row)
         return [bucket(by_hour[hour]) for hour in range(24)]
     monday=today-dt.timedelta(days=today.weekday())
     yesterday=today-dt.timedelta(days=1)
-    untimed=sum(not isinstance(r.get('ts'),(int,float)) for r in by_date[today.isoformat()])
+    untimed=sum(not timed(r) for r in by_date[today.isoformat()])
     return dict(today=dict(elapsed=now.hour+1 if now.date()==today else 24,untimed_observations=untimed,
                            current=hours(today),previous=hours(yesterday)),
                 week=dict(elapsed=today.weekday()+1,untimed_observations=0,

@@ -8,7 +8,7 @@ public struct MenuBarReport: Decodable, Sendable {
     public let timezone: String
     public let periods: [SpendPeriod]
     public let monthlyHistory: MonthlySpendHistory?
-    public let periodCurves: PeriodCurves?
+    public private(set) var periodCurves: PeriodCurves?
 
     public var month: SpendPeriod? { periods.first { $0.id == "month" } }
 
@@ -40,7 +40,7 @@ public struct MenuBarReport: Decodable, Sendable {
             }
             return date
         }
-        let report = try decoder.decode(Self.self, from: data)
+        var report = try decoder.decode(Self.self, from: data)
         guard report.schemaVersion == 1,
               report.periods.map(\.id) == ["today", "week", "month"],
               report.month?.budgetUsd != nil else {
@@ -59,8 +59,9 @@ public struct MenuBarReport: Decodable, Sendable {
         }
         if let history = report.monthlyHistory, let month = report.month,
            !history.matches(month) { throw CollectorError.invalidReport }
+        // A bad chart costs only the Day and Week charts, never the spend figures.
         if let curves = report.periodCurves, let today = report.period(.day), let week = report.period(.week),
-           !curves.isValid(today: today, week: week) { throw CollectorError.invalidReport }
+           !curves.isValid(today: today, week: week) { report.periodCurves = nil }
         return report
     }
 }

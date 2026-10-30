@@ -164,7 +164,7 @@ struct SpendCardsView: View {
         if period.unpricedRequests > 0 {
             return "\(period.unpricedRequests) unpriced · " + (period.hasPricedData ? "known subtotal" : "cost unavailable")
         }
-        if let untimed = chart?.untimedObservations, untimed > 0 { return "\(untimed) readings have no time" }
+        if let untimed = chart?.untimedObservations, untimed > 0 { return "\(untimed) readings not charted" }
         return chart?.hasIncompletePrices == true ? "Some chart prices are incomplete" : nil
     }
 

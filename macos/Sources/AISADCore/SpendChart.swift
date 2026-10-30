@@ -174,7 +174,7 @@ public struct SpendChart: Sendable {
     private init(range: SpendRange, comparison: PeriodCurves.Comparison, titles: (String, String),
                  origin: Bool, domain: ClosedRange<Double>, labels: [AxisLabel]) {
         func curve(_ period: Period, _ title: String, _ buckets: [PeriodCurves.Bucket], elapsed: Int) -> Curve {
-            guard buckets.contains(where: { $0.observations > 0 }) else {
+            guard buckets.contains(where: { $0.observations > $0.unpricedObservations }) else {
                 return Curve(id: period, title: title, span: nil, points: [], unpriced: [])
             }
             func point(_ position: Int, _ cost: Double, _ high: Double, _ lowerBound: Bool) -> Point {

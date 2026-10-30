@@ -68,26 +68,42 @@ final class SpendChartTests: XCTestCase {
 
     func testChartMustMatchItsCardUnlessObservationsHaveNoTime() throws {
         let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
-        XCTAssertThrowsError(try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 8), week: week,
-                                        todayCost: 6))
+        XCTAssertNil(try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 8), week: week,
+                                todayCost: 6).periodCurves)
         let untimed = comparison([2: 2], count: 24, elapsed: 8, untimed: 1)
         XCTAssertEqual(try decode(today: untimed, week: week).periodCurves?.today.untimedObservations, 1)
-        XCTAssertThrowsError(try decode(today: comparison([2: 2], count: 24, elapsed: 8, untimed: 2), week: week))
+        XCTAssertNil(try decode(today: comparison([2: 2], count: 24, elapsed: 8, untimed: 2), week: week).periodCurves)
     }
 
-    func testMalformedCurvesAreRejected() {
+    func testMalformedCurvesCostOnlyTheChartsNotTheReport() throws {
         let today = comparison([2: 2, 5: 3], count: 24, elapsed: 8)
         let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
-        XCTAssertThrowsError(try decode(today: comparison([2: 2, 5: 3], count: 23, elapsed: 8), week: week))
-        XCTAssertThrowsError(try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 0), week: week))
-        XCTAssertThrowsError(try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 25), week: week))
-        // A future bucket with spend means the chart ran ahead of its collection.
-        XCTAssertThrowsError(try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 3), week: week))
         var broken = today
         var buckets = today["current"] as! [[String: Any]]
         buckets[2]["cost_high_usd"] = 1.0
         broken["current"] = buckets
-        XCTAssertThrowsError(try decode(today: broken, week: week))
+        for bad in [comparison([2: 2, 5: 3], count: 23, elapsed: 8),
+                    comparison([2: 2, 5: 3], count: 24, elapsed: 0),
+                    comparison([2: 2, 5: 3], count: 24, elapsed: 25),
+                    // A future bucket with spend means the chart ran ahead of its collection.
+                    comparison([2: 2, 5: 3], count: 24, elapsed: 3),
+                    broken] {
+            let report = try decode(today: bad, week: week)
+            XCTAssertNil(report.periodCurves)
+            XCTAssertEqual(report.period(.day)?.amountText, "$5.00")
+            XCTAssertNil(report.chart(.day))
+        }
+    }
+
+    func testRangeWithOnlyUnpricedUsageDrawsNoLine() throws {
+        var today = comparison([:], count: 24, elapsed: 8)
+        var buckets = today["current"] as! [[String: Any]]
+        buckets[3] = bucket(nil, observations: 2, unpriced: 2)
+        today["current"] = buckets
+        let report = try decode(today: today, week: comparison([0: 3, 2: 5], count: 7, elapsed: 3), todayCost: 0)
+        let chart = try XCTUnwrap(report.chart(.day))
+        XCTAssertTrue(chart.points.isEmpty)
+        XCTAssertTrue(chart.hasIncompletePrices)
     }
 
     func testOlderCollectorLeavesDayAndWeekChartsEmpty() throws {

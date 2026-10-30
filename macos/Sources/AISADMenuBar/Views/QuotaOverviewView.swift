@@ -36,6 +36,9 @@ struct QuotaOverviewView: View {
             header
             if let window, let pace {
                 chartHero(window: window, pace: pace)
+            } else if let window {
+                // No reset or duration means no pace, but the reading itself still counts.
+                QuotaWindowRow(window: window, now: now, fresh: fresh)
             } else {
                 unavailable
             }
