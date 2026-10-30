@@ -9,9 +9,12 @@ public struct MenuBarReport: Decodable, Sendable {
     public let periods: [SpendPeriod]
     public private(set) var monthlyHistory: MonthlySpendHistory?
     public private(set) var periodCurves: PeriodCurves?
+    /// Hourly spend by provider ID, for the quota forecast.
+    public let usageHours: [String: SpendHours]?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, version, syncRevision, generated, timezone, periods, monthlyHistory, periodCurves
+        case usageHours
     }
 
     public init(from decoder: Decoder) throws {
@@ -26,6 +29,7 @@ public struct MenuBarReport: Decodable, Sendable {
         // this build cannot read costs only that chart, never the spend figures.
         monthlyHistory = try? values.decodeIfPresent(MonthlySpendHistory.self, forKey: .monthlyHistory)
         periodCurves = try? values.decodeIfPresent(PeriodCurves.self, forKey: .periodCurves)
+        usageHours = try? values.decodeIfPresent([String: SpendHours].self, forKey: .usageHours)
     }
 
     public var month: SpendPeriod? { periods.first { $0.id == "month" } }

@@ -5,6 +5,7 @@ import SwiftUI
 struct QuotaOverviewView: View {
     let kind: QuotaProvider
     let provider: ProviderQuota?
+    let spend: SpendHours?
     let history: QuotaHistory
     let refreshing: Bool
     let now: Date
@@ -29,6 +30,13 @@ struct QuotaOverviewView: View {
         let latest = QuotaPaceChart.Point(at: min(provider.fetchedAt, now), remaining: window.remainingPercent)
         if result.last?.at != latest.at { result.append(latest) }
         return result
+    }
+
+    /// Stale readings get no forecast: they say nothing about where usage is heading.
+    private var forecast: QuotaForecast? {
+        guard let pace, fresh else { return nil }
+        return QuotaForecast(pace: pace, readings: points.map { .init(at: $0.at, remaining: $0.remaining) },
+                             spend: spend)
     }
 
     var body: some View {
@@ -108,7 +116,8 @@ struct QuotaOverviewView: View {
                             Text(shownPace?.text ?? "").foregroundStyle(.secondary)
                         } else {
                             Text(pace.paceText).fontWeight(.medium).foregroundStyle(paceColor(pace))
-                            Text(projectionText(pace, short: true)).foregroundStyle(.primary)
+                            Text(outlookText(pace)).foregroundStyle(.primary)
+                                .help(forecast.map(basisHelp) ?? "")
                         }
                     }
                     .font(.system(size: 12)).monospacedDigit().lineLimit(1)
@@ -120,9 +129,12 @@ struct QuotaOverviewView: View {
                 Spacer(minLength: 0)
             }
             VStack(alignment: .leading, spacing: 4) {
-                QuotaPaceChart(pace: pace, points: points, tint: tint, now: now, selection: $selection)
+                QuotaPaceChart(pace: pace, points: points, forecast: forecast, summary: outlookText(pace),
+                               tint: tint, now: now, selection: $selection)
                     .frame(height: 90)
-                QuotaChartLegend(tint: tint, showsProjection: pace.hasUsage)
+                QuotaChartLegend(tint: tint, projectionTitle: forecast.map {
+                    $0.basis == .usualRhythm ? "Forecast" : "Recent pace"
+                })
             }
         }
     }
@@ -141,11 +153,29 @@ struct QuotaOverviewView: View {
         pace.standing == .behind && fresh ? QuotaPalette.low : .secondary
     }
 
-    private func projectionText(_ pace: QuotaPace, short: Bool) -> String {
-        guard pace.hasUsage else { return "Resets " + dayAndHour(pace.end) }
-        guard let runsOut = pace.runsOut else { return "Lasts until reset " + dayAndHour(pace.end) }
-        return "Runs out " + (short ? dayAndHour(runsOut)
-                                    : runsOut.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
+    /// Words, not a precise date: the forecast is a best estimate, and its range
+    /// is not yet proven reliable enough on real history to show as numbers.
+    private func outlookText(_ pace: QuotaPace) -> String {
+        guard let forecast else { return pace.hasUsage ? "" : "Resets " + dayAndHour(pace.end) }
+        if let runsOut = forecast.runsOut { return "May run out " + whenText(runsOut, pace: pace) }
+        let left = ((forecast.remainingAtReset ?? 0) / 5).rounded() * 5
+        return left < 5 ? "Nearly used by reset" : "About \(Int(left))% left at reset"
+    }
+
+    private func whenText(_ date: Date, pace: QuotaPace) -> String {
+        if pace.end.timeIntervalSince(pace.start) < 2 * 86_400 {
+            let halfHour: TimeInterval = 1_800
+            let rounded = Date(timeIntervalSince1970: (date.timeIntervalSince1970 / halfHour).rounded() * halfHour)
+            return "around " + rounded.formatted(.dateTime.hour().minute())
+        }
+        return Calendar.current.isDate(date, inSameDayAs: now) ? "today"
+            : date.formatted(.dateTime.weekday(.abbreviated))
+    }
+
+    private func basisHelp(_ forecast: QuotaForecast) -> String {
+        forecast.basis == .usualRhythm
+            ? "Estimate from this window so far and your usual week."
+            : "Estimate from your recent pace, with older usage counting less."
     }
 
     /// "Fri 4 PM"; a 24-hour clock needs its minutes, or the hour reads as a date.
@@ -226,6 +256,7 @@ struct QuotaWindowRow: View {
 /// One tile per provider; a click opens that provider's pace popover.
 struct ProviderTilesView: View {
     let store: ProviderLimitsStore
+    let usageHours: [String: SpendHours]?
     let now: Date
     @State private var presented: QuotaProvider?
 
@@ -274,7 +305,8 @@ struct ProviderTilesView: View {
         .accessibilityValue(accessibilityValue(provider))
         .accessibilityHint("Show plan limits and pace")
         .popover(isPresented: isPresented(kind), arrowEdge: .bottom) {
-            QuotaPopover(kind: kind, store: store).presentationBackground(Theme.popover)
+            QuotaPopover(kind: kind, store: store, spend: usageHours?[kind.id])
+                .presentationBackground(Theme.popover)
         }
     }
 }
@@ -283,10 +315,11 @@ struct ProviderTilesView: View {
 struct QuotaPopover: View {
     let kind: QuotaProvider
     let store: ProviderLimitsStore
+    let spend: SpendHours?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            QuotaOverviewView(kind: kind, provider: store.providers.first { $0.id == kind.id },
+            QuotaOverviewView(kind: kind, provider: store.providers.first { $0.id == kind.id }, spend: spend,
                               history: store.history, refreshing: store.isRefreshing, now: context.date)
         }
         .font(.system(size: 12))

@@ -3,7 +3,7 @@ import Charts
 import SwiftUI
 
 /// Remaining allowance across the current window: readings this app fetched,
-/// the even-pace line and a linear projection to exhaustion or reset.
+/// the even-pace line and the forecast to exhaustion or reset.
 struct QuotaPaceChart: View {
     struct Point: Identifiable, Equatable {
         let at: Date
@@ -13,6 +13,8 @@ struct QuotaPaceChart: View {
 
     let pace: QuotaPace
     let points: [Point]
+    let forecast: QuotaForecast?
+    let summary: String
     let tint: Color
     let now: Date
     @Binding var selection: Point?
@@ -20,13 +22,6 @@ struct QuotaPaceChart: View {
     private static let dotted = StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 2.9])
 
     private var current: Point { points.last ?? Point(at: now, remaining: pace.remainingPercent) }
-
-    private var projectionEnd: Point {
-        if let runsOut = pace.runsOut { return Point(at: runsOut, remaining: 0) }
-        let elapsed = now.timeIntervalSince(pace.start)
-        let rate = elapsed > 0 ? (100 - pace.remainingPercent) / elapsed : 0
-        return Point(at: pace.end, remaining: max(0, pace.remainingPercent - rate * pace.end.timeIntervalSince(now)))
-    }
 
     /// Equal columns across the whole window: a day each for multi-day windows,
     /// else quarters. Grid lines sit on the boundaries, the reset included, so
@@ -71,17 +66,15 @@ struct QuotaPaceChart: View {
                     .interpolationMethod(.linear)
             }
 
-            if pace.hasUsage {
-                LineMark(x: .value("Time", current.at), y: .value("Remaining", current.remaining),
-                         series: .value("Series", "projection"))
-                    .foregroundStyle(tint)
-                    .lineStyle(Self.dotted)
-                LineMark(x: .value("Time", projectionEnd.at), y: .value("Remaining", projectionEnd.remaining),
-                         series: .value("Series", "projection"))
-                    .foregroundStyle(tint)
-                    .lineStyle(Self.dotted)
-                if pace.runsOut != nil {
-                    PointMark(x: .value("Time", projectionEnd.at), y: .value("Remaining", 0))
+            if let forecast {
+                ForEach(forecast.path, id: \.at) { point in
+                    LineMark(x: .value("Time", point.at), y: .value("Remaining", point.remaining),
+                             series: .value("Series", "projection"))
+                        .foregroundStyle(tint)
+                        .lineStyle(Self.dotted)
+                }
+                if let runsOut = forecast.runsOut {
+                    PointMark(x: .value("Time", runsOut), y: .value("Remaining", 0))
                         .symbol { Circle().strokeBorder(tint, lineWidth: 1.2).frame(width: 6, height: 6) }
                 }
             }
@@ -135,19 +128,19 @@ struct QuotaPaceChart: View {
             }
         }
         .accessibilityLabel("Remaining allowance this window")
-        .accessibilityValue(pace.paceText)
+        .accessibilityValue(summary.isEmpty ? pace.paceText : pace.paceText + ". " + summary)
     }
 }
 
 struct QuotaChartLegend: View {
     let tint: Color
-    let showsProjection: Bool
+    let projectionTitle: String?
 
     var body: some View {
         HStack(spacing: 16) {
             item("You") { Capsule().fill(tint).frame(width: 10, height: 2) }
             item("Even pace") { dots(Theme.tertiary) }
-            if showsProjection { item("Projection") { dots(tint) } }
+            if let projectionTitle { item(projectionTitle) { dots(tint) } }
             Spacer(minLength: 0)
         }
         .font(.system(size: 10))

@@ -60,9 +60,9 @@ enum SnapshotExporter {
                             scheme: scheme, appearance: appearance, directory: directory)
             }
             for kind in QuotaProvider.allCases {
-                try capture(QuotaPopover(kind: kind, store: store.limits), name: "quota-" + kind.rawValue + "-" + name,
+                try capture(QuotaPopover(kind: kind, store: store.limits, spend: store.report?.usageHours?[kind.id]), name: "quota-" + kind.rawValue + "-" + name,
                             scheme: scheme, appearance: appearance, directory: directory)
-                try capture(QuotaPopover(kind: kind, store: store.limits).environment(\.snapshotQuotaHover, 0.6),
+                try capture(QuotaPopover(kind: kind, store: store.limits, spend: store.report?.usageHours?[kind.id]).environment(\.snapshotQuotaHover, 0.6),
                             name: "quota-" + kind.rawValue + "-hover-" + name,
                             scheme: scheme, appearance: appearance, directory: directory)
             }

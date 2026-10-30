@@ -19,26 +19,23 @@ final class QuotaPaceTests: XCTestCase {
                       retryAfterSeconds: 300, windows: windows)
     }
 
-    func testFasterThanEvenSpendIsBehindPaceAndRunsOutBeforeReset() throws {
+    func testFasterThanEvenSpendIsBehindPace() throws {
         // Two of seven days gone, half the allowance used: even spend leaves 71.4%.
         let pace = try XCTUnwrap(QuotaPace(window: weekly(used: 50, elapsedDays: 2), at: now))
         XCTAssertEqual(pace.evenRemainingPercent, 100 * 5 / 7, accuracy: 0.001)
         XCTAssertEqual(pace.standing, .behind)
         XCTAssertEqual(pace.paceText, "21% behind pace")
-        XCTAssertEqual(try XCTUnwrap(pace.runsOut).timeIntervalSince(pace.start), 4 * day, accuracy: 1)
     }
 
     func testSlowerSpendLastsUntilReset() throws {
         let pace = try XCTUnwrap(QuotaPace(window: weekly(used: 10, elapsedDays: 3.5), at: now))
         XCTAssertEqual(pace.standing, .ahead)
         XCTAssertEqual(pace.paceText, "40% ahead of pace")
-        XCTAssertNil(pace.runsOut)
     }
 
     func testUnusedWindowHasNoProjectionAndEvenSpendIsOnPace() throws {
         let fresh = try XCTUnwrap(QuotaPace(window: weekly(used: 0, elapsedDays: 0.001), at: now))
         XCTAssertFalse(fresh.hasUsage)
-        XCTAssertNil(fresh.runsOut)
         XCTAssertEqual(fresh.standing, .onPace)
         let even = try XCTUnwrap(QuotaPace(window: weekly(used: 50, elapsedDays: 3.5), at: now))
         XCTAssertEqual(even.paceText, "On pace")
@@ -84,7 +81,7 @@ final class QuotaPaceTests: XCTestCase {
         history.record(provider([weekly(used: 4, elapsedDays: 2)], fetchedAt: now.addingTimeInterval(-7_200)),
                        at: now.addingTimeInterval(-3_000))
         history.record(provider([window]), at: now)
-        XCTAssertEqual(history.samples.count, 2, "the reading whose window reset over a day ago is pruned")
+        XCTAssertEqual(history.samples.count, 3, "finished windows stay for later forecast checks")
         XCTAssertEqual(history.series(provider: "codex", window: window, at: now).map(\.remainingPercent), [95, 90])
 
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
@@ -92,5 +89,47 @@ final class QuotaPaceTests: XCTestCase {
         try history.write(to: url)
         XCTAssertEqual(QuotaHistory.load(from: url), history)
         XCTAssertEqual(QuotaHistory.load(from: url.appendingPathExtension("missing")), QuotaHistory())
+    }
+
+    private func sample(_ window: String, at: TimeInterval, used: Double = 1, resets: TimeInterval) -> QuotaHistory.Sample {
+        .init(provider: "codex", window: window, at: now.addingTimeInterval(at), usedPercent: used,
+              resetsAt: now.addingTimeInterval(resets))
+    }
+
+    func testHistoryDropsWindowsOlderThanItsRetention() {
+        let weeks = 7 * day
+        var history = QuotaHistory(samples: [sample("week", at: -10 * weeks, resets: -9 * weeks),
+                                             sample("week", at: -7 * weeks, resets: -6 * weeks)])
+        history.record(provider([weekly(used: 5, elapsedDays: 2)]), at: now)
+        XCTAssertEqual(history.samples.map(\.at), [now.addingTimeInterval(-7 * weeks), now])
+    }
+
+    func testFinishedWindowsThinToHourlyWhileTheCurrentOneStaysFull() {
+        let finished = (0..<12).map { sample("week", at: -2 * day + Double($0) * 600, resets: -day) }
+        let current = (0..<12).map { sample("week", at: -1_000 * 60 + Double($0) * 600, resets: 3 * day) }
+        var history = QuotaHistory(samples: finished + current)
+        history.record(provider([weekly(used: 50, elapsedDays: 2)]), at: now)
+        let old = history.samples.filter { $0.at < now.addingTimeInterval(-1.5 * day) }
+        XCTAssertEqual(old.count, 3)
+        XCTAssertEqual(old.last?.at, finished.last?.at, "how the window ended always stays")
+        XCTAssertEqual(history.samples.filter { $0.at >= now.addingTimeInterval(-1_000 * 60) }.count, 13)
+    }
+
+    func testThinningKeepsTheFinalReadingAndTheNextWindowsFirst() {
+        var history = QuotaHistory(samples: [sample("week", at: -300 * 60, used: 70, resets: -2 * 3_600),
+                                             sample("week", at: -170 * 60, used: 80, resets: -2 * 3_600),
+                                             sample("week", at: -125 * 60, used: 99, resets: -2 * 3_600),
+                                             sample("week", at: -115 * 60, used: 1, resets: 6 * day)])
+        history.record(provider([weekly(used: 50, elapsedDays: 2)]), at: now)
+        XCTAssertEqual(history.samples.map(\.usedPercent), [70, 80, 99, 1, 50])
+    }
+
+    func testBusyWindowCannotPushOutAnotherWindow() {
+        let busy = (0..<(QuotaHistory.limit + 50)).map { sample("session", at: -3_000_000 + Double($0), resets: day) }
+        var history = QuotaHistory(samples: [sample("week", at: -4_000_000, resets: 3 * day)] + busy)
+        history.record(provider([weekly(used: 50, elapsedDays: 2)]), at: now)
+        XCTAssertEqual(history.samples.filter { $0.window == "session" }.count, QuotaHistory.limit)
+        XCTAssertEqual(history.samples.filter { $0.window == "week" }.count, 2)
+        XCTAssertEqual(history.samples.last?.at, now)
     }
 }
