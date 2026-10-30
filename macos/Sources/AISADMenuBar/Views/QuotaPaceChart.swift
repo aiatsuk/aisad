@@ -17,6 +17,8 @@ struct QuotaPaceChart: View {
     let now: Date
     @Binding var selection: Point?
 
+    private static let dotted = StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 2.9])
+
     private var current: Point { points.last ?? Point(at: now, remaining: pace.remainingPercent) }
 
     private var projectionEnd: Point {
@@ -51,36 +53,36 @@ struct QuotaPaceChart: View {
     var body: some View {
         Chart {
             LineMark(x: .value("Time", pace.start), y: .value("Remaining", 100), series: .value("Series", "even"))
-                .foregroundStyle(Color.secondary.opacity(0.7))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [1.5, 3]))
+                .foregroundStyle(Theme.tertiary)
+                .lineStyle(Self.dotted)
             LineMark(x: .value("Time", pace.end), y: .value("Remaining", 0), series: .value("Series", "even"))
-                .foregroundStyle(Color.secondary.opacity(0.7))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [1.5, 3]))
+                .foregroundStyle(Theme.tertiary)
+                .lineStyle(Self.dotted)
 
             ForEach(points) { point in
                 AreaMark(x: .value("Time", point.at), y: .value("Remaining", point.remaining))
-                    .foregroundStyle(LinearGradient(colors: [tint.opacity(0.16), tint.opacity(0)],
+                    .foregroundStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
                                                     startPoint: .top, endPoint: .bottom))
                     .interpolationMethod(.linear)
                 LineMark(x: .value("Time", point.at), y: .value("Remaining", point.remaining),
                          series: .value("Series", "you"))
                     .foregroundStyle(tint)
-                    .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
                     .interpolationMethod(.linear)
             }
 
             if pace.hasUsage {
                 LineMark(x: .value("Time", current.at), y: .value("Remaining", current.remaining),
                          series: .value("Series", "projection"))
-                    .foregroundStyle(tint.opacity(0.8))
-                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [1.5, 3]))
+                    .foregroundStyle(tint)
+                    .lineStyle(Self.dotted)
                 LineMark(x: .value("Time", projectionEnd.at), y: .value("Remaining", projectionEnd.remaining),
                          series: .value("Series", "projection"))
-                    .foregroundStyle(tint.opacity(0.8))
-                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [1.5, 3]))
+                    .foregroundStyle(tint)
+                    .lineStyle(Self.dotted)
                 if pace.runsOut != nil {
                     PointMark(x: .value("Time", projectionEnd.at), y: .value("Remaining", 0))
-                        .symbol { Circle().strokeBorder(tint, lineWidth: 1.5).frame(width: 7, height: 7) }
+                        .symbol { Circle().strokeBorder(tint, lineWidth: 1.2).frame(width: 6, height: 6) }
                 }
             }
 
@@ -104,7 +106,7 @@ struct QuotaPaceChart: View {
         .chartYAxis(.hidden)
         .chartXAxis {
             AxisMarks(values: boundaries) { _ in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.primary.opacity(0.08))
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Theme.hairline)
             }
             AxisMarks(values: labelCenters) { value in
                 AxisValueLabel(anchor: .top) {
@@ -112,7 +114,7 @@ struct QuotaPaceChart: View {
                         // A day column is named after the day most of it covers.
                         Text(columns.step >= 86_400 ? date : date.addingTimeInterval(-columns.step / 2),
                              format: labelFormat)
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -142,18 +144,18 @@ struct QuotaChartLegend: View {
     let showsProjection: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 16) {
             item("You") { Capsule().fill(tint).frame(width: 10, height: 2) }
-            item("Even pace") { dots(.secondary) }
+            item("Even pace") { dots(Theme.tertiary) }
             if showsProjection { item("Projection") { dots(tint) } }
             Spacer(minLength: 0)
         }
-        .font(.system(size: 9.5))
+        .font(.system(size: 10))
         .foregroundStyle(.secondary)
     }
 
     private func dots(_ color: Color) -> some View {
-        HStack(spacing: 1.5) { ForEach(0..<3, id: \.self) { _ in Circle().fill(color).frame(width: 1.8, height: 1.8) } }
+        HStack(spacing: 1.5) { ForEach(0..<3, id: \.self) { _ in Circle().fill(color).frame(width: 1.5, height: 1.5) } }
             .frame(width: 10)
     }
 

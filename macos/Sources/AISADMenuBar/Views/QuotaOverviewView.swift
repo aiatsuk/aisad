@@ -32,7 +32,7 @@ struct QuotaOverviewView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             if let window, let pace {
                 chartHero(window: window, pace: pace)
@@ -41,10 +41,10 @@ struct QuotaOverviewView: View {
             }
             let others = provider?.secondaryWindows(at: now) ?? []
             if !others.isEmpty {
-                VStack(spacing: 7) {
+                VStack(spacing: 8) {
                     ForEach(others) { QuotaWindowRow(window: $0, now: now, fresh: fresh) }
                 }
-                .padding(.top, 2)
+                .padding(.top, 8)
             }
         }
         .onChange(of: kind) { _, _ in selection = nil }
@@ -58,14 +58,10 @@ struct QuotaOverviewView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 7) {
-            ProviderMark(kind: kind, size: 15)
+        HStack(spacing: 8) {
+            ProviderMark(kind: kind)
             Text(kind.fullTitle).font(.system(size: 13, weight: .semibold))
-            if let plan = provider?.plan, !plan.isEmpty {
-                Text(plan).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1.5)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            }
+            if let plan = provider?.plan, !plan.isEmpty { PlanBadge(plan: plan) }
             Spacer(minLength: 6)
             Text(updatedText).font(.system(size: 10)).foregroundStyle(lastKnown ? .orange : .secondary)
                 .lineLimit(1)
@@ -76,7 +72,7 @@ struct QuotaOverviewView: View {
         if refreshing, provider == nil { return "Reading…" }
         guard let provider, !provider.windows.isEmpty else { return "" }
         if lastKnown { return "Last reading " + relative(provider.fetchedAt) }
-        return now.timeIntervalSince(provider.fetchedAt) < 60 ? "Updated just now" : "Updated " + relative(provider.fetchedAt)
+        return "Updated " + relative(provider.fetchedAt)
     }
 
     /// Windows kept from an earlier reading after a failed or rate-limited refresh.
@@ -86,7 +82,7 @@ struct QuotaOverviewView: View {
     }
 
     private func relative(_ date: Date) -> String {
-        date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        date.ageText(now: now)
     }
 
     private func chartHero(window: QuotaWindow, pace: QuotaPace) -> some View {
@@ -94,35 +90,38 @@ struct QuotaOverviewView: View {
         let shownPace = shown.map { point in
             QuotaPace.at(point.at, remaining: point.remaining, start: pace.start, end: pace.end)
         }
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(percent(shown?.remaining ?? window.remainingPercent))
                             .font(.system(size: 26, weight: .bold)).monospacedDigit()
                             .contentTransition(.numericText())
-                        Text(window.windowName + " left").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(window.windowName + " left").font(.system(size: 13)).foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         if let shown {
-                            Text(shown.at.formatted(.dateTime.weekday(.abbreviated).hour()))
+                            Text(dayAndHour(shown.at))
                                 .foregroundStyle(.primary)
                             Text(shownPace?.text ?? "").foregroundStyle(.secondary)
                         } else {
-                            Text(pace.paceText).foregroundStyle(paceColor(pace))
-                            Text(projectionText(pace, short: true)).foregroundStyle(.secondary)
+                            Text(pace.paceText).fontWeight(.medium).foregroundStyle(paceColor(pace))
+                            Text(projectionText(pace, short: true)).foregroundStyle(.primary)
                         }
                     }
-                    .font(.system(size: 10.5)).monospacedDigit().lineLimit(1)
+                    .font(.system(size: 12)).monospacedDigit().lineLimit(1)
                     Text(window.windowName + " " + window.resetText(now: now))
-                        .font(.system(size: 9.5)).monospacedDigit().foregroundStyle(.secondary)
+                        .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
+                        .padding(.top, 2)
                         .help("Resets " + pace.end.formatted(date: .abbreviated, time: .shortened))
                 }
                 Spacer(minLength: 0)
             }
-            QuotaPaceChart(pace: pace, points: points, tint: tint, now: now, selection: $selection)
-                .frame(height: 92)
-            QuotaChartLegend(tint: tint, showsProjection: pace.hasUsage)
+            VStack(alignment: .leading, spacing: 4) {
+                QuotaPaceChart(pace: pace, points: points, tint: tint, now: now, selection: $selection)
+                    .frame(height: 90)
+                QuotaChartLegend(tint: tint, showsProjection: pace.hasUsage)
+            }
         }
     }
 
@@ -141,12 +140,17 @@ struct QuotaOverviewView: View {
     }
 
     private func projectionText(_ pace: QuotaPace, short: Bool) -> String {
-        guard pace.hasUsage else { return "Resets " + pace.end.formatted(.dateTime.weekday(.abbreviated).hour()) }
-        guard let runsOut = pace.runsOut else {
-            return "Lasts until reset " + pace.end.formatted(.dateTime.weekday(.abbreviated).hour())
-        }
-        return "Runs out " + runsOut.formatted(short ? .dateTime.weekday(.abbreviated).hour()
-                                                     : .dateTime.weekday(.abbreviated).hour().minute())
+        guard pace.hasUsage else { return "Resets " + dayAndHour(pace.end) }
+        guard let runsOut = pace.runsOut else { return "Lasts until reset " + dayAndHour(pace.end) }
+        return "Runs out " + (short ? dayAndHour(runsOut)
+                                    : runsOut.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
+    }
+
+    /// "Fri 4 PM"; a 24-hour clock needs its minutes, or the hour reads as a date.
+    private func dayAndHour(_ date: Date) -> String {
+        let twelveHour = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current)?.contains("a") ?? false
+        return date.formatted(twelveHour ? .dateTime.weekday(.abbreviated).hour()
+                                         : .dateTime.weekday(.abbreviated).hour().minute())
     }
 
     private func percent(_ value: Double) -> String {
@@ -166,6 +170,19 @@ private extension QuotaPace {
     }
 }
 
+/// The small plan name beside a provider.
+struct PlanBadge: View {
+    let plan: String
+
+    var body: some View {
+        Text(plan).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .background(Theme.line, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// One quota window: its name and reset, a bar and what remains.
 struct QuotaWindowRow: View {
     let window: QuotaWindow
     let now: Date
@@ -174,28 +191,33 @@ struct QuotaWindowRow: View {
     var body: some View {
         let expired = window.isExpired(at: now)
         let tint = QuotaPalette.tint(remaining: expired ? nil : window.remainingPercent, fresh: fresh)
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text(window.shortTitle).font(.system(size: 11)).lineLimit(1)
-                Spacer(minLength: 6)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.1))
-                    if !expired {
-                        Capsule().fill(tint).frame(width: 56 * window.remainingPercent / 100)
-                    }
-                }
-                .frame(width: 56, height: 3)
-                Text(expired ? "reset" : window.remainingPercent.rounded(.down)
-                        .formatted(.number.precision(.fractionLength(0))) + "%")
-                    .font(.system(size: 11)).monospacedDigit()
-                    .frame(width: 36, alignment: .trailing)
+        let reset = expired ? "Reset passed · refresh needed" : window.resetText(now: now)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(window.shortTitle).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                Text(reset).font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
             }
-            Text(expired ? "Reset passed · refresh needed" : window.resetText(now: now))
-                .font(.system(size: 9.5)).monospacedDigit().foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.line)
+                if !expired {
+                    Capsule().fill(tint).frame(width: 56 * window.remainingPercent / 100)
+                }
+            }
+            .frame(width: 56, height: 3)
+            .frame(height: 15)
+            Text(expired ? "reset" : window.remainingPercent.rounded(.down)
+                    .formatted(.number.precision(.fractionLength(0))) + "%")
+                .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                .lineLimit(1)
+                .frame(width: 40, alignment: .trailing)
         }
         .help(window.title + (window.resetsAt.map {
             " · resets " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(window.title)
+        .accessibilityValue((fresh ? "" : "Last known: ") + (expired ? "Reset has passed" : window.remainingText) +
+                            ", " + reset)
     }
 }
 
@@ -206,7 +228,7 @@ struct ProviderTilesView: View {
     @State private var presented: QuotaProvider?
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             ForEach(QuotaProvider.allCases) { kind in
                 tile(kind, provider: store.providers.first { $0.id == kind.id })
             }
@@ -225,13 +247,13 @@ struct ProviderTilesView: View {
                 ProviderRings(kind: kind, provider: provider, refreshing: store.isRefreshing, now: now)
                 Text(window.map { $0.remainingPercent.rounded(.down)
                         .formatted(.number.precision(.fractionLength(0))) + "%" } ?? "—")
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular)).monospacedDigit()
+                    .font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(window == nil ? .secondary : .primary)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
-            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .padding(.vertical, 4)
+            .background(isSelected ? Theme.hairline : .clear, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -240,7 +262,7 @@ struct ProviderTilesView: View {
         .accessibilityValue(window.map { $0.remainingText } ?? "Limits unavailable")
         .accessibilityHint("Show the weekly pace chart")
         .popover(isPresented: isPresented(kind), arrowEdge: .bottom) {
-            QuotaPopover(kind: kind, store: store)
+            QuotaPopover(kind: kind, store: store).presentationBackground(Theme.popover)
         }
     }
 }
@@ -256,7 +278,7 @@ struct QuotaPopover: View {
                               history: store.history, refreshing: store.isRefreshing, now: context.date)
         }
         .font(.system(size: 12))
-        .padding(14)
+        .padding(16)
         .frame(width: 300)
     }
 }

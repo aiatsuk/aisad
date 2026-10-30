@@ -7,33 +7,29 @@ struct AllProvidersPanel: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 ForEach(QuotaProvider.allCases) { kind in
                     section(kind, provider: store.providers.first { $0.id == kind.id }, now: context.date)
-                    if kind != QuotaProvider.allCases.last { Divider() }
+                    if kind != QuotaProvider.allCases.last { Theme.line.frame(height: 1) }
                 }
             }
-            .padding(14)
+            .padding(16)
             .frame(width: 296)
         }
     }
 
     private func section(_ kind: QuotaProvider, provider: ProviderQuota?, now: Date) -> some View {
         let fresh = provider?.status == "available"
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 7) {
-                ProviderMark(kind: kind, size: 14)
-                Text(provider?.name ?? kind.fullTitle).font(.system(size: 12.5, weight: .semibold))
-                if let plan = provider?.plan, !plan.isEmpty {
-                    Text(plan).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-                }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProviderMark(kind: kind)
+                Text(provider?.name ?? kind.fullTitle).font(.system(size: 13, weight: .semibold))
+                if let plan = provider?.plan, !plan.isEmpty { PlanBadge(plan: plan) }
                 Spacer(minLength: 6)
                 if store.isRefreshing, provider == nil {
                     ProgressView().controlSize(.mini)
                 } else if let provider {
-                    Text(freshness(provider))
+                    Text(freshness(provider, now: now))
                         .font(.system(size: 10))
                         .foregroundStyle(!provider.windows.isEmpty && !fresh ? .orange : .secondary)
                         .help(provider.source + "\n" + provider.fetchedAt.formatted())
@@ -41,7 +37,7 @@ struct AllProvidersPanel: View {
             }
             if let provider, !provider.windows.isEmpty {
                 ForEach(provider.displayWindows) { window in
-                    row(window, fresh: fresh, now: now)
+                    QuotaWindowRow(window: window, now: now, fresh: fresh)
                 }
             } else {
                 Text(provider?.message ?? store.error ??
@@ -56,37 +52,9 @@ struct AllProvidersPanel: View {
         }
     }
 
-    private func row(_ window: QuotaWindow, fresh: Bool, now: Date) -> some View {
-        let expired = window.isExpired(at: now)
-        let tint = QuotaPalette.tint(remaining: expired ? nil : window.remainingPercent, fresh: fresh)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text(window.shortTitle).font(.system(size: 11)).lineLimit(1)
-                Spacer(minLength: 6)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.1))
-                    if !expired {
-                        Capsule().fill(tint).frame(width: 56 * window.remainingPercent / 100)
-                    }
-                }
-                .frame(width: 56, height: 3)
-                Text(expired ? "reset" : window.remainingPercent.rounded(.down)
-                        .formatted(.number.precision(.fractionLength(0))) + "%")
-                    .font(.system(size: 11, weight: .medium)).monospacedDigit()
-                    .frame(width: 36, alignment: .trailing)
-            }
-            Text(expired ? "Reset passed · refresh needed" : window.resetText(now: now))
-                .font(.system(size: 9.5)).monospacedDigit().foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(window.title)
-        .accessibilityValue((fresh ? "" : "Last known: ") + (expired ? "Reset has passed" : window.remainingText) +
-                            ", " + window.resetText(now: now))
-    }
-
-    private func freshness(_ provider: ProviderQuota) -> String {
+    private func freshness(_ provider: ProviderQuota, now: Date) -> String {
         guard !provider.windows.isEmpty else { return "Not connected" }
-        let age = provider.fetchedAt.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        let age = provider.fetchedAt.ageText(now: now)
         return (provider.status == "available" ? "Updated " : "Last reading ") + age
     }
 }

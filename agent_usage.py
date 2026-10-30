@@ -2278,6 +2278,33 @@ def menubar_history(snapshot):
                 current=month(first),previous=month(previous_last.replace(day=1)))
 
 
+def menubar_curves(records,today,now,timezone):
+    """Hourly and daily aggregates for the Day and Week charts; costs and counts only."""
+    by_date=collections.defaultdict(list)
+    for row in records:
+        if row['date']<=today.isoformat():by_date[row['date']].append(row)
+    def bucket(rows):
+        priced=[r for r in rows if r['cost'] is not None]
+        return dict(observations=len(rows),unpriced_observations=len(rows)-len(priced),
+            cost_usd=sum(r['cost'] for r in priced) if priced else None,
+            cost_high_usd=sum(r['cost_high'] for r in priced) if priced else None)
+    def week(start):
+        return [bucket(by_date[(start+dt.timedelta(days=index)).isoformat()]) for index in range(7)]
+    def hours(date):
+        by_hour=collections.defaultdict(list)
+        for row in by_date[date.isoformat()]:
+            if isinstance(row.get('ts'),(int,float)):
+                by_hour[dt.datetime.fromtimestamp(row['ts'],timezone).hour].append(row)
+        return [bucket(by_hour[hour]) for hour in range(24)]
+    monday=today-dt.timedelta(days=today.weekday())
+    yesterday=today-dt.timedelta(days=1)
+    untimed=sum(not isinstance(r.get('ts'),(int,float)) for r in by_date[today.isoformat()])
+    return dict(today=dict(elapsed=now.hour+1 if now.date()==today else 24,untimed_observations=untimed,
+                           current=hours(today),previous=hours(yesterday)),
+                week=dict(elapsed=today.weekday()+1,untimed_observations=0,
+                          current=week(monday),previous=week(monday-dt.timedelta(days=7))))
+
+
 def menubar_report(snapshot,args):
     """Aggregate-only native companion report, independent of display filters."""
     today=dt.date.fromisoformat(snapshot['as_of_date'])
@@ -2304,6 +2331,7 @@ def menubar_report(snapshot,args):
     return dict(schema_version=1,version=VERSION,generated=snapshot['generated'],timezone=snapshot['timezone'],
                 sync_revision=snapshot.get('sync_revision'),
                 as_of_date=today.isoformat(),periods=periods,monthly_history=menubar_history(snapshot),
+                period_curves=menubar_curves(records,today,now,timezone),
                 scope='All discovered Claude/Codex sessions and agent pools; calendar week starts Monday.',
                 note='Estimated API-equivalent cost, not subscription usage or invoices.')
 

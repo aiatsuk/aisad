@@ -20,16 +20,16 @@ struct MenuBarView: View {
         }
         .font(.system(size: 12))
         .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.top, 11)
-        .padding(.bottom, 11)
+        .padding(.horizontal, 8)
+        .padding(.top, 16)
         .frame(width: 300)
+        .background(Theme.panel)
         .onAppear { logger.notice("Usage menu appeared") }
         .onDisappear { logger.notice("Usage menu disappeared") }
     }
 
     private func content(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             if let report = store.report {
                 SpendCardsView(report: report)
@@ -73,9 +73,24 @@ struct MenuBarView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             RefreshUsageButton(store: store)
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
+            actions
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .frame(height: 32)
+        .padding(.top, -8)
+        // The menu window gives its first borderless button key focus on open, and
+        // focusEffectDisabled does not reach AppKit buttons; shortcuts still work.
+        .focusEffectDisabled()
+        .help(appHelp)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 16) {
             Button {
                 store.openDashboard()
             } label: {
@@ -100,51 +115,36 @@ struct MenuBarView: View {
             .keyboardShortcut(",")
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
-                .font(.system(size: 10.5))
+                .fixedSize()
                 .keyboardShortcut("q")
                 .focusable(false)
+                .padding(.trailing, 2)
         }
-        // The menu window gives its first borderless button key focus on open, and
-        // focusEffectDisabled does not reach AppKit buttons; shortcuts still work.
-        .focusEffectDisabled()
-        .help(appHelp)
     }
 }
 
-/// A full-width row that opens a detail popover.
-private struct DisclosureRow<Detail: View>: View {
-    let title: String
-    let value: String
-    var valueColor: Color = .secondary
-    @ViewBuilder let detail: () -> Detail
+/// A full-width row that opens every provider's windows beside the menu.
+private struct AllProvidersRow: View {
+    let store: ProviderLimitsStore
     @State private var presented = false
 
     var body: some View {
         Button { presented.toggle() } label: {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: 11.5, weight: .medium))
-                Spacer(minLength: 6)
-                Text(value).font(.system(size: 11)).monospacedDigit().foregroundStyle(valueColor).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            HStack {
+                Text("All providers").font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.tertiary)
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(Theme.rowFill, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .popover(isPresented: $presented, arrowEdge: .trailing) { detail() }
-    }
-}
-
-private struct AllProvidersRow: View {
-    let store: ProviderLimitsStore
-
-    var body: some View {
-        let connected = store.providers.filter { !$0.windows.isEmpty }.count
-        DisclosureRow(title: "All providers",
-                      value: store.providers.isEmpty ? "—" : "\(connected) of \(QuotaProvider.allCases.count) connected") {
-            AllProvidersPanel(store: store)
+        .popover(isPresented: $presented, arrowEdge: .leading) {
+            AllProvidersPanel(store: store).presentationBackground(Theme.popover)
         }
         .accessibilityHint("Show every quota window and reset time")
     }
@@ -166,15 +166,14 @@ private struct RefreshUsageButton: View {
             } label: {
                 HStack(spacing: 4) {
                     if refreshing, hasData {
-                        ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                        ProgressView().controlSize(.mini).frame(width: 12, height: 12)
                     } else {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .regular))
-                            .frame(width: 14, height: 14)
+                            .font(.system(size: 11, weight: .regular))
+                            .frame(width: 12, height: 12)
                     }
-                    Text(refreshing && hasData ? "Updating…" :
-                         date?.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)) ?? "Refresh")
-                        .font(.system(size: 10.5))
+                    Text(refreshing && hasData ? "Updating…" : date?.ageText(now: context.date) ?? "Refresh")
+                        .fixedSize()
                 }
                 .foregroundStyle(stale ? .orange : .secondary)
                 .frame(minHeight: 20)
@@ -199,9 +198,9 @@ private struct MenuActionLabel: View {
         HStack(spacing: 4) {
             Image(systemName: symbol)
                 .symbolRenderingMode(.monochrome)
-                .font(.system(size: 12, weight: .regular))
-                .frame(width: 14, height: 14)
-            Text(title).font(.system(size: 10.5))
+                .font(.system(size: 11, weight: .regular))
+                .frame(width: 12, height: 12)
+            Text(title).fixedSize()
         }
         .frame(minHeight: 20)
         .contentShape(Rectangle())

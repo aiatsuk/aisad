@@ -150,10 +150,6 @@ public struct MonthlySpendHistory: Decodable, Sendable {
     }
 
     public func upperBound(budget: Double?) -> Double {
-        let peak = max(points.map(\.cost).max() ?? 0, budget ?? 0)
-        guard peak > 0 else { return 1 }
-        let padded = peak * 1.08
-        let power = pow(10, floor(log10(padded)))
-        return ceil(padded / power / 0.25) * power * 0.25
+        SpendChart.niceUpperBound(peak: max(points.map(\.cost).max() ?? 0, budget ?? 0))
     }
 }

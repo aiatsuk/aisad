@@ -8,8 +8,22 @@ public struct MenuBarReport: Decodable, Sendable {
     public let timezone: String
     public let periods: [SpendPeriod]
     public let monthlyHistory: MonthlySpendHistory?
+    public let periodCurves: PeriodCurves?
 
     public var month: SpendPeriod? { periods.first { $0.id == "month" } }
+
+    public func period(_ range: SpendRange) -> SpendPeriod? {
+        periods.first { $0.id == range.periodID }
+    }
+
+    /// Nil until a collector new enough to send this range's aggregates has run.
+    public func chart(_ range: SpendRange) -> SpendChart? {
+        switch range {
+        case .day: periodCurves.map { SpendChart(today: $0.today) }
+        case .week: periodCurves.map { SpendChart(week: $0.week) }
+        case .month: monthlyHistory.map(SpendChart.init(history:))
+        }
+    }
 
     public static func decode(_ data: Data) throws -> MenuBarReport {
         let decoder = JSONDecoder()
@@ -45,6 +59,8 @@ public struct MenuBarReport: Decodable, Sendable {
         }
         if let history = report.monthlyHistory, let month = report.month,
            !history.matches(month) { throw CollectorError.invalidReport }
+        if let curves = report.periodCurves, let today = report.period(.day), let week = report.period(.week),
+           !curves.isValid(today: today, week: week) { throw CollectorError.invalidReport }
         return report
     }
 }

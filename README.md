@@ -41,7 +41,9 @@ To update a clone, run `git pull --ff-only`. Existing snapshots remain usable of
 ## macOS menu bar (optional)
 
 On macOS 14 or later, the native companion shows **Today** and **This week** in USD,
-plus **This month** with its saved monthly budget, percentage and progress bar.
+plus a **Day / Week / Month** chart of cumulative spend against the previous period.
+Day uses hourly totals, Week uses daily totals, and Month adds your saved monthly budget.
+The app remembers the chosen range. These charts use aggregate costs only.
 The menu bar label contains only two compact monochrome lines, for example
 **claude: 0%** and **codex: 75%**, showing aggregate weekly allowance remaining.
 Each line uses natural text spacing. A dash means unavailable/expired; a tilde marks a

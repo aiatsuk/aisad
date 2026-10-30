@@ -3,23 +3,33 @@ import SwiftUI
 
 struct SpendCardsView: View {
     let report: MenuBarReport
+    @AppStorage("spendChartRange") private var storedRange = SpendRange.week.rawValue
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if DEBUG
+    @Environment(\.snapshotSpendRange) private var snapshotRange
+    #endif
+
+    private var range: SpendRange {
+        #if DEBUG
+        if let snapshotRange { return snapshotRange }
+        #endif
+        return SpendRange(rawValue: storedRange) ?? .week
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 6) {
-                ForEach(report.periods.filter { $0.id != "month" }) { period in
-                    metricCard(period).frame(width: 137)
-                }
+            HStack(alignment: .top, spacing: 8) {
+                ForEach(report.periods.filter { $0.id != "month" }) { metricCard($0) }
             }
-            if let month = report.month { monthlyCard(month) }
+            if let period = report.period(range) { chartCard(period) }
         }
     }
 
     private func metricCard(_ period: SpendPeriod) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(period.title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-            Text(period.amountText).font(.system(size: 20, weight: .semibold))
-                .monospacedDigit().lineLimit(2).minimumScaleFactor(0.7)
+            Text(period.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Text(period.amountText).font(.system(size: 22, weight: .bold))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
             ViewThatFits(in: .horizontal) {
                 Text(period.comparison?.text ?? "No comparison").fixedSize()
                 VStack(alignment: .leading, spacing: 1) {
@@ -29,78 +39,115 @@ struct SpendCardsView: View {
                     }
                 }
             }
-            .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
-            .frame(minHeight: 11, alignment: .topLeading)
+            .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
+            .frame(minHeight: 13, alignment: .topLeading)
             .help(period.comparison?.detail ?? "")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-        }
+        .padding(8)
+        .modifier(CardBackground())
         .accessibilityElement(children: .combine)
         .help(period.unpricedRequests > 0
               ? "\(period.unpricedRequests) unpriced observations. Known subtotal only."
               : "Estimated API-equivalent cost, not an invoice.")
     }
 
-    private func monthlyCard(_ month: SpendPeriod) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(month.title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                    Text(month.amountText).font(.system(size: 22, weight: .semibold))
-                        .monospacedDigit().lineLimit(2).minimumScaleFactor(0.65)
+    private func chartCard(_ period: SpendPeriod) -> some View {
+        let chart = report.chart(range)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    rangePicker.fixedSize()
+                    Text(period.amountText).font(.system(size: 22, weight: .bold))
+                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
                 }
+                .layoutPriority(1)
                 Spacer(minLength: 4)
-                if let comparison = month.comparison {
-                    VStack(alignment: .trailing, spacing: 3) {
+                if let comparison = period.comparison {
+                    VStack(alignment: .trailing, spacing: 2) {
                         ForEach(Array(comparison.text.components(separatedBy: " · ").enumerated()), id: \.offset) { _, text in
-                            Text(text).font(.system(size: 9.5)).monospacedDigit()
+                            Text(text).font(.system(size: 11)).monospacedDigit()
                         }
                     }
                     .foregroundStyle(.secondary)
                     .help(comparison.detail)
-                    .accessibilityLabel("Change from previous month: " + comparison.text)
+                    .accessibilityLabel("Change from previous period: " + comparison.text)
                 }
             }
-            if let history = report.monthlyHistory {
-                MonthlySpendChartView(history: history, budget: month.budgetUsd)
-            } else {
-                Text("Chart available after refresh")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 65)
+            Group {
+                if let chart {
+                    SpendChartView(chart: chart, budget: range == .month ? period.budgetUsd : nil)
+                } else {
+                    Text("Chart available after refresh")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 86)
+                }
             }
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                HStack(spacing: 3) {
-                    Text(month.percentText)
-                        .foregroundStyle(month.warningLevel >= 3 ? .red : .secondary)
-                    if let budget = month.budgetUsd {
+            .padding(.top, 4)
+            .id(range)
+            .transition(.opacity)
+            Spacer(minLength: 0)
+            footer(period, chart: chart)
+        }
+        .padding(8)
+        .frame(minHeight: 171, alignment: .top)
+        .modifier(CardBackground())
+    }
+
+    private var rangePicker: some View {
+        HStack(spacing: 2) {
+            ForEach(SpendRange.allCases) { option in
+                Button {
+                    withAnimation(reduceMotion ? nil : Theme.motion) { storedRange = option.rawValue }
+                } label: {
+                    Text(option.title).font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(option == range ? .primary : .secondary)
+                        .frame(height: 14)
+                        .padding(.horizontal, 8)
+                        .background(option == range ? Theme.segmentThumb : .clear,
+                                    in: RoundedRectangle(cornerRadius: 4))
+                        .contentShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .accessibilityAddTraits(option == range ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(Theme.segmentTrack, in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Period")
+    }
+
+    @ViewBuilder
+    private func footer(_ period: SpendPeriod, chart: SpendChart?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let budget = period.budgetUsd {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    HStack(spacing: 4) {
+                        Text(period.percentText)
+                            .fontWeight(period.warningLevel >= 3 ? .semibold : .regular)
+                            .foregroundStyle(period.warningLevel >= 3 ? Theme.red : .secondary)
                         Text("of " + budget.formatted(.currency(code: "USD")
                             .locale(Locale(identifier: "en_US")).precision(.fractionLength(0...2))))
+                        Spacer(minLength: 4)
+                        Text(resetText(period, at: context.date))
                     }
-                    Spacer(minLength: 4)
-                    Text(resetText(month, at: context.date))
                 }
-                .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                .help("Monthly API-equivalent budget. Resets " +
+                      period.resetsAt.formatted(date: .abbreviated, time: .shortened))
             }
-            .help("Monthly API-equivalent budget. Resets " +
-                  month.resetsAt.formatted(date: .abbreviated, time: .shortened))
-            if month.unpricedRequests > 0 {
-                Text("\(month.unpricedRequests) unpriced · " +
-                     (month.hasPricedData ? "known subtotal" : "cost unavailable"))
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
-            } else if report.monthlyHistory?.hasIncompletePrices == true {
-                Text("Some chart prices are incomplete")
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
-            }
+            if let note = note(period, chart: chart) { Text(note) }
         }
-        .padding(10)
-        .background(Color.blue.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+    }
+
+    private func note(_ period: SpendPeriod, chart: SpendChart?) -> String? {
+        if period.unpricedRequests > 0 {
+            return "\(period.unpricedRequests) unpriced · " + (period.hasPricedData ? "known subtotal" : "cost unavailable")
         }
+        if let untimed = chart?.untimedObservations, untimed > 0 { return "\(untimed) readings have no time" }
+        return chart?.hasIncompletePrices == true ? "Some chart prices are incomplete" : nil
     }
 
     private func resetText(_ period: SpendPeriod, at now: Date) -> String {

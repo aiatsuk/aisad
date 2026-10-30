@@ -41,6 +41,9 @@ private struct SnapshotQuotaHoverKey: EnvironmentKey {
 private struct SnapshotChartDayKey: EnvironmentKey {
     static let defaultValue: Int? = nil
 }
+private struct SnapshotSpendRangeKey: EnvironmentKey {
+    static let defaultValue: SpendRange? = nil
+}
 extension EnvironmentValues {
     /// Fraction of the pace-chart history to show as hovered in offscreen snapshots.
     var snapshotQuotaHover: Double? {
@@ -50,6 +53,11 @@ extension EnvironmentValues {
     var snapshotChartDay: Int? {
         get { self[SnapshotChartDayKey.self] }
         set { self[SnapshotChartDayKey.self] = newValue }
+    }
+    /// The spend chart range to draw in offscreen snapshots.
+    var snapshotSpendRange: SpendRange? {
+        get { self[SnapshotSpendRangeKey.self] }
+        set { self[SnapshotSpendRangeKey.self] = newValue }
     }
 }
 #endif

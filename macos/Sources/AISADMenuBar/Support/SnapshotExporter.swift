@@ -53,6 +53,11 @@ enum SnapshotExporter {
             try capture(menu, name: "menubar-" + name,
                         scheme: scheme, appearance: appearance, directory: directory)
             #if DEBUG
+            for range in SpendRange.allCases {
+                try capture(MenuBarView(store: store).environment(\.snapshotSpendRange, range),
+                            name: "menubar-" + range.rawValue + "-" + name,
+                            scheme: scheme, appearance: appearance, directory: directory)
+            }
             for kind in QuotaProvider.allCases {
                 try capture(QuotaPopover(kind: kind, store: store.limits), name: "quota-" + kind.rawValue + "-" + name,
                             scheme: scheme, appearance: appearance, directory: directory)
