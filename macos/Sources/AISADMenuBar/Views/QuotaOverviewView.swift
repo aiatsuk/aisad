@@ -237,12 +237,23 @@ struct ProviderTilesView: View {
         }
     }
 
+    private func accessibilityValue(_ provider: ProviderQuota?) -> String {
+        guard let provider else { return store.isRefreshing ? "Reading limits" : "Limits unavailable" }
+        let values = provider.displayWindows.map {
+            $0.title + ": " + ($0.isExpired(at: now) ? "reset passed; refresh needed" : $0.remainingText)
+        }
+        let state = QuotaIndicatorState(provider: provider, refreshing: store.isRefreshing, now: now)
+        let prefix = state.phase == .stale ? "Last known reading. " : ""
+        return prefix + (values.isEmpty ? (provider.message ?? "Limits unavailable") : values.joined(separator: "; "))
+    }
+
     private func isPresented(_ kind: QuotaProvider) -> Binding<Bool> {
         Binding(get: { presented == kind }, set: { if !$0, presented == kind { presented = nil } })
     }
 
     private func tile(_ kind: QuotaProvider, provider: ProviderQuota?) -> some View {
-        let window = provider?.primaryWindow(at: now)
+        // The number is always the weekly allowance; rings carry any other window.
+        let window = provider?.activeWeeklyWindow(at: now)
         let isSelected = presented == kind
         return Button { presented = isSelected ? nil : kind } label: {
             VStack(spacing: 4) {
@@ -261,8 +272,8 @@ struct ProviderTilesView: View {
         .focusEffectDisabled()
         .help(kind.fullTitle + " plan limits and pace")
         .accessibilityLabel(kind.fullTitle)
-        .accessibilityValue(window.map { $0.remainingText } ?? "Limits unavailable")
-        .accessibilityHint("Show the weekly pace chart")
+        .accessibilityValue(accessibilityValue(provider))
+        .accessibilityHint("Show plan limits and pace")
         .popover(isPresented: isPresented(kind), arrowEdge: .bottom) {
             QuotaPopover(kind: kind, store: store).presentationBackground(Theme.popover)
         }

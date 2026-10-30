@@ -81,7 +81,7 @@ struct SpendCardsView: View {
                 if let chart {
                     SpendChartView(chart: chart, budget: range == .month ? period.budgetUsd : nil)
                 } else {
-                    Text("Chart available after refresh")
+                    Text("Chart unavailable")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 86)
                 }
@@ -117,7 +117,6 @@ struct SpendCardsView: View {
                         .contentShape(RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
                 .accessibilityAddTraits(option == range ? .isSelected : [])
             }
         }
@@ -161,11 +160,13 @@ struct SpendCardsView: View {
     }
 
     private func note(_ period: SpendPeriod, chart: SpendChart?) -> String? {
+        let untimed = chart?.untimedObservations ?? 0
+        let notCharted = untimed > 0 ? "\(untimed) not charted" : nil
         if period.unpricedRequests > 0 {
-            return "\(period.unpricedRequests) unpriced · " + (period.hasPricedData ? "known subtotal" : "cost unavailable")
+            return ["\(period.unpricedRequests) unpriced", notCharted ?? (period.hasPricedData ? "known subtotal" : "cost unavailable")]
+                .joined(separator: " · ")
         }
-        if let untimed = chart?.untimedObservations, untimed > 0 { return "\(untimed) readings not charted" }
-        return chart?.hasIncompletePrices == true ? "Some chart prices are incomplete" : nil
+        return notCharted ?? (chart?.hasIncompletePrices == true ? "Some chart prices are incomplete" : nil)
     }
 
     private func resetText(_ period: SpendPeriod, at now: Date) -> String {

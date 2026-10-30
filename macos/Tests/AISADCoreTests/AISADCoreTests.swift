@@ -159,6 +159,10 @@ final class CollectorIntegrationTests: XCTestCase {
         XCTAssertEqual(before.month?.amountText, "No data")
         XCTAssertNotNil(before.monthlyHistory)
         XCTAssertTrue(before.monthlyHistory?.points.isEmpty == true)
+        // Real collector output must reach every chart, not just the cards.
+        XCTAssertNotNil(before.chart(.day))
+        XCTAssertNotNil(before.chart(.week))
+        XCTAssertNotNil(before.chart(.month))
         try await client.saveBudget(4567)
         let after = try await client.report()
         XCTAssertEqual(after.month?.budgetUsd, 4567)

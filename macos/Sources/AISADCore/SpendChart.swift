@@ -17,6 +17,8 @@ public struct PeriodCurves: Decodable, Sendable {
     }
     public struct Comparison: Decodable, Sendable {
         public let elapsed: Int
+        /// Hours since midnight at collection, so today's line ends now, not at the next hour.
+        public let elapsedHours: Double?
         public let untimedObservations: Int
         public let current: [Bucket]
         public let previous: [Bucket]
@@ -34,9 +36,11 @@ public struct PeriodCurves: Decodable, Sendable {
             let cost = current.reduce(0) { $0 + ($1.costUsd ?? 0) }
             let high = current.reduce(0) { $0 + ($1.costHighUsd ?? 0) }
             let observations = current.reduce(0) { $0 + $1.observations }
+            let unpriced = current.reduce(0) { $0 + $1.unpricedObservations }
             guard observations + untimedObservations == period.observedRequests else { return false }
             return untimedObservations > 0 ||
-                (abs(cost - period.knownCostUsd) < 0.000_001 && abs(high - period.costHighUsd) < 0.000_001)
+                (abs(cost - period.knownCostUsd) < 0.000_001 && abs(high - period.costHighUsd) < 0.000_001 &&
+                 unpriced == period.unpricedRequests)
         }
     }
 
@@ -75,6 +79,9 @@ public struct SpendChart: Sendable {
         public let shortText: String
         public let segment: String
         public fileprivate(set) var showsMarker = false
+        fileprivate var exactX: Double?
+        /// Where to draw it: the position, except for a reading taken partway through its hour.
+        public var plotX: Double { exactX ?? Double(position) }
         public var id: String { period.rawValue + "-" + String(position) }
     }
     public struct Curve: Identifiable, Sendable {
@@ -173,9 +180,13 @@ public struct SpendChart: Sendable {
 
     private init(range: SpendRange, comparison: PeriodCurves.Comparison, titles: (String, String),
                  origin: Bool, domain: ClosedRange<Double>, labels: [AxisLabel]) {
-        func curve(_ period: Period, _ title: String, _ buckets: [PeriodCurves.Bucket], elapsed: Int) -> Curve {
+        func curve(_ period: Period, _ title: String, _ buckets: [PeriodCurves.Bucket], elapsed: Int,
+                   endsAt: Double? = nil) -> Curve {
+            let unpriced = Set(buckets.indices.filter {
+                buckets[$0].observations > 0 && buckets[$0].costUsd == nil
+            }.map { $0 + 1 })
             guard buckets.contains(where: { $0.observations > $0.unpricedObservations }) else {
-                return Curve(id: period, title: title, span: nil, points: [], unpriced: [])
+                return Curve(id: period, title: title, span: nil, points: [], unpriced: unpriced)
             }
             func point(_ position: Int, _ cost: Double, _ high: Double, _ lowerBound: Bool) -> Point {
                 let text = SpendPeriod.dollars(cost) +
@@ -194,9 +205,13 @@ public struct SpendChart: Sendable {
                 points.append(point(index + 1, total, high, lowerBound))
             }
             points[points.count - 1].showsMarker = true
-            return Curve(id: period, title: title, span: nil, points: points, unpriced: [])
+            if let endsAt, (Double(elapsed - 1)...Double(elapsed)).contains(endsAt) {
+                points[points.count - 1].exactX = endsAt
+            }
+            return Curve(id: period, title: title, span: nil, points: points, unpriced: unpriced)
         }
-        let current = curve(.current, titles.0, comparison.current, elapsed: comparison.elapsed)
+        let current = curve(.current, titles.0, comparison.current, elapsed: comparison.elapsed,
+                            endsAt: comparison.elapsedHours)
         let previous = curve(.previous, titles.1, comparison.previous, elapsed: comparison.previous.count)
         curves = [current, previous]
         points = previous.points + current.points

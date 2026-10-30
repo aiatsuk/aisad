@@ -291,6 +291,7 @@ class MenuBarHistoryTests(unittest.TestCase):
         self.assertEqual((len(today['current']),len(today['previous'])),(24,24))
         self.assertEqual((len(week['current']),len(week['previous'])),(7,7))
         self.assertEqual((today['elapsed'],week['elapsed']),(13,5))
+        self.assertEqual(today['elapsed_hours'],12)
         self.assertEqual(today['untimed_observations'],0)
         self.assertEqual(today['current'][12],dict(observations=2,unpriced_observations=1,
                                                    cost_usd=2,cost_high_usd=3))

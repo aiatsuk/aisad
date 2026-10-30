@@ -2301,8 +2301,10 @@ def menubar_curves(records,today,now,timezone):
     monday=today-dt.timedelta(days=today.weekday())
     yesterday=today-dt.timedelta(days=1)
     untimed=sum(not timed(r) for r in by_date[today.isoformat()])
-    return dict(today=dict(elapsed=now.hour+1 if now.date()==today else 24,untimed_observations=untimed,
-                           current=hours(today),previous=hours(yesterday)),
+    current_day=now.date()==today
+    return dict(today=dict(elapsed=now.hour+1 if current_day else 24,
+                           elapsed_hours=round(now.hour+now.minute/60,2) if current_day else 24,
+                           untimed_observations=untimed,current=hours(today),previous=hours(yesterday)),
                 week=dict(elapsed=today.weekday()+1,untimed_observations=0,
                           current=week(monday),previous=week(monday-dt.timedelta(days=7))))
 

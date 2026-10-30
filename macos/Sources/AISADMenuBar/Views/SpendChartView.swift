@@ -52,7 +52,8 @@ struct SpendChartView: View {
             .font(.system(size: 10)).foregroundStyle(.secondary)
             .frame(height: 12)
             if chart.points.isEmpty {
-                Text(chart.hasIncompletePrices ? "Prices unavailable for this range" : "No usage recorded in either range")
+                Text(chart.untimedObservations > 0 ? "These readings have no usable time" :
+                     chart.hasIncompletePrices ? "Prices unavailable for this range" : "No usage recorded in either range")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 72)
             } else {
@@ -86,7 +87,7 @@ struct SpendChartView: View {
     private var plot: some View {
         Chart {
             ForEach(chart.points) { point in
-                LineMark(x: .value("Position", point.position), y: .value("USD", point.cost),
+                LineMark(x: .value("Position", point.plotX), y: .value("USD", point.cost),
                          series: .value("Segment", point.segment))
                     .foregroundStyle(tint(point.period))
                     .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round,
@@ -96,7 +97,7 @@ struct SpendChartView: View {
                                         ", " + chart.selectionTitle(position: point.position))
                     .accessibilityValue(point.amountText)
                 if point.position == selected || point.showsMarker {
-                    PointMark(x: .value("Position", point.position), y: .value("USD", point.cost))
+                    PointMark(x: .value("Position", point.plotX), y: .value("USD", point.cost))
                         .foregroundStyle(tint(point.period))
                         .symbolSize(point.position == selected ? 22 : 10)
                         .accessibilityHidden(true)
@@ -115,7 +116,7 @@ struct SpendChartView: View {
                     .accessibilityValue(SpendPeriod.dollars(budget))
             }
             if let selected {
-                RuleMark(x: .value("Selected", selected))
+                RuleMark(x: .value("Selected", Double(selected)))
                     .foregroundStyle(Color.secondary.opacity(0.4))
                     .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
                     .accessibilityHidden(true)

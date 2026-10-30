@@ -9,29 +9,35 @@ final class SpendChartTests: XCTestCase {
     }
 
     private func comparison(_ current: [Int: Double], previous: [Int: Double] = [:], count: Int,
-                            elapsed: Int, untimed: Int = 0) -> [String: Any] {
-        ["elapsed": elapsed, "untimed_observations": untimed,
+                            elapsed: Int, untimed: Int = 0, elapsedHours: Double? = nil) -> [String: Any] {
+        ["elapsed": elapsed, "untimed_observations": untimed, "elapsed_hours": elapsedHours ?? NSNull(),
          "current": (0..<count).map { bucket(current[$0]) },
          "previous": (0..<count).map { bucket(previous[$0]) }]
     }
 
-    private func period(_ id: String, cost: Double, observations: Int) -> [String: Any] {
+    private func period(_ id: String, cost: Double, observations: Int, unpriced: Int = 0) -> [String: Any] {
         var value: [String: Any] = ["id": id, "known_cost_usd": cost, "cost_high_usd": cost,
                                     "budget_usd": NSNull(), "used_percent": NSNull(),
-                                    "observed_requests": observations, "unpriced_requests": 0,
+                                    "observed_requests": observations, "unpriced_requests": unpriced,
                                     "resets_at": "2026-11-01T00:00:00Z"]
         if id == "month" { value["budget_usd"] = 100 }
         return value
     }
 
-    private func decode(today: [String: Any], week: [String: Any],
-                        todayCost: Double = 5, weekCost: Double = 8) throws -> MenuBarReport {
-        let periods = [period("today", cost: todayCost, observations: 2),
+    private func decode(today: [String: Any], week: [String: Any], todayCost: Double = 5, weekCost: Double = 8,
+                        todayUnpriced: Int = 0) throws -> MenuBarReport {
+        try decode(curves: ["today": today, "week": week], todayCost: todayCost, weekCost: weekCost,
+                   todayUnpriced: todayUnpriced)
+    }
+
+    private func decode(curves: Any, history: Any? = nil, todayCost: Double = 5, weekCost: Double = 8,
+                        todayUnpriced: Int = 0) throws -> MenuBarReport {
+        let periods = [period("today", cost: todayCost, observations: 2, unpriced: todayUnpriced),
                        period("week", cost: weekCost, observations: 2),
                        period("month", cost: 8, observations: 2)]
-        let payload: [String: Any] = ["schema_version": 1, "version": "test", "generated": "2026-10-28T12:00:00Z",
-                                      "timezone": "UTC", "periods": periods,
-                                      "period_curves": ["today": today, "week": week]]
+        var payload: [String: Any] = ["schema_version": 1, "version": "test", "generated": "2026-10-28T12:00:00Z",
+                                      "timezone": "UTC", "periods": periods, "period_curves": curves]
+        if let history { payload["monthly_history"] = history }
         return try MenuBarReport.decode(JSONSerialization.data(withJSONObject: payload))
     }
 
@@ -95,15 +101,61 @@ final class SpendChartTests: XCTestCase {
         }
     }
 
+    func testChartsOfAnotherShapeCostOnlyTheCharts() throws {
+        let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
+        var textCost = comparison([2: 2, 5: 3], count: 24, elapsed: 8)
+        var buckets = textCost["current"] as! [[String: Any]]
+        buckets[2]["cost_usd"] = "2.0"
+        textCost["current"] = buckets
+        var missingKey = comparison([2: 2, 5: 3], count: 24, elapsed: 8)
+        missingKey.removeValue(forKey: "untimed_observations")
+        for curves: Any in [["today": "bad", "week": "bad"], "bad", ["today": textCost, "week": week],
+                            ["today": missingKey, "week": week]] {
+            let report = try decode(curves: curves)
+            XCTAssertNil(report.periodCurves)
+            XCTAssertEqual(report.period(.day)?.amountText, "$5.00")
+        }
+        let badHistory: [String: Any] = ["schema_version": 1, "as_of_date": "not-a-date"]
+        let report = try decode(curves: ["today": comparison([2: 2, 5: 3], count: 24, elapsed: 8), "week": week],
+                                history: badHistory)
+        XCTAssertNil(report.monthlyHistory)
+        XCTAssertNotNil(report.periodCurves)
+    }
+
+    func testTodaysLineEndsAtCollectionNotTheNextHour() throws {
+        let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
+        let report = try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 8, elapsedHours: 7.5), week: week)
+        let current = try XCTUnwrap(report.chart(.day)?.curves.first)
+        XCTAssertEqual(current.points.last?.position, 8)
+        XCTAssertEqual(current.points.last?.plotX, 7.5)
+        XCTAssertEqual(current.points.first?.plotX, 0)
+        let outside = try decode(today: comparison([2: 2, 5: 3], count: 24, elapsed: 8, elapsedHours: 2), week: week)
+        XCTAssertEqual(outside.chart(.day)?.curves.first?.points.last?.plotX, 8)
+    }
+
+    func testCurvesMustAgreeWithTheCardOnUnpricedCounts() throws {
+        var today = comparison([2: 5], count: 24, elapsed: 8)
+        var buckets = today["current"] as! [[String: Any]]
+        buckets[2]["observations"] = 2
+        buckets[2]["unpriced_observations"] = 1
+        today["current"] = buckets
+        let week = comparison([0: 3, 2: 5], count: 7, elapsed: 3)
+        XCTAssertNil(try decode(today: today, week: week).periodCurves)
+        XCTAssertNotNil(try decode(today: today, week: week, todayUnpriced: 1).periodCurves)
+    }
+
     func testRangeWithOnlyUnpricedUsageDrawsNoLine() throws {
         var today = comparison([:], count: 24, elapsed: 8)
         var buckets = today["current"] as! [[String: Any]]
         buckets[3] = bucket(nil, observations: 2, unpriced: 2)
         today["current"] = buckets
-        let report = try decode(today: today, week: comparison([0: 3, 2: 5], count: 7, elapsed: 3), todayCost: 0)
+        let report = try decode(today: today, week: comparison([0: 3, 2: 5], count: 7, elapsed: 3),
+                                todayCost: 0, todayUnpriced: 2)
         let chart = try XCTUnwrap(report.chart(.day))
         XCTAssertTrue(chart.points.isEmpty)
         XCTAssertTrue(chart.hasIncompletePrices)
+        XCTAssertEqual(chart.curves.first?.detail(position: 4), "Unpriced")
+        XCTAssertEqual(chart.curves.first?.detail(position: 5), "No data")
     }
 
     func testOlderCollectorLeavesDayAndWeekChartsEmpty() throws {
