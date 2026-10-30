@@ -330,7 +330,7 @@ bun run check
 bun run test
 bun run build
 cd ..
-python3 scripts/build_release.py --tag v1.4.4 --with-ui
+python3 scripts/build_release.py --tag v1.5.0 --with-ui
 ```
 
 The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
@@ -351,7 +351,7 @@ To add the `aisad` terminal command when installing a local bundle, use `--cli-d
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.4.4.zip --checksum-file dist/SHA256SUMS \
+  --archive dist/aisad-skill-v1.5.0.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 
