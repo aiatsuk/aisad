@@ -7,9 +7,41 @@ public struct MenuBarReport: Decodable, Sendable {
     public let generated: Date
     public let timezone: String
     public let periods: [SpendPeriod]
-    public let monthlyHistory: MonthlySpendHistory?
+    public private(set) var monthlyHistory: MonthlySpendHistory?
+    public private(set) var periodCurves: PeriodCurves?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, version, syncRevision, generated, timezone, periods, monthlyHistory, periodCurves
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        version = try values.decode(String.self, forKey: .version)
+        syncRevision = try values.decodeIfPresent(String.self, forKey: .syncRevision)
+        generated = try values.decode(Date.self, forKey: .generated)
+        timezone = try values.decode(String.self, forKey: .timezone)
+        periods = try values.decode([SpendPeriod].self, forKey: .periods)
+        // The shared snapshot can come from another AISAD version, so a chart
+        // this build cannot read costs only that chart, never the spend figures.
+        monthlyHistory = try? values.decodeIfPresent(MonthlySpendHistory.self, forKey: .monthlyHistory)
+        periodCurves = try? values.decodeIfPresent(PeriodCurves.self, forKey: .periodCurves)
+    }
 
     public var month: SpendPeriod? { periods.first { $0.id == "month" } }
+
+    public func period(_ range: SpendRange) -> SpendPeriod? {
+        periods.first { $0.id == range.periodID }
+    }
+
+    /// Nil until a collector new enough to send this range's aggregates has run.
+    public func chart(_ range: SpendRange) -> SpendChart? {
+        switch range {
+        case .day: periodCurves.map { SpendChart(today: $0.today) }
+        case .week: periodCurves.map { SpendChart(week: $0.week) }
+        case .month: monthlyHistory.map(SpendChart.init(history:))
+        }
+    }
 
     public static func decode(_ data: Data) throws -> MenuBarReport {
         let decoder = JSONDecoder()
@@ -26,7 +58,7 @@ public struct MenuBarReport: Decodable, Sendable {
             }
             return date
         }
-        let report = try decoder.decode(Self.self, from: data)
+        var report = try decoder.decode(Self.self, from: data)
         guard report.schemaVersion == 1,
               report.periods.map(\.id) == ["today", "week", "month"],
               report.month?.budgetUsd != nil else {
@@ -44,7 +76,9 @@ public struct MenuBarReport: Decodable, Sendable {
             }
         }
         if let history = report.monthlyHistory, let month = report.month,
-           !history.matches(month) { throw CollectorError.invalidReport }
+           !history.matches(month) { report.monthlyHistory = nil }
+        if let curves = report.periodCurves, let today = report.period(.day), let week = report.period(.week),
+           !curves.isValid(today: today, week: week) { report.periodCurves = nil }
         return report
     }
 }
@@ -85,6 +119,12 @@ public struct SpendPeriod: Decodable, Identifiable, Sendable {
         let value = Self.dollars(knownCostUsd)
         let range = hasRange ? "–" + Self.dollars(costHighUsd) : ""
         return value + range + (isLowerBound ? "+" : "")
+    }
+
+    /// One amount for tight spots; "+" stands for any cost not known exactly.
+    public var compactAmountText: String {
+        guard observedRequests > 0, hasPricedData else { return amountText }
+        return Self.dollars(knownCostUsd) + (hasRange || isLowerBound ? "+" : "")
     }
 
     public var percentText: String {

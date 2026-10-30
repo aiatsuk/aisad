@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0 — 2026-10-30
+
+- Add the optional macOS menu bar app: Today and This week in USD, provider quota rings, and an All providers list with every window and its reset time. Build it from a clone with `./script/build_and_run.sh`.
+- Add a Day, Week and Month chart of cumulative spend against the previous period. The app remembers the range, and Month shows the saved monthly budget.
+- Add a pace popover per provider: allowance left, pace against an even spend, a linear run-out projection and a chart of the current window. It reads `quota-history.json`, which holds only percentages and times the app already fetched.
+- Switching range rolls the amounts and crossfades the chart. Moving along a chart is not animated. Reduce Motion turns the range animation off, and range changes are announced to VoiceOver.
+- The menu bar report gains `period_curves`: hourly and daily aggregate costs and counts, with no session IDs or paths.
+- CLI and menu bar collections now publish a shared local snapshot, so open CLI charts, the menu bar and a dashboard opened from its output directory stay in step.
+
 ## 1.4.4 — 2026-10-24
 
 - Skill frontmatter sets `model: sonnet` and `effort: medium`.

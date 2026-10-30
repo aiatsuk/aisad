@@ -89,7 +89,7 @@ final class MonthlySpendHistoryTests: XCTestCase {
         XCTAssertThrowsError(try decode(invalid))
     }
 
-    func testReportRejectsHistoryThatDoesNotMatchMonthlyCard() throws {
+    func testHistoryThatDoesNotMatchMonthlyCardCostsOnlyTheChart() throws {
         let periods: [[String: Any]] = ["today","week","month"].map { id in
             ["id":id,"known_cost_usd":20,"cost_high_usd":20,
              "budget_usd":id == "month" ? 2000 : NSNull(),
@@ -98,7 +98,9 @@ final class MonthlySpendHistoryTests: XCTestCase {
         }
         var payload: [String:Any] = ["schema_version":1,"version":"test","generated":"2026-10-23T12:00:00Z",
                                     "timezone":"UTC","periods":periods,"monthly_history":object([1:(10,10,1,0)])]
-        XCTAssertThrowsError(try MenuBarReport.decode(JSONSerialization.data(withJSONObject: payload)))
+        let mismatched = try MenuBarReport.decode(JSONSerialization.data(withJSONObject: payload))
+        XCTAssertNil(mismatched.monthlyHistory)
+        XCTAssertEqual(mismatched.month?.knownCostUsd, 20)
         payload["monthly_history"] = object([1:(20,20,1,0)])
         XCTAssertNotNil(try MenuBarReport.decode(JSONSerialization.data(withJSONObject: payload)).monthlyHistory)
         payload.removeValue(forKey:"monthly_history")

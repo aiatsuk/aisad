@@ -41,7 +41,9 @@ To update a clone, run `git pull --ff-only`. Existing snapshots remain usable of
 ## macOS menu bar (optional)
 
 On macOS 14 or later, the native companion shows **Today** and **This week** in USD,
-plus **This month** with its saved monthly budget, percentage and progress bar.
+plus a **Day / Week / Month** chart of cumulative spend against the previous period.
+Day uses hourly totals, Week uses daily totals, and Month adds your saved monthly budget.
+The app remembers the chosen range. These charts use aggregate costs only.
 The menu bar label contains only two compact monochrome lines, for example
 **claude: 0%** and **codex: 75%**, showing aggregate weekly allowance remaining.
 Each line uses natural text spacing. A dash means unavailable/expired; a tilde marks a
@@ -102,27 +104,40 @@ There are no day/week limits. The default shared data root is `~/.local/share/ai
 The clone's CLI normally uses `./output`: pass `--output ~/.local/share/aisad/output`
 to share settings with the app and installed `aisad` command.
 
-A compact row of **Claude**, **Codex** and **Grok** rings shows subscription limits below the
-spend summary. A compact second line below each provider shows its aggregate weekly percentage
-remaining; missing or expired weekly readings show a dash. There is no separate Limits tab.
-Each ring is an independent remaining allowance:
-the **outer ring** represents the short-term limit (normally 5 hours), and the **inner ring**
-represents the long-term limit (normally weekly). A weekly-only provider keeps its inner ring;
-no short-term allowance is invented. Hover or press a provider
-to open its native popover with **every** reported window, plan, percentage left, reset time
-and freshness. Model-specific windows, including Fable when supplied, stay in the details only:
-they never add a third ring or replace a missing aggregate limit. An exhausted scoped limit
-still shows a small warning indicator on the provider icon.
-Details keep the same short-term-first order, followed by the aggregate weekly limit and
-model-specific windows. Warnings consider all windows, including ones not drawn as rings:
-orange below 20% remaining, red at 10% or below. Rings are never averaged.
+A row of **Claude**, **Codex** and **Grok** rings shows subscription limits below the spend
+summary, each with its aggregate weekly percentage remaining; missing or expired weekly readings
+show a dash. Each ring is an independent remaining allowance: the **outer ring** is the
+short-term limit (normally 5 hours) and the **inner ring** the long-term one (normally weekly).
+A provider that reports one aggregate window draws it as a single ring; no other allowance is
+invented. Model-specific windows, including Fable when supplied, never add a ring. Rings are
+never averaged.
 
-Provider data refreshes every minute while AISAD runs. Hovering uses the latest reading and
+Click a provider to open its pace popover:
+
+- **Weekly left** with its reset time, and the pace against an even spend of the window:
+  *behind pace* means less remains than an even spend would leave.
+- **Runs out** projects the average rate so far to exhaustion; a window that would outlast its
+  reset says so instead. Early in a window the projection is necessarily rough.
+- A chart of the remaining allowance across the window, one column per day: the readings AISAD
+  already fetched, the dotted even-pace line and the projection. Hover it to read an earlier point.
+- Every other window (session, model-specific weekly) with a bar, the percentage left and its
+  reset, shown relatively within a day (for example, **resets in 2h 18m**).
+
+**All providers** lists every reported window of every provider with its plan, bar, reset time
+and freshness. Rings and bars are green at 80% or more remaining, amber from 30% and red below;
+stale or expired readings are gray, and the menu bar label keeps its own warning thresholds
+(orange below 20%, red at 10% or below).
+
+The chart draws on `quota-history.json` in the output directory: the percentage and time of each
+reading the app already fetched, at most 4,000 of them, dropped a day after their window resets.
+It holds no credentials, prompts or session content and causes no extra provider requests;
+deleting it only empties the chart until new readings arrive.
+
+Provider data refreshes every minute while AISAD runs. Opening a popover uses the latest reading and
 does not send requests. The single footer refresh action updates both dollar usage and plan limits,
-respecting provider cooldowns. Details refresh their time display every 30 seconds.
+respecting provider cooldowns. Readings and reset times refresh their display every 30 seconds.
 Unknown quotas show a question mark; stale/expired readings show a clock and never invent a refill.
 Temporary failures retain the last reading; authentication failures clear it.
-Provider details use text rows without progress bars; the monthly dollar-budget threshold stays in the spending chart.
 
 Limits use the existing signed-in Codex/Grok CLI over stdio and Claude's existing OAuth login
 from its credentials file or macOS Keychain. Authenticated usage reads contact the provider;
@@ -315,7 +330,7 @@ bun run check
 bun run test
 bun run build
 cd ..
-python3 scripts/build_release.py --tag v1.4.4 --with-ui
+python3 scripts/build_release.py --tag v1.5.0 --with-ui
 ```
 
 The UI bundle includes its dependencies and third-party notices; no package installation is needed at runtime. Packaging checks source fingerprints and refuses a stale UI build. Omitting `--with-ui` builds the existing portable Python package.
@@ -336,7 +351,7 @@ To add the `aisad` terminal command when installing a local bundle, use `--cli-d
 
 ```sh
 python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.4.4.zip --checksum-file dist/SHA256SUMS \
+  --archive dist/aisad-skill-v1.5.0.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 

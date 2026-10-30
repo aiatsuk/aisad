@@ -116,10 +116,18 @@ private struct QuotaDetailRow: View {
         .help(window.resetsAt.map { "Resets " + $0.formatted() } ?? "Reset time was not reported")
     }
 
-    private var resetText: String {
-        guard let reset = window.resetsAt else { return "reset unknown" }
-        if Calendar.current.isDate(reset, inSameDayAs: now) {
-            return "resets " + reset.formatted(.dateTime.hour().minute())
+    private var resetText: String { window.resetText(now: now) }
+}
+
+extension QuotaWindow {
+    /// "resets in 2h 10m" within a day, a weekday within a week, else a date.
+    func resetText(now: Date) -> String {
+        guard let reset = resetsAt else { return "reset unknown" }
+        let seconds = reset.timeIntervalSince(now)
+        if seconds <= 0 { return "reset passed" }
+        if seconds < 86_400 {
+            let minutes = Int((seconds / 60).rounded(.up))
+            return "resets in " + (minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m")
         }
         if reset.timeIntervalSince(now) < 7 * 86400 {
             return "resets " + reset.formatted(.dateTime.weekday(.abbreviated).hour().minute())

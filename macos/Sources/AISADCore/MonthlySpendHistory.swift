@@ -89,7 +89,7 @@ public struct MonthlySpendHistory: Decodable, Sendable {
             }
             for (index, day) in month.daily.enumerated() {
                 let expected = String(month.from.prefix(8)) + String(format: "%02d", index + 1)
-                guard day.date == expected, day.observations >= 0,
+                guard day.date == expected, (0...PeriodCurves.maxObservations).contains(day.observations),
                       day.unpricedObservations >= 0, day.unpricedObservations <= day.observations else {
                     throw CollectorError.invalidReport
                 }
@@ -150,10 +150,6 @@ public struct MonthlySpendHistory: Decodable, Sendable {
     }
 
     public func upperBound(budget: Double?) -> Double {
-        let peak = max(points.map(\.cost).max() ?? 0, budget ?? 0)
-        guard peak > 0 else { return 1 }
-        let padded = peak * 1.08
-        let power = pow(10, floor(log10(padded)))
-        return ceil(padded / power / 0.25) * power * 0.25
+        SpendChart.niceUpperBound(peak: max(points.map(\.cost).max() ?? 0, budget ?? 0))
     }
 }

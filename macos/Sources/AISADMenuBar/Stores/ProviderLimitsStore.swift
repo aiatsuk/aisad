@@ -8,13 +8,21 @@ final class ProviderLimitsStore {
     private(set) var providers: [ProviderQuota] = []
     private(set) var isRefreshing = false
     private(set) var error: String?
+    /// Readings already fetched for the pace chart; written beside the usage output.
+    private(set) var history: QuotaHistory
+    private let historyURL: URL?
     private let client: CollectorClient
     private let logger = Logger(subsystem: "com.aiatsuk.aisad.menubar", category: "limits")
     private var nextAttempt: [String: Date] = [:]
     private var refreshTask: Task<Void, Never>?
     private var manualTask: Task<Void, Never>?
 
-    init(client: CollectorClient) { self.client = client }
+    init(client: CollectorClient) {
+        self.client = client
+        let url = client.output.appendingPathComponent("quota-history.json")
+        historyURL = url
+        history = QuotaHistory.load(from: url)
+    }
 
     var lastUpdated: Date? {
         providers.filter { !$0.windows.isEmpty }.map(\.fetchedAt).min()
@@ -73,6 +81,13 @@ final class ProviderLimitsStore {
             }
             let order = ["claude", "codex", "grok"]
             providers.sort { order.firstIndex(of: $0.id)! < order.firstIndex(of: $1.id)! }
+            for provider in report.providers where provider.status == "available" {
+                history.record(provider, at: Date())
+            }
+            if let historyURL {
+                do { try history.write(to: historyURL) }
+                catch { logger.error("Quota history not saved: \(error.localizedDescription, privacy: .public)") }
+            }
             logger.notice("Quota refresh completed for \(report.providers.count, privacy: .public) providers")
             error = nil
         } catch is CancellationError {
@@ -88,8 +103,10 @@ final class ProviderLimitsStore {
 
 #if DEBUG
 extension ProviderLimitsStore {
-    func showPreview(report: ProviderLimitsReport?, refreshing: Bool = false) {
+    func showPreview(report: ProviderLimitsReport?, history: QuotaHistory = QuotaHistory(),
+                     refreshing: Bool = false) {
         stop()
+        self.history = history
         providers = report?.providers ?? []
         nextAttempt = Dictionary(uniqueKeysWithValues: providers.map {
             ($0.id, (report?.generated ?? .now).addingTimeInterval(Double($0.retryAfterSeconds)))

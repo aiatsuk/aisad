@@ -276,6 +276,59 @@ class MenuBarHistoryTests(unittest.TestCase):
         self.assertEqual(sum(d['observations'] for d in daily),month['observed_requests'])
         self.assertNotIn('PRIVATE',json.dumps(report))
 
+    def test_period_curves_match_cards_and_stay_aggregate(self):
+        noon = app.dt.datetime(2026,10,23,12,tzinfo=app.dt.timezone.utc).timestamp()
+        records = [dict(date='2026-10-23',ts=noon,cost=2,cost_high=3,session='PRIVATE'),
+                   dict(date='2026-10-23',ts=noon,cost=None,cost_high=None),
+                   dict(date='2026-10-22',ts=noon-86_400,cost=7,cost_high=7),
+                   dict(date='2026-10-19',ts=noon-345_600,cost=1,cost_high=1),
+                   dict(date='2026-10-18',ts=noon-432_000,cost=50,cost_high=50),
+                   dict(date='2026-10-12',ts=noon-950_400,cost=4,cost_high=4),
+                   dict(date='2026-10-24',ts=noon+86_400,cost=999,cost_high=999)]
+        report = app.menubar_report(self.snapshot(records),self.args)
+        curves = report['period_curves']
+        today, week = curves['today'], curves['week']
+        self.assertEqual((len(today['current']),len(today['previous'])),(24,24))
+        self.assertEqual((len(week['current']),len(week['previous'])),(7,7))
+        self.assertEqual((today['elapsed'],week['elapsed']),(13,5))
+        self.assertEqual(today['elapsed_hours'],12)
+        self.assertEqual(today['untimed_observations'],0)
+        self.assertEqual(today['current'][12],dict(observations=2,unpriced_observations=1,
+                                                   cost_usd=2,cost_high_usd=3))
+        self.assertEqual(today['previous'][12]['cost_usd'],7)
+        self.assertIsNone(today['current'][13]['cost_usd'])
+        self.assertEqual(week['previous'][0]['cost_usd'],4)
+        self.assertEqual(week['previous'][6]['cost_usd'],50)
+        for key,index in [('today',0),('week',1)]:
+            period = report['periods'][index]
+            buckets = curves[key]['current']
+            self.assertEqual(sum(b['cost_usd'] or 0 for b in buckets),period['known_cost_usd'])
+            self.assertEqual(sum(b['cost_high_usd'] or 0 for b in buckets),period['cost_high_usd'])
+            self.assertEqual(sum(b['observations'] for b in buckets),period['observed_requests'])
+        self.assertNotIn('PRIVATE',json.dumps(report))
+
+    def test_period_curves_end_at_the_minute_of_collection(self):
+        snapshot = self.snapshot()
+        snapshot['generated'] = '2026-10-23T12:30:00Z'
+        today = app.menubar_report(snapshot,self.args)['period_curves']['today']
+        self.assertEqual((today['elapsed'],today['elapsed_hours']),(13,12.5))
+
+    def test_period_curves_count_observations_without_a_time(self):
+        records = [dict(date='2026-10-23',cost=2,cost_high=2)]
+        today = app.menubar_report(self.snapshot(records),self.args)['period_curves']['today']
+        self.assertEqual(today['untimed_observations'],1)
+        self.assertEqual(sum(b['observations'] for b in today['current']),0)
+
+    def test_period_curves_leave_readings_after_now_off_the_time_axis(self):
+        later = app.dt.datetime(2026,10,23,15,tzinfo=app.dt.timezone.utc).timestamp()
+        records = [dict(date='2026-10-23',ts=later,cost=1,cost_high=1)]
+        report = app.menubar_report(self.snapshot(records),self.args)
+        today = report['period_curves']['today']
+        self.assertEqual(today['elapsed'],13)
+        self.assertEqual(today['untimed_observations'],1)
+        self.assertEqual(sum(b['observations'] for b in today['current']),0)
+        self.assertEqual(report['periods'][0]['observed_requests'],1)
+
     def test_short_month_leap_year_and_year_rollover(self):
         for today,previous,count in [('2027-03-31','2027-02-01',28),
                                      ('2028-03-31','2028-02-01',29),

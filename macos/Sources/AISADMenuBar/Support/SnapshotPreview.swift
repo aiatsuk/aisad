@@ -15,9 +15,16 @@ enum SnapshotPreview {
         } else {
             report = nil
         }
+        var history = QuotaHistory()
+        if let payload = object["quota_history"], !(payload is NSNull) {
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("aisad-preview-history.json")
+            try JSONSerialization.data(withJSONObject: payload).write(to: file)
+            history = QuotaHistory.load(from: file)
+        }
         if let payload = object["limits"], !(payload is NSNull) {
             let limits = try ProviderLimitsReport.decode(JSONSerialization.data(withJSONObject: payload))
-            store.limits.showPreview(report: limits, refreshing: object["limits_refreshing"] as? Bool ?? false)
+            store.limits.showPreview(report: limits, history: history,
+                                     refreshing: object["limits_refreshing"] as? Bool ?? false)
         } else {
             store.limits.showPreview(report: nil, refreshing: object["limits_refreshing"] as? Bool ?? false)
         }
@@ -28,13 +35,29 @@ enum SnapshotPreview {
                           openingDashboard: object["opening_dashboard"] as? Bool ?? false)
     }
 }
+private struct SnapshotQuotaHoverKey: EnvironmentKey {
+    static let defaultValue: Double? = nil
+}
 private struct SnapshotChartDayKey: EnvironmentKey {
     static let defaultValue: Int? = nil
 }
+private struct SnapshotSpendRangeKey: EnvironmentKey {
+    static let defaultValue: SpendRange? = nil
+}
 extension EnvironmentValues {
+    /// Fraction of the pace-chart history to show as hovered in offscreen snapshots.
+    var snapshotQuotaHover: Double? {
+        get { self[SnapshotQuotaHoverKey.self] }
+        set { self[SnapshotQuotaHoverKey.self] = newValue }
+    }
     var snapshotChartDay: Int? {
         get { self[SnapshotChartDayKey.self] }
         set { self[SnapshotChartDayKey.self] = newValue }
+    }
+    /// The spend chart range to draw in offscreen snapshots.
+    var snapshotSpendRange: SpendRange? {
+        get { self[SnapshotSpendRangeKey.self] }
+        set { self[SnapshotSpendRangeKey.self] = newValue }
     }
 }
 #endif
