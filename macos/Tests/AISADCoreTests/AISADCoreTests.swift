@@ -178,7 +178,8 @@ final class CollectorIntegrationTests: XCTestCase {
         XCTAssertTrue(html.lowercased().contains("<!doctype html>"))
         let home = root.appendingPathComponent("empty home/.claude/projects/test")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        let observation = #"{"type":"assistant","sessionId":"dashboard-refresh","timestamp":"2026-10-22T09:00:00Z","message":{"id":"new-usage","model":"claude-sonnet-5.5","usage":{"input_tokens":1000000,"output_tokens":100000}}}"#
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let observation = #"{"type":"assistant","sessionId":"dashboard-refresh","timestamp":"\#(timestamp)","message":{"id":"new-usage","model":"claude-sonnet-5.5","usage":{"input_tokens":1000000,"output_tokens":100000}}}"#
         try (observation + "\n").write(to: home.appendingPathComponent("session.jsonl"),
                                        atomically: true, encoding: .utf8)
         let freshDashboard = try await client.dashboard()
