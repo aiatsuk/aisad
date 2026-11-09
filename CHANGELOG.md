@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 — 2026-11-09
+
+- Launch the installed macOS app with `aisad menubar`. The command finds the app in Applications or through its registered bundle ID; `aisad menubar --json` still returns the aggregate report.
+- Keep the native dashboard integration test's synthetic observation in the current month.
+
 ## 1.5.0 — 2026-10-30
 
 - Add the optional macOS menu bar app: Today and This week in USD, provider quota rings, and an All providers list with every window and its reset time. Build it from a clone with `./script/build_and_run.sh`.
