@@ -149,5 +149,7 @@ exhaustion still warns on the provider icon. One manual Refresh updates costs an
 respecting cooldowns.
 Only those authenticated quota reads contact providers; standalone session reports remain offline.
 No login state, credentials or provider/system settings are changed.
+`aisad menubar` opens the installed macOS companion from `~/Applications`, `/Applications`,
+or its registered bundle ID. It does not build or install the app or run CLI collection/update work.
 `menubar --offline -- --json` returns the same aggregate report without launching UI.
 See the repository README for build/run and shared output-directory details.

@@ -29,6 +29,50 @@ skill = module('aisad_skill', ROOT / 'skills/aisad/scripts/aisad.py')
 release = module('aisad_release', ROOT / 'scripts/build_release.py')
 
 
+class MenubarLauncherTests(unittest.TestCase):
+    def test_bare_command_launches_without_collector_or_maintenance(self):
+        with patch.object(skill, 'launch_menubar', return_value=0) as launch, \
+             patch.object(skill, 'maintenance_tasks', side_effect=AssertionError('Unexpected maintenance')):
+            self.assertEqual(skill.main(['menubar']), 0)
+            self.assertEqual(skill.main(['menubar', '--offline', '--']), 0)
+        self.assertEqual(launch.call_count, 2)
+
+    def test_prefers_user_app_and_handles_spaces(self):
+        with tempfile.TemporaryDirectory(prefix='aisad user ') as home:
+            app = Path(home) / 'Applications/AISAD.app'
+            app.mkdir(parents=True)
+            with patch.object(skill.sys, 'platform', 'darwin'), \
+                 patch.object(skill.Path, 'home', return_value=Path(home)), \
+                 patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                self.assertEqual(skill.launch_menubar(), 0)
+            invoke.assert_called_once_with(['/usr/bin/open', str(app)])
+
+    def test_system_and_development_bundle_names(self):
+        for app in (Path('/Applications/AISAD.app'), Path('/Applications/AISADMenuBar.app')):
+            with self.subTest(app=app), patch.object(skill.sys, 'platform', 'darwin'), \
+                 patch.object(skill.Path, 'is_dir', autospec=True, side_effect=lambda path: path == app), \
+                 patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                self.assertEqual(skill.launch_menubar(), 0)
+                invoke.assert_called_once_with(['/usr/bin/open', str(app)])
+
+    def test_registered_app_fallback_and_launch_failure(self):
+        with patch.object(skill.sys, 'platform', 'darwin'), \
+             patch.object(skill.Path, 'is_dir', return_value=False), \
+             patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+            self.assertEqual(skill.launch_menubar(), 0)
+            invoke.assert_called_once_with(['/usr/bin/open', '-b', 'com.aiatsuk.aisad.menubar'])
+            invoke.return_value = 1
+            with self.assertRaisesRegex(skill.UpdateError, 'Install AISAD.app'):
+                skill.launch_menubar()
+
+    def test_unsupported_platform_does_not_open_app(self):
+        with patch.object(skill.sys, 'platform', 'linux'), \
+             patch.object(skill.subprocess, 'call') as invoke:
+            with self.assertRaisesRegex(skill.UpdateError, 'requires macOS'):
+                skill.launch_menubar()
+            invoke.assert_not_called()
+
+
 class SkillTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='aisad install test ')
