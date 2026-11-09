@@ -58,6 +58,16 @@ label, common day count and both exact windows.
 Missing observations or uncertain prices show an unavailable comparison. A recorded zero
 baseline shows the USD change without an undefined percentage.
 
+With the CLI and native app installed, open the menu bar app with:
+
+```sh
+aisad menubar
+```
+
+The launcher looks in `~/Applications` and `/Applications`, then asks macOS for the
+registered app. It does not build or install the app. `aisad menubar --json` keeps
+returning the aggregate report without launching the app.
+
 From a clone, with Xcode Command Line Tools and Python 3.9+ installed:
 
 ```sh

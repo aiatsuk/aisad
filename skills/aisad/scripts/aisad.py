@@ -324,6 +324,7 @@ def parser():
     maintain.add_argument('tasks', nargs='*', metavar='{update,prices}', help='Default: both')
     for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar']:
         command = commands.add_parser(name, allow_abbrev=False,
+                                      help='Open the macOS menu bar app; add --json for its report' if name == 'menubar' else None,
                                       epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'menubar') else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
         if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
@@ -403,6 +404,21 @@ def maintain(root, data, tasks):
         refresh_prices(runtime, data)
 
 
+def launch_menubar():
+    """Open the installed companion without collecting usage or updating the CLI."""
+    if sys.platform != 'darwin':
+        raise UpdateError('The AISAD menu bar app requires macOS. Use menubar --json for its report.')
+    candidates = [directory / name
+                  for directory in (Path.home() / 'Applications', Path('/Applications'))
+                  for name in ('AISAD.app', 'AISADMenuBar.app')]
+    app = next((path for path in candidates if path.is_dir()), None)
+    command = ['/usr/bin/open', str(app)] if app else ['/usr/bin/open', '-b', 'com.aiatsuk.aisad.menubar']
+    if subprocess.call(command) != 0:
+        raise UpdateError('Could not open the AISAD menu bar app. Install AISAD.app in ~/Applications or /Applications, '
+                          'or build it from the repository with ./script/build_and_run.sh.')
+    return 0
+
+
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
@@ -444,6 +460,10 @@ def main(argv=None):
             cli_path.chmod(0o755)
             print('Installed terminal command at ' + str(cli_path))
         return 0
+    if forwarded[:1] == ['--']:
+        forwarded = forwarded[1:]
+    if args.command == 'menubar' and not forwarded:
+        return launch_menubar()
     data = data_directory(args.data_dir)
     if data == root.resolve() or root.resolve() in data.parents:
         raise UpdateError('Choose a data directory outside the installed skill')
@@ -462,8 +482,6 @@ def main(argv=None):
             cli.error('maintain tasks are update and prices')
         maintain(root, data, args.tasks or ['update', 'prices'])
         return 0
-    if forwarded[:1] == ['--']:
-        forwarded = forwarded[1:]
     runtime = root / 'runtime/agent_usage.py'
     tasks = maintenance_tasks(root, data, args.command, args.offline)
     if not runtime.is_file() and 'update' in tasks:
