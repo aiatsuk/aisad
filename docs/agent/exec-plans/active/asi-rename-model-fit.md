@@ -13,7 +13,7 @@ One tool named ASI. It keeps everything aisad 1.5.2 does and adds model fit: for
 ## Steps (one commit each; tick when the commit exists and its checks pass)
 
 - [x] 1. Rename aisad to asi with compatibility (section "Rename").
-- [ ] 2. Model fit engine and `fit` / `suggest` commands in `agent_usage.py`, with tests (section "Model fit engine").
+- [x] 2. Model fit engine and `fit` / `suggest` commands in `agent_usage.py`, with tests (section "Model fit engine").
 - [ ] 3. "Model fit" tab in the HTML dashboard, with browser tests (section "Dashboard").
 - [ ] 4. Rules block and autopilot in the launcher, four sub-skills, installer links, docs (ADR 0005, README, SKILL.md, CHANGELOG 2.0.0, VERSION 2.0.0).
 - [ ] 5. Terminal (Ink) view. Second step: only after 1 to 4 pass; otherwise it becomes a follow-up and the PR says so.
@@ -59,6 +59,49 @@ Commands:
 
 Privacy (existing repo rule): no source paths, transcripts or tool payloads in HTML or UI datasets; prompt text only as the existing opt-in redacted title.
 
+As built (step 2), where it differs from or adds to the text above:
+- Per-request facts are one dict per reply, shared by every usage block of that reply in a file, so tool calls split across blocks are all counted (deduplicated by tool-use ID). `merge_requests` keeps the owner's turn index and the union of tool calls when a reply is copied into another session. `make_snapshot` pops the facts off the rows right after pricing, so rows, `request_stats`, `usage.json`, `sessions.sqlite` and `usage --include-requests` keep their old shape (tested against a run with the capture switched off).
+- Subagent keyword flags `big` / `hard` come from the run's first typed prompt plus its description, as in the prototype's classifier; the prompt itself is not kept.
+- Cowork `audit.jsonl` traces are not read for model fit (Claude Code only); Codex is out of scope.
+- `parse_claude` now guards every record: an unexpected shape is counted in `quality.invalid_records` (malformed `cache_creation` in `invalid_usage`) instead of failing the whole file, as the plan's record rule asks. Before, a non-object `cache_creation` or `server_tool_use`, an unhashable tool ID, or odd user content with `--include-titles` lost the file.
+- Malformed `agent-<id>.meta.json` files are counted in `quality.fit_unreadable_meta`; a missing one is normal.
+- Alternatives reprice each priced request on the tier's current model with `_price_request` at standard speed (fast and priority mode dropped, batch kept), only for units judged `over`. A unit's saving is 0 when the tier's model has no price in the catalog.
+- `fit` writes `fit-report.json` next to the other reports. `fit --session` shows the whole session (all dates); the period flags apply to the summary view. `suggest` picks `--session`, else `CLAUDE_SESSION_ID`, else the newest session whose project folder matches the current directory (matched by a hash of the encoded folder name, never stored as a path). Rules/autopilot status is not part of `suggest` yet (step 4).
+
+## Snapshot contract (for step 3)
+
+`make_snapshot` adds `model_fit`; the same object is in the shared live snapshot (`publish_shared_usage` whitelist), because open dashboards replace their whole dataset `D` with the shared one on a live update (`applyLiveSnapshot`) and the tab would otherwise go empty. Costs are USD floats rounded to 4 decimals; `ts` is epoch seconds (integer). All dates and all units are included; the page filters by period like it does for `rows`.
+
+- `schema`: `1`.
+- `guide`: one entry per class, in table order: `class` (id), `label`, `tier` (`haiku` | `sonnet` | `opus` | `fable`), `effort` (where to start), `effort_max` (highest effort before moving up a model), `why`.
+- `units`: every main-thread turn and subagent run of Claude Code, sorted by `ts`. Every key is present on every unit:
+  - `kind`: `turn` | `agent`. For the existing role filter: `turn` is role `main`, `agent` is role `subagent`.
+  - `session`: the same value as `rows[].session` (`Claude:<id>`; subagents `Claude:<id>/agent-<x>`; workflow agents keep the rows' `Claude:workflows/agent-<x>`).
+  - `main_session`: the main session the unit belongs to (`Claude:<id>`): equal to `session` for turns, the real parent for every subagent, workflow agents included. Group by it for "most expensive sessions".
+  - `n`: human-turn number in the main thread (1 = first typed prompt; 0 = calls before the first prompt, for example a resumed session); `null` for agents.
+  - `project`, `date`: the same values as `rows` (from the unit's first request; date in the report timezone).
+  - `ts`: start of the unit (its first request).
+  - `tier`: tier of the model that carried most of the cost, `null` when it is none of the four tiers; `model`: that model ID.
+  - `effort`: effort that carried most of the cost: `low` | `medium` | `high` | `xhigh` | `max` | `unknown` (or another recorded string).
+  - `class`, `signals`: heuristic class ID (a `guide[].class`) and the short reason (`"12 calls, no edits"`).
+  - `rec_tier`, `rec_effort`, `rec_effort_max`: the guide's recommendation for that class.
+  - `verdict`: `over` | `under` | `effort-over` | `effort-under` | `session` | `fits`.
+  - `effort_over`: boolean, effort above `rec_effort_max`.
+  - `cost`: priced cost of the unit's requests; `unpriced`: number of its requests without a price (left out of `cost` and both savings).
+  - `save_model`, `save_effort`: rough savings at the guide's model and effort (upper bounds).
+  - `calls`: number of requests.
+  - `agent_type`: subagent type from the meta sidecar (`unknown` without one); `null` for turns.
+  - `explicit_model`: subagents: a model was passed on the spawn or set in the meta; `null` for turns.
+  - `title`: only with `--include-titles`: the redacted prompt (turns) or description (agents), or `null`. Absent otherwise.
+- `events`: main-thread calls only (subagent calls are not events):
+  - `switches[]`: `session`, `project`, `date`, `ts`, `from`, `to` (model IDs), `tokens` (cache tokens written), `cost` (cache-write cost; `null` when unpriced).
+  - `cold[]`: `session`, `project`, `date`, `ts`, `gap_min`, `model`, `tokens`, `cost` (full cache rewrite after an idle gap over 5 minutes, not after compaction).
+  - `effort_changes[]`: `session`, `project`, `date`, `ts`, `from`, `to`, `read_share` (cache-read share of the call after the change).
+  - `daily[]`: one entry per `date` and `project`: `calls`, `cost`, `big_calls`, `big_cost` (context over 200k), `haiku_long_calls`, `haiku_long_cost` (Haiku over 100k), `fast_calls`, `fast_cost`.
+- `note`: caveat text to show with the tab.
+
+The page only filters and sums. The findings of `fit` map to unit filters: model-over = `verdict == 'over'` (sum `save_model`); effort-over = `effort_over` (sum `save_effort`); agent-inherit = `kind == 'agent' && !explicit_model && verdict == 'over'`; model-under = `verdict == 'under' && cost >= 0.05`; Opus at xhigh or max = `tier == 'opus' && effort in (xhigh, max)`; switches, cold cache, big context, Haiku long prompts and fast mode come from `events` (the effort-change finding needs at least 5 changes). Examples are the largest units of each filter.
+
 ## Dashboard (step 3)
 
 Fifth tab "Model fit" in the `HTML` string of `agent_usage.py`, following the page's existing tokens, filters (period, project, role), light and dark themes and hand-rolled SVG/CSS charts. Content, ported from the prototype page: four tiles (spend in view, share run by subagents, spend on a bigger model than the guide suggests with its saving, rough saving from effort), spend per day stacked by model tier, spend by task class with the two savings, class by model matrix with the guide's cell outlined, spend by effort, findings with their largest examples, most expensive sessions. Text set with `textContent` only. Update the tab-count assertion and add browser checks for the new tab (render, empty state, filter change, no console errors, phone width without horizontal scroll).
@@ -79,3 +122,4 @@ Fifth tab "Model fit" in the `HTML` string of `agent_usage.py`, following the pa
 
 - 2026-11-10: plan written; baseline `python3 -m unittest discover -q`: 196 tests OK. No open PRs on the repo (PR #27 already merged as 1.5.2). Local branch `feat/usage-forecast` (menu bar forecast, one commit, not a PR) is NOT part of this work and will conflict with the Swift rename when it is rebased.
 - 2026-11-10: step 1 done. Checks: `python3 -m unittest discover -q` 215 OK (also the 64 changed-file tests on Python 3.9.6; the baseline's one error was a race in `test_r_in_the_ui_requests_one_background_collection`, now joined safely); `swift test --package-path macos` 74 tests, 0 failures; `./script/build_and_run.sh --build-only` built `dist/ASIMenuBar.app` (`com.aiatsuk.asi.menubar`); `ui/`: frozen install, `tsc`, 51 bun tests, build and the four PTY scripts pass on local bun 1.4.0; `make_demo.py` and `build_release.py --with-ui` build `asi-skill-v1.5.2.zip`; the six browser scripts pass with playwright 1.62.1 installed without saving. Not done here: the binary GIFs in `docs/` were not re-recorded and may still show the old name; the menu bar app's saved chart range and its menu bar permission do not carry over to the new bundle ID. Incident: one test run (an existing `version` subprocess with the real home) moved the real `~/.local/share/aisad` to `~/.local/share/asi` at 08:24; it was moved back unchanged at 08:35, and `test_skill.py` now runs every test with a temporary `HOME`.
+- 2026-11-10: step 2 done (model fit engine, `fit` / `suggest`, `model_fit` in the snapshot and the shared live snapshot; `PARSER_VERSION` 10, so the first run after an update reparses every trace once: 2 min 7 s cold for the owner's full history). Checks, all with a temporary `HOME`: `python3 -m unittest discover -q` 257 OK (41 new in `test_model_fit.py`, which also pass on Python 3.9.6); `make_demo.py` and `build_release.py`; all six `node scripts/test_*.cjs` browser scripts pass (Playwright pointed at the existing browser cache with `PLAYWRIGHT_BROWSERS_PATH`). Demo `dashboard.html` grew from 1,879,335 to 1,886,583 bytes (+0.4 %). Real-data check (read-only, temporary output, one run): `fit --days 14` against the prototype's `ultra --days 14` run at the same time gave the same 84 sessions, 389 turns, 1,035 subagent runs, $373 model and $455 effort savings; total $2,371.35 against $2,370.78, the $0.57 being this live session's transcript that grew between the two reads. Full history: 8,550 units, `model_fit` 4.8 MB of JSON next to 127.5 MB of `request_stats`. Synthetic worst case: about 0.6 s of analysis per 100k requests.
