@@ -343,7 +343,8 @@ class SkillTests(unittest.TestCase):
         self.install()
         with patch.object(skill, '__file__', str(self.installed / 'scripts/asi.py')), \
              patch.object(skill, 'maintenance_tasks', return_value=[]):
-            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
+            for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar',
+                            'dashboard', 'fit', 'suggest'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
                     self.assertEqual(skill.main([command, '--data-dir', str(self.data), '--json', '--refresh']), 0)
                     self.assertEqual(invoke.call_args[0][0][2], command)
@@ -449,6 +450,241 @@ class SkillTests(unittest.TestCase):
         self.assertNotIn('build-meta.json',files)
         (ui/'src/main.tsx').write_text('changed source')
         with self.assertRaisesRegex(ValueError,'rebuild'):release.build(repository,self.root/'stale-dist',with_ui=True)
+
+
+class SubskillTests(unittest.TestCase):
+    """The four Claude Code sub-skills: shipped in the release, linked on install, kept by updates."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='asi subskill test ')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.version, self.assets = release.build(ROOT, self.root / 'dist')
+        self.manifest, self.files = skill.checked_archive(self.assets[1].read_bytes(), self.assets[2].read_bytes(), self.assets[1].name)
+        self.codex, self.claude, self.data = self.root / 'codex', self.root / 'claude', self.root / 'data'
+        environment = patch.dict(os.environ, {'CODEX_HOME': str(self.codex), 'CLAUDE_CONFIG_DIR': str(self.claude)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.skills = self.claude / 'skills'
+        self.installed = self.skills / 'asi'
+
+    def run_main(self, *args):
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = skill.main(list(args))
+        return code, output.getvalue(), errors.getvalue()
+
+    def install(self, *extra):
+        return self.run_main('install', '--archive', str(self.assets[1]), '--checksum-file', str(self.assets[2]), *extra)
+
+    def release_of(self, version, without=()):
+        """This tree released as another version, optionally without some sub-skills."""
+        files = {name: data for name, data in self.files.items()
+                 if name != 'manifest.json' and name.split('/')[:2] not in [['subskills', gone] for gone in without]}
+        files['runtime/agent_usage.py'] = files['runtime/agent_usage.py'].replace(
+            ("VERSION = '" + self.version + "'").encode(), ("VERSION = '" + version + "'").encode())
+        manifest = dict(self.manifest, version=version, files={name: skill.digest(data) for name, data in files.items()})
+        files['manifest.json'] = json.dumps(manifest).encode()
+        return manifest, files
+
+    def update_to(self, root, manifest, files):
+        latest = dict(version=manifest['version'], tag='v' + manifest['version'], archive='asi-skill-v' + manifest['version'] + '.zip')
+        with patch.object(skill, 'release_info', return_value=latest), \
+             patch.object(skill, 'download_release', return_value=(manifest, files)), \
+             contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertTrue(skill.update(root, self.data))
+        return output.getvalue(), errors.getvalue()
+
+    def links(self, directory):
+        return sorted(path.name for path in directory.iterdir() if path.is_symlink())
+
+    def assert_linked(self, directory, names=skill.SUBSKILLS):
+        self.assertEqual([name for name in self.links(directory) if name.startswith('asi-')], sorted(names))
+        for name in names:
+            self.assertEqual(os.readlink(str(directory / name)), 'asi/subskills/' + name)
+            self.assertEqual((directory / name / 'SKILL.md').read_bytes(), (directory / 'asi/subskills' / name / 'SKILL.md').read_bytes())
+
+    def test_release_ships_the_subskills_and_the_manifest_hashes_them(self):
+        with zipfile.ZipFile(self.assets[1]) as archive:
+            names = set(archive.namelist())
+        for name in skill.SUBSKILLS:
+            path = 'subskills/' + name + '/SKILL.md'
+            self.assertIn('asi/' + path, names)
+            self.assertIn(path, skill.REQUIRED_FILES)
+            self.assertEqual(self.manifest['files'][path], skill.digest((ROOT / 'skills/asi' / path).read_bytes()))
+        self.assertEqual(sorted(path.parent.name for path in (ROOT / 'skills/asi/subskills').glob('*/SKILL.md')), sorted(skill.SUBSKILLS))
+        # A release missing a sub-skill is not a valid release for this launcher.
+        manifest, files = self.release_of(self.version, without=('asi-suggest',))
+        with self.assertRaisesRegex(skill.UpdateError, 'missing required files'):
+            skill.validate_manifest(manifest)
+
+    def test_subskill_texts_name_no_model_and_call_known_commands(self):
+        known = set(skill.COLLECTOR_COMMANDS) | {'rules', 'autopilot'}
+        for name in skill.SUBSKILLS:
+            with self.subTest(name=name):
+                text = (ROOT / 'skills/asi/subskills' / name / 'SKILL.md').read_text(encoding='utf-8')
+                front, body = text.split('---\n')[1], text.split('---\n', 2)[2]
+                fields = dict(line.split(':', 1) for line in front.splitlines() if ':' in line and not line.startswith(' '))
+                self.assertEqual(fields['name'].strip(), name)
+                self.assertNotIn('model', fields)
+                self.assertNotIn('effort', fields)
+                self.assertLessEqual(len(fields['description'].strip()), 160)
+                self.assertIn('re-write', body)
+                self.assertIn("this skill's base directory", body)
+                commands = skill.re.findall(r'"\$\{CLAUDE_SKILL_DIR\}/\.\./\.\./scripts/asi\.py" (\S+)', body)
+                self.assertTrue(commands)
+                self.assertLessEqual(set(commands), known)
+                self.assertNotIn('air', ' '.join(commands))
+
+    def test_claude_install_links_each_subskill_and_codex_gets_none(self):
+        code, output, errors = self.install('--target', 'both')
+        self.assertEqual(code, 0, errors)
+        self.assert_linked(self.skills)
+        self.assertIn('Linked Claude Code skills /asi-analyze, /asi-autopilot, /asi-suggest, /asi-ultraanalyze', output)
+        self.assertEqual(self.links(self.codex / 'skills'), [])
+        self.assertEqual(sorted(path.name for path in (self.codex / 'skills').iterdir() if not path.name.startswith('.')), ['asi'])
+        # The nested copies stay inside the managed skill and pass its own checks.
+        skill.verify_replaceable(self.installed, self.files)
+        code, output, errors = self.install('--target', 'claude')
+        self.assertEqual((code, errors), (0, ''))
+        self.assertNotIn('Linked', output)
+
+    def test_install_keeps_what_is_not_its_link(self):
+        self.skills.mkdir(parents=True)
+        mine = self.skills / 'asi-suggest'
+        mine.mkdir()
+        (mine / 'SKILL.md').write_text('my own skill')
+        elsewhere = self.root / 'elsewhere'
+        elsewhere.mkdir()
+        (self.skills / 'asi-analyze').symlink_to(elsewhere, target_is_directory=True)
+        (self.skills / 'asi-autopilot').write_text('a file')
+        code, output, errors = self.install('--target', 'claude')
+        self.assertEqual(code, 1)
+        self.assertEqual(len(errors.strip().splitlines()), 3, errors)
+        for name in ('asi-suggest', 'asi-analyze', 'asi-autopilot'):
+            self.assertIn('Kept ' + str(self.skills / name) + ': it is not a link into asi/subskills/', errors)
+        self.assertEqual((mine / 'SKILL.md').read_text(), 'my own skill')
+        self.assertEqual(os.readlink(str(self.skills / 'asi-analyze')), str(elsewhere))
+        self.assertEqual((self.skills / 'asi-autopilot').read_text(), 'a file')
+        # The rest is still installed and linked.
+        self.assertEqual(os.readlink(str(self.skills / 'asi-ultraanalyze')), 'asi/subskills/asi-ultraanalyze')
+        self.assertTrue((self.installed / 'runtime/agent_usage.py').is_file())
+        self.assertIn('Installed ASI ' + self.version, output)
+
+    def test_dangling_link_elsewhere_is_kept_and_the_command_line_exits_1(self):
+        self.skills.mkdir(parents=True)
+        (self.skills / 'asi-ultraanalyze').symlink_to('asi/other/asi-ultraanalyze')
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
+        environment.update(HOME=str(self.root / 'home'), ASI_DATA_DIR=str(self.data))
+        run = subprocess.run([sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'), 'install', '--target', 'claude',
+                              '--archive', str(self.assets[1]), '--checksum-file', str(self.assets[2])],
+                             capture_output=True, text=True, env=environment)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertEqual(run.stderr.strip().splitlines(), ['Kept ' + str(self.skills / 'asi-ultraanalyze') + ': it is not a link into '
+                                                           'asi/subskills/; move it away and install again to get /asi-ultraanalyze'])
+        self.assertEqual(os.readlink(str(self.skills / 'asi-ultraanalyze')), 'asi/other/asi-ultraanalyze')
+        self.assertEqual([os.readlink(str(self.skills / name)) for name in ('asi-analyze', 'asi-autopilot', 'asi-suggest')],
+                         ['asi/subskills/asi-analyze', 'asi/subskills/asi-autopilot', 'asi/subskills/asi-suggest'])
+        self.assertFalse((self.root / 'home/.local').exists())
+
+    def test_reinstall_keeps_correct_links_and_repairs_its_own(self):
+        self.assertEqual(self.install('--target', 'claude')[0], 0)
+        kept = os.lstat(str(self.skills / 'asi-suggest')).st_ino
+        (self.skills / 'asi-analyze').unlink()
+        (self.skills / 'asi-analyze').symlink_to('asi/subskills/asi-suggest')       # ours, wrong sub-skill
+        (self.skills / 'asi-autopilot').unlink()
+        (self.skills / 'asi-autopilot').symlink_to(self.installed / 'subskills/asi-autopilot')  # ours, absolute: correct
+        (self.skills / 'asi-ultraanalyze').unlink()                                 # removed by hand
+        code, output, errors = self.install('--target', 'claude')
+        self.assertEqual((code, errors), (0, ''))
+        self.assertEqual(os.lstat(str(self.skills / 'asi-suggest')).st_ino, kept)
+        self.assertEqual(os.readlink(str(self.skills / 'asi-analyze')), 'asi/subskills/asi-analyze')
+        self.assertEqual(os.readlink(str(self.skills / 'asi-autopilot')), str(self.installed / 'subskills/asi-autopilot'))
+        self.assertEqual(os.readlink(str(self.skills / 'asi-ultraanalyze')), 'asi/subskills/asi-ultraanalyze')
+        self.assertIn('/asi-analyze, /asi-ultraanalyze in', output)
+        self.assertEqual([path.name for path in self.skills.iterdir() if '.link-' in path.name], [])
+
+    def test_update_from_a_build_without_subskills_creates_the_links(self):
+        skill.install_files(self.installed, *self.release_of(self.version, without=skill.SUBSKILLS))
+        self.assertEqual(self.links(self.skills), [])
+        output, errors = self.update_to(self.installed, *self.release_of('99.0.0'))
+        self.assertEqual(skill.read_json(self.installed / 'manifest.json')['version'], '99.0.0')
+        self.assert_linked(self.skills)
+        self.assertIn('Linked Claude Code skills', output)
+        self.assertNotIn('Kept', errors)
+
+    def test_a_link_failure_does_not_undo_or_hide_a_finished_update(self):
+        self.assertEqual(self.install('--target', 'claude')[0], 0)
+        with patch.object(skill, 'link_subskills', side_effect=PermissionError('Operation not permitted')):
+            _, errors = self.update_to(self.installed, *self.release_of('99.0.0'))
+        self.assertIn('Updated, but could not link the sub-skills: Operation not permitted', errors)
+        self.assertEqual(skill.read_json(self.installed / 'manifest.json')['version'], '99.0.0')
+        state = skill.read_json(skill.state_path(self.installed, self.data))
+        self.assertEqual((state['installed'], state['available']), ('99.0.0', False))
+
+    def test_self_update_keeps_links_and_removes_one_for_a_dropped_subskill(self):
+        self.assertEqual(self.install('--target', 'claude')[0], 0)
+        stranger = self.skills / 'unrelated'
+        stranger.symlink_to('asi/missing/unrelated')
+        manifest, files = self.release_of('99.0.0', without=('asi-autopilot',))
+        output, errors = self.update_to(self.installed, manifest, files)
+        self.assertEqual(errors.count('Kept'), 0, errors)
+        self.assertFalse((self.skills / 'asi-autopilot').exists() or (self.skills / 'asi-autopilot').is_symlink())
+        self.assertIn('Removed ' + str(self.skills / 'asi-autopilot'), output)
+        self.assert_linked(self.skills, [name for name in skill.SUBSKILLS if name != 'asi-autopilot'])
+        self.assertTrue(stranger.is_symlink())  # dangling, but not ours
+        skill.verify_replaceable(self.installed, files)
+
+    def test_codex_and_unlinked_installs_get_no_links_on_update(self):
+        self.assertEqual(self.install('--target', 'codex')[0], 0)
+        codex_skill = self.codex / 'skills/asi'
+        self.assertFalse(skill.links_wanted(codex_skill))
+        self.update_to(codex_skill, *self.release_of('99.0.0'))
+        self.assertEqual(self.links(codex_skill.parent), [])
+        # A custom destination installed for Claude keeps its links through updates.
+        custom = self.root / 'custom skills'
+        self.assertEqual(self.install('--dest', str(custom), '--target', 'claude')[0], 0)
+        self.assert_linked(custom)
+        self.assertTrue(skill.links_wanted(custom / 'asi'))
+        self.update_to(custom / 'asi', *self.release_of('99.0.0'))
+        self.assert_linked(custom)
+        self.assertIn(b'99.0.0', (custom / 'asi/runtime/agent_usage.py').read_bytes())
+        # --dest without --target claude stays unlinked.
+        plain = self.root / 'plain skills'
+        self.assertEqual(self.install('--dest', str(plain))[0], 0)
+        self.assertEqual(self.links(plain), [])
+
+    def test_locally_modified_subskill_is_preserved(self):
+        self.assertEqual(self.install('--target', 'claude')[0], 0)
+        changed = self.installed / 'subskills/asi-suggest/SKILL.md'
+        changed.write_bytes(changed.read_bytes() + b'\nMy own rule.\n')
+        with self.assertRaisesRegex(skill.UpdateError, 'Local modifications preserved: subskills/asi-suggest/SKILL.md'):
+            skill.install_files(self.installed, *self.release_of('99.0.0'))
+        self.assertTrue(changed.read_bytes().endswith(b'My own rule.\n'))
+        changed.write_bytes(self.files['subskills/asi-suggest/SKILL.md'])
+        extra = self.installed / 'subskills/my-skill/SKILL.md'
+        extra.parent.mkdir()
+        extra.write_text('mine')
+        with self.assertRaisesRegex(skill.UpdateError, 'subskills/my-skill/SKILL.md'):
+            skill.install_files(self.installed, *self.release_of('99.0.0'))
+        self.assertEqual(extra.read_text(), 'mine')
+
+    def test_a_subskill_runs_the_launcher_through_its_link(self):
+        self.assertEqual(self.install('--target', 'claude')[0], 0)
+        through_link = self.skills / 'asi-suggest/../../scripts/asi.py'
+        self.assertEqual(skill.skill_root(str(through_link)), Path(os.path.realpath(str(self.installed))))
+        self.assertEqual(skill.skill_root(str(self.installed / 'scripts/asi.py')), self.installed)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
+        environment.update(HOME=str(self.root / 'home'), ASI_DATA_DIR=str(self.data), ASI_AUTO_UPDATE='0', ASI_AUTO_PRICES='0')
+        for args, expected in ((['version'], 'ASI ' + self.version), (['autopilot', 'status'], str(self.claude / 'CLAUDE.md'))):
+            run = subprocess.run([sys.executable, '-I', str(through_link)] + args, capture_output=True, text=True, env=environment)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn(expected, run.stdout)
+        # Forwarded commands reach the installed collector with the installed skill as root.
+        with patch.object(skill, '__file__', str(through_link)), patch.object(skill, 'maintenance_tasks', return_value=[]), \
+             patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+            self.assertEqual(skill.main(['suggest', '--data-dir', str(self.data), '--session', 'abc']), 0)
+        self.assertEqual(invoke.call_args[0][0][1:3], [os.path.realpath(str(self.installed / 'runtime/agent_usage.py')), 'suggest'])
+        self.assertEqual(invoke.call_args[0][0][-2:], ['--session', 'abc'])
+        self.assertFalse((self.root / 'home/.local').exists())
 
 
 def clean_environment(**values):

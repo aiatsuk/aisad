@@ -27,8 +27,15 @@ API = 'https://api.github.com/repos/' + REPOSITORY
 RELEASES = 'https://github.com/' + REPOSITORY + '/releases/download/'
 CHECK_INTERVAL = 24 * 60 * 60
 MAX_DOWNLOAD = 10 * 1024 * 1024
-REQUIRED_FILES = {'SKILL.md', 'agents/openai.yaml', 'scripts/asi.py', 'runtime/agent_usage.py'}
+# Claude Code skills shipped inside this one and linked next to it on install.
+SUBSKILLS = ('asi-analyze', 'asi-autopilot', 'asi-suggest', 'asi-ultraanalyze')
+SUBSKILL_FILE = re.compile(r'subskills/([a-z0-9][a-z0-9-]*)/SKILL\.md')
+REQUIRED_FILES = {'SKILL.md', 'agents/openai.yaml', 'scripts/asi.py', 'runtime/agent_usage.py'} | {
+    'subskills/' + name + '/SKILL.md' for name in SUBSKILLS}
 BOOTSTRAP_FILES = REQUIRED_FILES - {'runtime/agent_usage.py'}
+# Reports the launcher forwards to the collector as the collector's command of the same name.
+COLLECTOR_COMMANDS = ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart',
+                      'budget', 'forecast', 'menubar', 'dashboard', 'fit', 'suggest')
 # Up to 1.5.2 ASI was named AISAD. These names are read only to carry an existing setup over.
 LEGACY_NAME = 'aisad'
 LEGACY_REPOSITORY = 'aiatsuk/aisad'
@@ -136,12 +143,12 @@ def safe_path(name):
     return path
 
 
-def validate_manifest(manifest):
+def validate_manifest(manifest, required=REQUIRED_FILES):
     if not isinstance(manifest, dict) or manifest.get('schema') != 1 or manifest.get('repository') != REPOSITORY:
         raise UpdateError('Unrecognized ASI release manifest')
     semver(manifest.get('version'))
     files = manifest.get('files')
-    if not isinstance(files, dict) or not REQUIRED_FILES <= set(files):
+    if not isinstance(files, dict) or not required <= set(files):
         raise UpdateError('Release manifest is missing required files')
     for name, checksum in files.items():
         safe_path(name)
@@ -212,7 +219,9 @@ def verify_replaceable(root, incoming):
         raise UpdateError('Skill destination is not a directory')
     installed = read_json(root / 'manifest.json')
     if installed:
-        validate_manifest(installed)
+        # An installed release may predate files required now (the sub-skills came in 2.0.0).
+        # Its manifest only has to be well formed: it lists the files that may be replaced.
+        validate_manifest(installed, required=set())
         expected = installed['files']
         allowed = set(expected) | {'manifest.json'}
     else:
@@ -336,6 +345,332 @@ def alias_legacy_cli(cli_path):
     print('The aisad command at ' + str(old) + ' now runs ' + str(cli_path))
 
 
+def claude_directory():
+    return Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser().absolute()
+
+
+def skill_root(script=None):
+    """The installed skill directory of this launcher.
+
+    A sub-skill runs it through its own link, as skills/asi-suggest/../../scripts/asi.py.
+    There '..' has to follow the link, so such a path is resolved; any other path is kept
+    as given, so a symlinked skill directory is still seen (and refused) by updates."""
+    path = Path(script or __file__).absolute()
+    if '..' in path.parts:
+        path = Path(os.path.realpath(str(path)))
+    return path.parents[1]
+
+
+def subskill_names(root):
+    """Sub-skills of the installed release, read from its manifest."""
+    files = read_json(root / 'manifest.json').get('files')
+    if not isinstance(files, dict):
+        return []
+    found = (SUBSKILL_FILE.fullmatch(name) for name in files)
+    return sorted({match[1] for match in found if match and match[1] != root.name})
+
+
+def link_target(path):
+    """Where a symlink points, as an absolute path, without following further links."""
+    return Path(os.path.normpath(os.path.join(str(path.parent), os.readlink(str(path)))))
+
+
+def link_subskills(root):
+    """Link each sub-skill next to the skill for Claude Code: skills/<name> -> asi/subskills/<name>.
+
+    A missing link is created and a correct one left alone. Anything else at that path is
+    kept as it is, with one line, unless it is a link into asi/subskills/. A link of ours to a
+    sub-skill the release no longer has is removed. Returns how many paths were kept."""
+    home = Path(os.path.normpath(str(root / 'subskills')))
+    names = subskill_names(root)
+    kept, made = 0, []
+    for name in names:
+        link = root.parent / name
+        temporary = None
+        try:
+            if link.is_symlink():
+                target = link_target(link)
+                if target == home / name:
+                    continue
+                if target.parent != home:
+                    raise FileExistsError
+                # Ours, but pointing at another sub-skill: replace it in one step.
+                temporary = root.parent / ('.' + name + '.link-' + uuid.uuid4().hex)
+                os.symlink(root.name + '/subskills/' + name, str(temporary))
+                os.replace(str(temporary), str(link))
+                temporary = None
+            elif link.exists():
+                raise FileExistsError
+            else:
+                os.symlink(root.name + '/subskills/' + name, str(link))
+            made.append(name)
+        except FileExistsError:
+            kept += 1
+            print('Kept ' + str(link) + ': it is not a link into ' + root.name + '/subskills/; move it away and install again to get /' + name, file=sys.stderr)
+        except OSError as error:
+            kept += 1
+            print('Could not link ' + str(link) + ': ' + str(error), file=sys.stderr)
+        finally:
+            if temporary is not None and temporary.is_symlink():
+                temporary.unlink()
+    try:
+        siblings = sorted(root.parent.iterdir())
+    except OSError:
+        siblings = []
+    for link in siblings:
+        try:
+            if link.name not in names and link.is_symlink() and not link.exists() and link_target(link).parent == home:
+                link.unlink()
+                print('Removed ' + str(link) + ': this release no longer has that sub-skill')
+        except OSError:
+            pass
+    if made:
+        print('Linked Claude Code skills ' + ', '.join('/' + name for name in made) + ' in ' + str(root.parent))
+    return kept
+
+
+def links_wanted(root):
+    """Whether an update keeps sub-skill links next to this skill: it is the Claude Code
+    skill, or a link of ours is already there (an install with --dest and --target claude)."""
+    try:
+        if root.parent.resolve() == (claude_directory() / 'skills').resolve():
+            return True
+        home = Path(os.path.normpath(str(root / 'subskills')))
+        return any(path.is_symlink() and link_target(path).parent == home for path in root.parent.iterdir())
+    except OSError:
+        return False
+
+
+# Model rules: one marked block in Claude Code's CLAUDE.md, and the autopilot switch.
+# ASI installs no hooks. The first-message hint and the autopilot are plain instructions in
+# that block; this is its only writer, and text outside the markers is never changed.
+RULES_BEGIN = '<!-- asi:begin -->'
+RULES_END = '<!-- asi:end -->'
+# The AIR prototype kept the same rules between these markers; the first write takes them over.
+AIR_BEGIN = '<!-- air:begin -->'
+AIR_END = '<!-- air:end -->'
+DEFAULT_RULES = {'hint': True, 'autopilot': False}
+
+HINT = """\
+# ASI: model and effort
+
+Managed by `asi rules`; edits inside this block are not kept.
+
+Only in a main interactive session (never as a subagent, workflow agent or headless run): start your reply to the first user message with a short ASI note of two or three lines: the task class, the model, effort and modes the guide below suggests, one line of why, and whether the current model already fits. Then do the task without waiting for an answer. Skip the note for trivial prompts (greetings, yes/no, slash commands), for a prompt written by a script or harness, and whenever the reply must follow a fixed output format. Do not repeat it later; `/asi-suggest` gives the full version on request.
+
+Guide (start, then raise if it falls short):
+- everyday engineering, debugging, multi-PR work, computer use, unsure: Opus, medium then high
+- well-scoped coding, documents, review, drafting, investigation: Sonnet, medium (high for harder scoped work); chat: Sonnet, low
+- classification, extraction, and subagents that search, read logs or summarize: Haiku
+- major refactor or migration, architecture, leading many subagents, deep research, long unattended runs: Fable, medium then high
+- change effort before model; past high, try the next model up at a lower effort
+- a model switch re-writes the whole cache: switch at the start, after /compact, or in a new session
+"""
+
+AUTOPILOT = """\
+## ASI autopilot: on
+
+For every subagent you spawn (Agent tool) and every agent call in a Workflow script, choose the model and effort for that piece of work and pass them explicitly. A model or effort already named by the agent definition, a skill, the workflow, repo routing or the user wins; fill in only where nothing is named.
+- search, reading, listing, fetching, log digging, summaries, relay or bookkeeping steps: haiku, no effort passed
+- well-scoped coding from a clear spec, review, drafting, investigation: sonnet, medium (high for the harder ones)
+- multi-file implementation, debugging with an unknown cause, computer use or screenshots: opus, medium (high if it falls short)
+- architecture or migration plans, a lead that coordinates many agents, deep research: fable, medium (high if it falls short)
+
+When a piece fails: add a self-check, then raise effort one step, then go one model up at a lower effort. Where a result can be checked automatically, run it at low and re-run only the failures at high. Say each choice in a few words when you make it ("search: haiku").
+
+Never change the main session's own model or effort: a switch re-writes the whole cache. When the main thread's work has clearly moved to another class, say so in one line and suggest switching after /compact or in a new session.
+"""
+
+
+class RulesError(Exception):
+    pass
+
+
+def claude_md():
+    return claude_directory() / 'CLAUDE.md'
+
+
+def rules_state_path(data):
+    return data / 'model-rules.json'
+
+
+def load_rules(data):
+    """The saved switches; a missing or malformed state file means the defaults."""
+    saved = read_json(rules_state_path(data))
+    return {key: bool(saved.get(key, value)) for key, value in DEFAULT_RULES.items()}
+
+
+def save_rules(data, state):
+    atomic_json(rules_state_path(data), state)
+
+
+def write_text_atomically(path, text):
+    """Replace a file's text in one step, keeping its mode (0644 when new); newlines as given."""
+    fd, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as output:
+            output.write(text)
+        os.chmod(temporary, (path.stat().st_mode & 0o777) if path.exists() else 0o644)
+        os.replace(temporary, str(path))
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def rules_block(state):
+    """The managed block for a state; empty when nothing is switched on."""
+    parts = []
+    if state['hint']:
+        parts.append(HINT)
+    if state['autopilot']:
+        parts.append(AUTOPILOT if state['hint'] else AUTOPILOT.replace('## ASI', '# ASI', 1))
+    if not parts:
+        return ''
+    return RULES_BEGIN + '\n' + '\n'.join(parts).rstrip() + '\n' + RULES_END + '\n'
+
+
+def marked_block(text, begin, end, origin=''):
+    """The (start, stop) of the one block between these markers, None when there is none."""
+    found = text.count(begin), text.count(end)
+    if found[0] != found[1] or found[0] > 1:
+        raise RulesError("found %d '%s' and %d '%s' markers%s; fix the file by hand first" % (found[0], begin, found[1], end, origin))
+    if not found[0]:
+        return None
+    if text.index(end) < text.index(begin):
+        raise RulesError('the end marker comes before the begin marker%s; fix the file by hand first' % origin)
+    return text.index(begin), text.index(end) + len(end)
+
+
+def replace_block(text, begin, end, new, nl):
+    head, tail = text[:text.index(begin)], text[text.index(end) + len(end):]
+    if tail.startswith(nl):
+        tail = tail[len(nl):]
+    if not new:
+        head, tail = head.rstrip('\r\n'), tail.lstrip('\r\n')
+        if head and tail:
+            return head + nl + nl + tail
+        return head + nl if head else tail
+    return head + new + tail
+
+
+def render_rules(text, state):
+    """Return CLAUDE.md text with the managed block replaced, added or removed.
+
+    Text outside the markers is kept byte for byte, apart from the blank lines that separate
+    it from the block. The file's own line ending (LF or CRLF) is used. A block left by the
+    AIR prototype is replaced in place, or dropped when an ASI block exists as well."""
+    ours = marked_block(text, RULES_BEGIN, RULES_END)
+    air = marked_block(text, AIR_BEGIN, AIR_END, ' (left by the earlier AIR tool)')
+    if ours and air and ours[0] < air[1] and air[0] < ours[1]:
+        raise RulesError('the ASI and AIR blocks overlap; fix the file by hand first')
+    nl = '\r\n' if '\r\n' in text else '\n'
+    new = rules_block(state).replace('\n', nl)
+    if air:
+        if not ours:
+            return replace_block(text, AIR_BEGIN, AIR_END, new, nl)
+        text = replace_block(text, AIR_BEGIN, AIR_END, '', nl)
+    if ours:
+        return replace_block(text, RULES_BEGIN, RULES_END, new, nl)
+    if not new:
+        return text
+    if not text.strip():
+        return new
+    return text.rstrip('\r\n') + nl + nl + new
+
+
+def apply_rules(state):
+    """Write the block for a state. Returns (path, changed). A symlinked CLAUDE.md is followed,
+    so the link stays a link; a file that is not UTF-8 is refused untouched."""
+    path = claude_md()
+    # realpath, unlike Path.resolve on Python 3.9, does not raise on a link loop; it stops at a
+    # link instead, which is refused rather than replaced by a plain file.
+    target = Path(os.path.realpath(str(path))) if path.is_symlink() else path
+    if target.is_symlink():
+        raise RulesError('the link loops; fix it by hand first')
+    old = ''
+    if target.exists():
+        try:
+            with open(str(target), encoding='utf-8', newline='') as handle:
+                old = handle.read()
+        except UnicodeDecodeError as error:
+            raise RulesError('not valid UTF-8 (%s at byte %d); left untouched' % (error.reason, error.start)) from error
+    new = render_rules(old, state)
+    if new == old:
+        return path, False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomically(target, new)
+    return path, True
+
+
+def rules_installed(key):
+    """Whether the block on disk carries the hint or the autopilot section."""
+    try:
+        text = claude_md().read_text(encoding='utf-8')
+    except (OSError, ValueError):
+        return False
+    if RULES_BEGIN not in text or RULES_END not in text or text.index(RULES_END) < text.index(RULES_BEGIN):
+        return False
+    body = text[text.index(RULES_BEGIN):text.index(RULES_END)]
+    return ('ASI autopilot: on' in body) if key == 'autopilot' else ('ASI: model and effort' in body)
+
+
+def set_rules(data, state):
+    """Save the state and write the block; neither is left changed when the other fails."""
+    before = load_rules(data)
+    try:
+        save_rules(data, state)
+    except OSError as error:
+        print('Error: cannot save ' + str(rules_state_path(data)) + ': ' + str(error), file=sys.stderr)
+        return 1
+    try:
+        path, changed = apply_rules(state)
+    except (RulesError, OSError) as error:
+        try:
+            save_rules(data, before)
+        except OSError:
+            pass
+        where = str(claude_md()) if isinstance(error, RulesError) else 'cannot write ' + str(claude_md())
+        print('Error: ' + where + ': ' + str(error), file=sys.stderr)
+        return 1
+    print(('Updated ' if changed else 'No change needed in ') + str(path))
+    return 0
+
+
+def rules_command(data, command, mode):
+    state = load_rules(data)
+    present = lambda key: 'present' if rules_installed(key) else 'absent'
+    if command == 'autopilot':
+        if mode == 'show':
+            print(AUTOPILOT)
+            return 0
+        if mode == 'status':
+            print('autopilot: ' + ('on' if state['autopilot'] else 'off') + ' (rules block in ' + str(claude_md()) + ': ' + present('autopilot') + ')')
+            return 0
+        state['autopilot'] = mode == 'on'
+        if set_rules(data, state):
+            return 1
+        if state['autopilot']:
+            print('Autopilot is on for new sessions. Rules to follow in this session from now on:\n')
+            print(AUTOPILOT)
+        else:
+            print("Autopilot is off. From now on in this session, stop choosing models and effort for subagents "
+                  "on ASI's behalf; follow agent definitions and the session defaults.")
+        return 0
+    if mode == 'status':
+        print('first-message hint: ' + ('on' if state['hint'] else 'off') + '; autopilot: ' + ('on' if state['autopilot'] else 'off'))
+        print('block in ' + str(claude_md()) + ': hint ' + present('hint') + ', autopilot ' + present('autopilot'))
+        return 0
+    if mode == 'show':
+        print(rules_block(state) or '(nothing switched on)')
+        return 0
+    if mode in ('on', 'off'):
+        state['hint'] = mode == 'on'
+    return set_rules(data, state)
+
+
 def data_directory(value=None):
     chosen = value or setting('DATA_DIR')
     return Path(chosen).expanduser().resolve() if chosen else default_data_directory()
@@ -408,6 +743,12 @@ def update(root, data, automatic=False):
         atomic_json(state, dict(result, attempted_at=time.time()))
         manifest, files = download_release(release)
         version = install_files(root, manifest, files)
+        try:
+            if links_wanted(root):
+                # Read from the new manifest, so sub-skills added by this release get links too.
+                link_subskills(root)
+        except OSError as error:
+            print('Updated, but could not link the sub-skills: ' + str(error), file=sys.stderr)
         atomic_json(state, dict(result, installed=version, available=False))
         print('Updated ASI skill and collector to ' + version, file=sys.stderr, flush=True)
         return True
@@ -428,13 +769,20 @@ def parser():
     maintain = commands.add_parser('maintain', allow_abbrev=False, help='Run the daily update check and price refresh now (launches do this in the background)')
     maintain.add_argument('--data-dir', help='Local reports and update-state directory')
     maintain.add_argument('tasks', nargs='*', metavar='{update,prices}', help='Default: both')
-    for name in ['version', 'check-update', 'update', 'run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar']:
-        command = commands.add_parser(name, allow_abbrev=False,
-                                      help='Open the macOS menu bar app; add --json for its report' if name == 'menubar' else None,
-                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name in ('usage', 'analyze', 'statusline', 'run', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'menubar') else None)
+    helps = {'menubar': 'Open the macOS menu bar app; add --json for its report',
+             'fit': 'Model and effort that ran in Claude Code compared with the model guide',
+             'suggest': 'Facts for choosing a Claude model and effort for a session now'}
+    for name in ('version', 'check-update', 'update', 'run') + COLLECTOR_COMMANDS:
+        command = commands.add_parser(name, allow_abbrev=False, help=helps.get(name),
+                                      epilog='Collector options are forwarded, e.g. --json --provider claude --days 7. Use -- --help for all collector options.' if name == 'run' or name in COLLECTOR_COMMANDS else None)
         command.add_argument('--data-dir', help='Local reports and update-state directory')
-        if name in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
+        if name == 'run' or name in COLLECTOR_COMMANDS:
             command.add_argument('--offline', action='store_true', help='Skip all update network requests')
+    for name, modes, text in (('rules', ['on', 'off', 'status', 'show', 'apply'], 'The model and effort hint in Claude Code CLAUDE.md'),
+                              ('autopilot', ['on', 'off', 'status', 'show'], 'Model and effort chosen per subagent, kept in the same CLAUDE.md block')):
+        command = commands.add_parser(name, allow_abbrev=False, help=text)
+        command.add_argument('mode', nargs='?', default='status', choices=modes)
+        command.add_argument('--data-dir', help='Local reports and state directory')
     return cli
 
 
@@ -530,9 +878,9 @@ def launch_menubar():
 def main(argv=None):
     cli = parser()
     args, forwarded = cli.parse_known_args(argv)
-    if forwarded and args.command not in ('run', 'usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
+    if forwarded and args.command != 'run' and args.command not in COLLECTOR_COMMANDS:
         cli.error('unrecognized arguments: ' + ' '.join(forwarded))
-    root = Path(__file__).absolute().parents[1]
+    root = skill_root()
     if args.command == 'install':
         if args.archive:
             if not args.checksum_file or args.version:
@@ -545,31 +893,36 @@ def main(argv=None):
             manifest, files = download_release(release_info(args.version))
         if args.dest and args.target == 'both':
             raise UpdateError('--dest selects one skills directory; omit --target both')
+        # (skill directory, whether Claude Code sub-skill links go next to it). The sub-skills
+        # are about Claude models, so the Codex skill gets none.
         if args.dest:
-            destinations = [Path(args.dest).expanduser().absolute() / 'asi']
+            destinations = [(Path(args.dest).expanduser().absolute() / 'asi', args.target == 'claude')]
         else:
             destinations = []
             if args.target in ('codex', 'both'):
-                destinations.append(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser().absolute() / 'skills/asi')
+                destinations.append((Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser().absolute() / 'skills/asi', False))
             if args.target in ('claude', 'both'):
-                destinations.append(Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser().absolute() / 'skills/asi')
+                destinations.append((claude_directory() / 'skills/asi', True))
         cli_path = None
         if args.cli_dir:
             cli_path = Path(args.cli_dir).expanduser().absolute() / 'asi'
-            cli_body = '#!/bin/sh\n# ASI CLI launcher\nexec python3 ' + shlex.quote(str(destinations[0] / 'scripts/asi.py')) + ' "$@"\n'
+            cli_body = '#!/bin/sh\n# ASI CLI launcher\nexec python3 ' + shlex.quote(str(destinations[0][0] / 'scripts/asi.py')) + ' "$@"\n'
             if cli_path.is_symlink() or (cli_path.exists() and cli_path.read_text() != cli_body):
                 raise UpdateError('Existing terminal command preserved: ' + str(cli_path))
-        for destination in destinations:
+        kept = 0
+        for destination, links in destinations:
             version = install_files(destination, manifest, files, allow_downgrade=args.allow_downgrade)
             print('Installed ASI ' + version + ' at ' + str(destination))
             remove_legacy_install(destination)
+            if links:
+                kept += link_subskills(destination)
         if cli_path is not None:
             cli_path.parent.mkdir(parents=True, exist_ok=True)
             cli_path.write_text(cli_body)
             cli_path.chmod(0o755)
             print('Installed terminal command at ' + str(cli_path))
             alias_legacy_cli(cli_path)
-        return 0
+        return 1 if kept else 0
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
     if args.command == 'menubar' and not forwarded:
@@ -577,6 +930,9 @@ def main(argv=None):
     data = data_directory(args.data_dir)
     if data == root.resolve() or root.resolve() in data.parents:
         raise UpdateError('Choose a data directory outside the installed skill')
+    if args.command in ('rules', 'autopilot'):
+        # Local file edits only: no collector, no update check.
+        return rules_command(data, args.command, args.mode)
     if args.command == 'version':
         print('ASI ' + (read_json(root / 'manifest.json').get('version') or 'unbundled skill (run update to install the collector)'))
         return 0
@@ -605,7 +961,7 @@ def main(argv=None):
         raise UpdateError('No installed collector. Run update with network access or install a release ZIP.')
     if tasks:
         start_maintenance(root, data, tasks)
-    mode = [args.command] if args.command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar') else []
+    mode = [args.command] if args.command in COLLECTOR_COMMANDS else []
     return subprocess.call([sys.executable, str(runtime)] + mode + ['--output', str(data / 'output')] + forwarded)
 
 if __name__ == '__main__':

@@ -37,7 +37,7 @@ python3 <skill-directory>/scripts/asi.py usage --json --include-requests
 
 Usage JSON remains `schema_version: 2`. Read `period`, `previous_period`, `filters`, `current.totals`, `changes`, and the relevant `by_model`, `by_provider`, `by_project`, `by_session`, `by_role` or `by_date` breakdown. `current.rows` provides joint groups; distinct session counts must not be summed across models or days. `--include-requests` adds normalized usage observations and `request_stats`, including event IDs and source references. `quality` and `scan` describe collection coverage over discovered history.
 
-Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Cost totals and cost comparisons cover priced requests only: `cost_comparison_basis` names that basis, `changes.estimated_cost_usd` reports `excluded_current_requests` and `excluded_previous_requests`, and `--include-requests` adds `pricing_coverage`. Report those exclusions with any cost figure. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled.
+Preserve null prices and cache-TTL ranges. A known subtotal is not a complete bill. Cost totals and cost comparisons cover priced requests only: `cost_comparison_basis` names that basis, `changes.estimated_cost_usd` reports `excluded_current_requests` and `excluded_previous_requests`, and `--include-requests` adds `pricing_coverage`. Report those exclusions with any cost figure. Missing dates do not establish zero usage. Ordinary usage answers should stay focused on statistics; recommendations and hypothetical savings remain disabled outside the model fit commands below.
 
 A usage answer is computed from usage observations alone, so `usage`, `analyze` and `statusline` do not refresh `sessions.sqlite` or `usage.json`. Their totals cover every discovered trace either way. Run `collect` when the evidence database itself must be current.
 
@@ -106,6 +106,17 @@ python3 <skill-directory>/scripts/asi.py run -- --open
 This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context and Cache usage; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
 
 `statusline` prints one compact line and exits: today, calendar-week-to-date spend versus the same weekdays last week, month-to-date spend versus matched days in the previous month, then a six-cell budget bar and percentage. Shorter previous months explicitly label the matched-day subtotals. The monthly budget defaults to $2,000; `--monthly-budget USD` overrides it. Monthly spend includes every discovered Claude/Codex session and agent pool, independent of filters and selected dates. JSON retains matched-day monthly comparison metadata. Coral changes to amber at 65%, orange at 80% and red at 100%, against a dark gray background. `--color` forces colors in piped output; `--no-color` disables them. Text keeps monetary amounts and budget percentages uncluttered; only comparison deltas use a positive sign. JSON retains incomplete-pricing metadata. It has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
+
+## Model fit for Claude Code
+
+Four sub-skills ship inside this skill; `install --target claude` links each next to it in the Claude Code skills directory (a Codex install gets none):
+
+- `/asi-suggest`: which model, effort and modes fit the task in this conversation, and the cost of switching now (`suggest`).
+- `/asi-analyze`: one session turn by turn, what ran and what would have fit (`fit --session`).
+- `/asi-ultraanalyze`: every session over a period, with examples and the dashboard's Model fit tab (`fit`, `dashboard`).
+- `/asi-autopilot`: model and effort chosen for each subagent and workflow agent (`autopilot`).
+
+`rules on|off|status|show` and `autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in the `CLAUDE.md` of `CLAUDE_CONFIG_DIR` or `~/.claude`: `rules` holds a short first-message model hint, `autopilot` the per-subagent rules. They change nothing outside the markers and install no hooks. Savings in these reports are upper bounds on API-equivalent estimates.
 
 ## Updates and local data
 

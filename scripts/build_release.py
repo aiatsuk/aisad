@@ -9,7 +9,8 @@ import re
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_FILES = ('SKILL.md', 'agents/openai.yaml', 'scripts/asi.py')
+SKILL_FILES = ('SKILL.md', 'agents/openai.yaml', 'scripts/asi.py', 'subskills/asi-analyze/SKILL.md',
+               'subskills/asi-autopilot/SKILL.md', 'subskills/asi-suggest/SKILL.md', 'subskills/asi-ultraanalyze/SKILL.md')
 
 
 def version_from_source(source):
