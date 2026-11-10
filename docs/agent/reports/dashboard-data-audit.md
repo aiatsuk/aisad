@@ -7,7 +7,7 @@ Date: 2026-10-22. Scope: fresh local collection, standalone report logic, filter
 1. **Important — unknown Grok cost displayed as zero** (`agent_usage.py:2541`). A period whose Grok records all lacked reported cost rendered “$0.00 known reported.” Added an explicit “Cost unavailable” state while preserving genuine reported zero and incomplete known subtotals. Regression reproduced the old output before the fix.
 2. **Clarity — session counts described different populations** (`agent_usage.py:2531`). Charts count sessions with usage observations; Sessions also contains event-only sessions. Both captions now state their population.
 3. **Clarity — empty tables looked unfinished**. Models, sessions, cache and event-preview tables now explain empty dates/searches instead of leaving just a header.
-4. **Clarity — freshness and themes**. Snapshot time includes its display timezone; the footer explains how to recollect from AISAD or the CLI. Initial theme follows the system, with a remembered explicit choice when storage is available. Restricted storage remains recoverable.
+4. **Clarity — freshness and themes**. Snapshot time includes its display timezone; the footer explains how to recollect from ASI or the CLI. Initial theme follows the system, with a remembered explicit choice when storage is available. Restricted storage remains recoverable.
 5. **Accessibility semantics**. Tables have descriptive accessible names; session result counts announce changes politely. Actual assistive-technology behavior remains unverified.
 
 ## Flow coverage in this run
@@ -38,7 +38,7 @@ Date: 2026-10-22. Scope: fresh local collection, standalone report logic, filter
 
 ## How freshness works
 
-Dashboard recollects local history when opened from the menu, writes a standalone HTML file and returns the same calendar-spend report to the menu. Both surfaces then use the same collection timestamp, totals, comparisons and saved monthly limit. The saved page does not collect or poll. Refresh it by opening Dashboard again in AISAD, or running `aisad dashboard`; an already open browser tab may also need reloading. Files are read up to their starting size, so updates made during a collection can appear on the next collection.
+Dashboard recollects local history when opened from the menu, writes a standalone HTML file and returns the same calendar-spend report to the menu. Both surfaces then use the same collection timestamp, totals, comparisons and saved monthly limit. The saved page does not collect or poll. Refresh it by opening Dashboard again in ASI, or running `asi dashboard`; an already open browser tab may also need reloading. Files are read up to their starting size, so updates made during a collection can appear on the next collection.
 
 ## Limits
 

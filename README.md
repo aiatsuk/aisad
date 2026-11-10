@@ -8,21 +8,19 @@ Since 2.0 it also answers a second question, [which Claude model and effort fit 
 
 ## See it work
 
-Weekday view (`asi chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
+Weekday view (`asi chart --view weeks`): daily costs by calendar week, weekly totals, and spend insights. `H`/`L` browse months; `W` switches to the daily graph.
 
-![asi weekday view: browsing months with weekly totals, spend intensity and insights](docs/terminal-weeks.gif)
+![ASI weekday view: synthetic monthly costs, weekly totals and insights](docs/terminal-weeks.gif)
 
-Daily graph (`asi chart`), same history: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table.
+Daily graph (`asi chart`), showing the same synthetic history:
 
-![Interactive asi chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
+![ASI daily chart: synthetic daily costs by provider](docs/terminal-chart.gif)
 
-Statusline, the optional spend forecast and its saved setting, recorded on the same real history:
+Version and compact statusline:
 
-![asi statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
+![ASI version and statusline using synthetic usage](docs/terminal-cli.gif)
 
-*These recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
-
-The terminal recordings were made before the rename, so their window title and commands still say `aisad`; the output is the same.
+*These previews use synthetic data rendered by ASI 2.1.0's terminal formatters. The chart previews cycle between static monthly snapshots; the interactive terminal also animates navigation. Amounts are API-equivalent estimates, not invoices.*
 
 The Model fit tab of the dashboard, on the synthetic demo data (`python3 scripts/make_demo.py`):
 
@@ -470,7 +468,7 @@ The weekday table has seven rows, Sunday through Saturday, and a column per Sund
 
 Run the command in the terminal to see the actual colored chart; an ASCII reconstruction in an assistant message is not a faithful preview. `--ascii` is an explicit compatibility fallback. Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series keep the visible provider's color. Incomplete pricing/coverage remains explicit in the footer and JSON. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
 
-`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
+`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `ASI_MONTHLY_BUDGET` explicitly overrides it.
 
 To add the `asi` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
 

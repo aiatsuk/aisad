@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0 — 2026-11-10
+
+- Finish the ASI rename in current documentation, terminal examples, and the terminal package version. Legacy AISAD names remain only for migration and historical records.
+- Add menu-bar quota forecasts from the recent pace or usual weekly rhythm. Keep up to eight weeks of bounded quota history; forecasts remain estimates and stale readings show none.
+- Merge the large-history dashboard fix: split large embedded snapshots into bounded parts and cap embedded event previews while keeping usage totals, request statistics and model-fit results complete.
+
 ## 2.0.1 — 2026-11-10
 
 - The dashboard opens on a long history again. Its data used to be saved as one block that unpacked to more text than a browser can hold (one real history needed 586 MB), so the page showed only the saved summary and the Model fit tab could not be reached. The dashboard file and the shared live update file now carry a large history in parts of at most 32 MB each. The page reads them one after another, shows which part it is on, and opens once every part is in. If a part cannot be read, the page keeps the saved summary and says the charts could not load. Smaller histories are saved as before, and the page still reads files written by 2.0.0 and 1.x. A dashboard opened with 2.0.0 ignores a live update saved in parts; reopen it.
