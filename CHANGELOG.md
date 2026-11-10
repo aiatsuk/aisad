@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.2 — 2026-11-10
+
+- Price Claude Fable 5.2 requests. The built-in table had no rate for the model, so its requests were reported as unpriced. The published rate per million tokens is $8 input, $0.20 cache read, $10 five-minute cache write and $40 output.
+- A price catalog refreshed before a model joined the built-in table now still prices that model: built-in rates fill the gaps, refreshed rates win where both exist, and an explicit `--prices` catalog is used as written.
+
 ## 1.5.1 — 2026-11-09
 
 - Launch the installed macOS app with `aisad menubar`. The command finds the app in Applications or through its registered bundle ID; `aisad menubar --json` still returns the aggregate report.

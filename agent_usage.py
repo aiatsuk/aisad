@@ -32,7 +32,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.5.1'
+VERSION = '1.5.2'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-10-22'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -49,6 +49,7 @@ RATE_VALUES = {
  'gpt-5.6-terra': [2,.2,2.5,12], 'gpt-5.6-luna': [.2,.02,.25,1.2],
  'claude-opus-5-5': [4,.2,5,20], 'claude-sonnet-5-5': [2,.1,2.5,10],
  'claude-haiku-5-5': [.1,.01,.125,.5],
+ 'claude-fable-5-2': [8,.2,10,40],
  'claude-fable-5-1': [10,.25,12.5,50], 'claude-fable-5': [10,1,12.5,50],
  'claude-mythos-5-1': [10,.25,12.5,50], 'claude-mythos-5': [10,1,12.5,50],
  'claude-opus-5': [5,.5,6.25,25], 'claude-opus-4-8': [5,.5,6.25,25],
@@ -569,7 +570,11 @@ def load_prices(path=None,output=None):
     if path:return validate_prices(json.loads(Path(path).read_text(encoding='utf-8')))
     cache=Path(output)/PRICE_CACHE if output else None
     if cache and cache.is_file():
-        try:return validate_prices(json.loads(cache.read_text(encoding='utf-8')))
+        try:
+            catalog=validate_prices(json.loads(cache.read_text(encoding='utf-8')))
+            # A cache written before a model joined the built-in table still prices that model.
+            for model,rule in default_prices()['models'].items():catalog['models'].setdefault(model,rule)
+            return catalog
         except (OSError,ValueError,TypeError,KeyError,ArithmeticError):pass
     return validate_prices(default_prices())
 
