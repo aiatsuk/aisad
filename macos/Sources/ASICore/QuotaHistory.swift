@@ -18,13 +18,16 @@ public struct QuotaHistory: Codable, Sendable, Equatable {
         public var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
     }
 
-    public static let limit = 4000
+    /// Long enough to compare forecasts with how past windows really ended.
+    public static let retention: TimeInterval = 8 * 7 * 86_400
+    /// Per window, so a busy short window cannot push out a long one.
+    public static let limit = 2500
     public private(set) var samples: [Sample]
 
     public init(samples: [Sample] = []) { self.samples = samples }
 
-    /// Add one reading per window. An unchanged value within ten minutes adds nothing;
-    /// readings whose window has reset more than a day ago are dropped.
+    /// Add one reading per window. An unchanged value within ten minutes adds nothing.
+    /// Finished windows thin to one reading an hour and are dropped after `retention`.
     public mutating func record(_ provider: ProviderQuota, at date: Date) {
         for window in provider.windows where !window.isExpired(at: date) {
             let sample = Sample(provider: provider.id, window: window.id, at: provider.fetchedAt,
@@ -35,9 +38,36 @@ public struct QuotaHistory: Codable, Sendable, Equatable {
                sample.at.timeIntervalSince(last.at) < 600 { continue }
             samples.append(sample)
         }
-        let horizon = date.addingTimeInterval(-86_400)
-        samples.removeAll { ($0.resetsAt ?? $0.at.addingTimeInterval(8 * 86_400)) < horizon }
-        if samples.count > Self.limit { samples.removeFirst(samples.count - Self.limit) }
+        prune(at: date)
+    }
+
+    private mutating func prune(at date: Date) {
+        let horizon = date.addingTimeInterval(-Self.retention)
+        let current = samples.filter { ($0.resetsAt ?? $0.at.addingTimeInterval(8 * 86_400)) >= horizon }
+        // Reset times drift by seconds between readings, so periods group by the hour.
+        func period(_ sample: Sample) -> String {
+            let reset = sample.resetsAt.map { Int(($0.timeIntervalSince1970 / 3_600).rounded()) } ?? 0
+            return sample.provider + "/" + sample.window + "/" + String(reset)
+        }
+        var finalIndex: [String: Int] = [:]
+        for (index, sample) in current.enumerated() { finalIndex[period(sample)] = index }
+        var lastKept: [String: Date] = [:]
+        var kept: [Sample] = []
+        for (index, sample) in current.enumerated() {
+            let key = period(sample)
+            let finished = sample.resetsAt.map { $0 <= date } ?? false
+            // The final reading is how the window really ended, so it always stays.
+            if finished, finalIndex[key] != index, let last = lastKept[key],
+               sample.at.timeIntervalSince(last) < 3_600 { continue }
+            lastKept[key] = sample.at
+            kept.append(sample)
+        }
+        var counts: [String: Int] = [:]
+        samples = kept.reversed().filter { sample in
+            let key = sample.provider + "/" + sample.window
+            counts[key, default: 0] += 1
+            return counts[key, default: 0] <= Self.limit
+        }.reversed()
     }
 
     /// Readings of one window inside its current period, oldest first.

@@ -135,10 +135,15 @@ Click a provider to open its pace popover:
 
 - **Weekly left** with its reset time, and the pace against an even spend of the window:
   *behind pace* means less remains than an even spend would leave.
-- **Runs out** projects the average rate so far to exhaustion; a window that would outlast its
-  reset says so instead. Early in a window the projection is necessarily rough.
+- **The outlook** says where the window is heading: **May run out Tue**, or **About 40% left at
+  reset**. A weekly window with at least two busy past weeks of local spend history follows your
+  usual rhythm: spend so far plus a typical week's remainder, scaled by how this week compares and
+  converted to percent at this window's own rate. Anything else, such as a 5-hour window, projects
+  the recent pace, where older usage counts less, so a quiet stretch lowers the forecast. Nothing
+  is shown below 2% used, in the first twentieth of a window, or for a stale reading. It is an
+  estimate in words: a range is not shown because it has not yet proved reliable on real history.
 - A chart of the remaining allowance across the window, one column per day: the readings ASI
-  already fetched, the dotted even-pace line and the projection. Hover it to read an earlier point.
+  already fetched, the dotted even-pace line and the forecast. Hover it to read an earlier point.
 - Every other window (session, model-specific weekly) with a bar, the percentage left and its
   reset, shown relatively within a day (for example, **resets in 2h 18m**).
 
@@ -148,7 +153,9 @@ stale or expired readings are gray, and the menu bar label keeps its own warning
 (orange below 20%, red at 10% or below).
 
 The chart draws on `quota-history.json` in the output directory: the percentage and time of each
-reading the app already fetched, at most 4,000 of them, dropped a day after their window resets.
+reading the app already fetched, at most 2,500 per window. Finished windows thin to one reading
+an hour and are dropped after eight weeks. The forecast also uses `usage_hours` from the local
+report: hourly API-equivalent spend per provider for the last nine weeks.
 It holds no credentials, prompts or session content and causes no extra provider requests;
 deleting it only empties the chart until new readings arrive.
 

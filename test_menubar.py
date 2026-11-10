@@ -313,6 +313,21 @@ class MenuBarHistoryTests(unittest.TestCase):
         today = app.menubar_report(snapshot,self.args)['period_curves']['today']
         self.assertEqual((today['elapsed'],today['elapsed_hours']),(13,12.5))
 
+    def test_usage_hours_are_aggregate_per_provider_and_bounded(self):
+        now = app.dt.datetime(2026,10,23,12,tzinfo=app.dt.timezone.utc).timestamp()
+        records = [dict(date='2026-10-23',ts=now-3600,cost=2,cost_high=2,provider='Claude',session='PRIVATE'),
+                   dict(date='2026-10-23',ts=now-3500,cost=1,cost_high=1,provider='Claude'),
+                   dict(date='2026-10-23',ts=now-3600,cost=4,cost_high=4,provider='Codex'),
+                   dict(date='2026-10-23',ts=now-1800,cost=None,cost_high=None,provider='Claude'),
+                   dict(date='2026-10-23',cost=8,cost_high=8,provider='Claude'),
+                   dict(date='2026-10-23',ts=now+60,cost=16,cost_high=16,provider='Claude'),
+                   dict(date='2026-08-01',ts=now-86400*70,cost=32,cost_high=32,provider='Claude')]
+        report = app.menubar_report(self.snapshot(records),self.args)
+        usage = report['usage_hours']
+        self.assertEqual(usage['claude'],dict(hours=[int(now//3600)-1],costs=[3]))
+        self.assertEqual(usage['codex']['costs'],[4])
+        self.assertNotIn('PRIVATE',json.dumps(report))
+
     def test_period_curves_count_observations_without_a_time(self):
         records = [dict(date='2026-10-23',cost=2,cost_high=2)]
         today = app.menubar_report(self.snapshot(records),self.args)['period_curves']['today']

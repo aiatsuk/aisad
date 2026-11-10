@@ -3354,6 +3354,18 @@ def menubar_curves(records,today,now,timezone):
                           current=week(monday),previous=week(monday-dt.timedelta(days=7))))
 
 
+def menubar_usage_hours(records,now):
+    """Hourly spend per provider, nine weeks back, for the quota forecast; aggregates only."""
+    latest=now.timestamp();first=int(latest//3600)-9*168
+    totals=collections.defaultdict(lambda:collections.defaultdict(float))
+    for row in records:
+        ts=row.get('ts')
+        if isinstance(ts,(int,float)) and row.get('cost') is not None and first*3600<=ts<=latest:
+            totals[str(row.get('provider','')).lower()][int(ts//3600)]+=row['cost']
+    return {provider:dict(hours=sorted(hours),costs=[round(hours[hour],4) for hour in sorted(hours)])
+            for provider,hours in totals.items() if provider}
+
+
 def menubar_report(snapshot,args):
     """Aggregate-only native companion report, independent of display filters."""
     today=dt.date.fromisoformat(snapshot['as_of_date'])
@@ -3381,6 +3393,7 @@ def menubar_report(snapshot,args):
                 sync_revision=snapshot.get('sync_revision'),
                 as_of_date=today.isoformat(),periods=periods,monthly_history=menubar_history(snapshot),
                 period_curves=menubar_curves(records,today,now,timezone),
+                usage_hours=menubar_usage_hours(records,now),
                 scope='All discovered Claude/Codex sessions and agent pools; calendar week starts Monday.',
                 note='Estimated API-equivalent cost, not subscription usage or invoices.')
 
