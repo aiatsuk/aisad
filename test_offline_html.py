@@ -68,6 +68,38 @@ class OfflineHtmlTests(unittest.TestCase):
                 if basis != 'custom_rates':
                     self.assertNotIn('Custom rates', summary)
 
+    def test_model_fit_reaches_the_page_under_the_offline_rules(self):
+        hostile = '</script><img src=x onerror=alert(1)>'
+        unit = dict(kind='turn', session='Claude:s', main_session='Claude:s', n=1, project='p', date='2026-09-05',
+                    ts=1788600000, tier='opus', model='claude-opus-5-5', effort='high', title=hostile, cost=1.5)
+        model_fit = dict(schema=1, guide=[], units=[unit], note=hostile,
+                         events=dict(switches=[], cold=[], effort_changes=[], daily=[]))
+        csp = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; "
+               "img-src data:; base-uri 'none'; form-action 'none'")
+        for units in (1, 6000):  # the second one is over 1 MB and goes through the gzip loader
+            with self.subTest(units=units):
+                snapshot = dict(as_of_date='2026-09-05', rows=[], model_fit=dict(model_fit, units=[unit] * units))
+                output = app.render_html(snapshot)
+                embedded = output.split('<script id="snapshot" type="application/json">')[1].split('</script>')[0]
+                self.assertNotIn('<', embedded)
+                data = json.loads(embedded)
+                if data.get('encoding') == 'gzip-base64':
+                    data = json.loads(gzip.decompress(base64.b64decode(data['data'])))
+                else:
+                    self.assertEqual(units, 1)
+                self.assertEqual(data['model_fit'], snapshot['model_fit'])
+                self.assertIn(f'<meta http-equiv="Content-Security-Policy" content="{csp}">', output)
+                self.assertIn('data-tab="fit"', output)
+                self.assertIn('id="view-fit"', output)
+                self.assertNotIn(hostile, output)
+        script = app.HTML.split('</script><script>')[1].split('</script>')[0]
+        for network in ('fetch(', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'import('):
+            self.assertNotIn(network, script)
+        # The Model fit view builds its DOM from text nodes only.
+        section = script.split('// Model fit tab.')[1].split('function render(){')[0]
+        for markup in ('innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write'):
+            self.assertNotIn(markup, section)
+
     def test_fallback_text_is_escaped(self):
         summary=app.saved_summary(dict(as_of_date='2026-09-05',generated='<img src=x onerror=alert(1)>'))
         self.assertNotIn('<img', summary)

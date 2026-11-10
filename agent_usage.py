@@ -3356,6 +3356,42 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 .barlabel button{background:none;padding:0;min-height:0;font:inherit;text-align:left;border-radius:2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
 @media(max-width:760px){.calendar-totals{gap:12px}.calendar-total strong{font-size:21px}.calendar-total small{font-size:10px}}
 @media(max-width:420px){.calendar-totals{gap:10px}.calendar-total strong{font-size:18px}.section-heading small{max-width:100%}}
+
+/* Model fit: a colour follows the model tier or the saving it stands for, never its rank. */
+:root{--tier-fable:#2a78d6;--tier-opus:#eb6834;--tier-sonnet:#1baf7a;--tier-haiku:#eda100;--tier-other:#8a8a8a;--fit-kept:#b8b8b8;--fit-save-model:#6250d6;--fit-save-effort:#e87ba4;--fit-shade:0,0,0}
+:root[data-theme="dark"]{--tier-fable:#3987e5;--tier-opus:#d95926;--tier-sonnet:#199e70;--tier-haiku:#c98500;--tier-other:#8f8f8f;--fit-kept:#5e5e5e;--fit-save-model:#9085e9;--fit-save-effort:#d55181;--fit-shade:255,255,255}
+.fit-scope{margin:14px 0 12px;color:var(--muted)}
+#fit-cards .card small{display:block}
+.fit-legend{margin:0 0 12px;gap:6px 18px;font-size:12px}.fit-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.fit-chart{min-height:120px}.fit-chart svg{max-height:none}
+.fit-hit{fill:transparent;outline:none}.fit-hit:hover,.fit-hit:focus{fill:var(--ink);fill-opacity:.06}.fit-hit:focus-visible{stroke:var(--focus);stroke-width:2}
+.fit-table-view{margin-top:14px}.fit-table-view summary{font-weight:500;font-size:12px;color:var(--muted)}
+.fit-bars{display:grid;grid-template-columns:minmax(150px,300px) minmax(0,1fr);gap:14px 18px;align-items:center}
+.fit-name{min-width:0;font-size:13px;line-height:1.35}.fit-name small{display:block;font-size:11px;margin-top:2px}
+.fit-track{display:flex;gap:8px;align-items:center;border-radius:4px;min-width:0;min-height:22px}
+.fit-track:focus{outline:none}.fit-track:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.fit-stack{display:flex;flex:0 1 auto;gap:2px;height:16px;min-width:0}.fit-seg{flex:0 1 auto;height:100%;min-width:2px}.fit-seg:last-child{border-radius:0 3px 3px 0}
+.fit-track:hover .fit-stack,.fit-track:focus .fit-stack{filter:brightness(1.08)}
+.fit-val{flex:none;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+#fit-efforts{grid-template-columns:minmax(90px,150px) minmax(0,1fr)}
+.fit-grid{grid-template-columns:1.5fr 1fr}
+.fit-matrix th i,.fit-key{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+.fit-matrix td.fit-cell{min-width:72px}.fit-matrix td.fit-rec{box-shadow:inset 0 0 0 2px var(--ink)}
+td.fit-wrap,th.fit-wrap{white-space:normal;text-align:left;min-width:180px;max-width:320px;overflow-wrap:anywhere}
+td.fit-left,th.fit-left,th.fit-what{text-align:left}
+.fit-finding td,#fit-sessions td{padding-top:9px;padding-bottom:9px}
+td.fit-what{white-space:normal;text-align:left;min-width:220px;max-width:420px;overflow-wrap:anywhere}
+td.fit-what small{display:block;margin-top:2px;font-size:11px}
+.fit-what .session-button{white-space:normal;overflow-wrap:anywhere;font-size:12px}
+.fit-finding{border-top:1px solid var(--line);padding:18px 0 6px}.fit-finding:first-child{border-top:0;padding-top:2px}
+.fit-finding h3{font-size:14px;margin:0 0 4px}.fit-metric{font-weight:600;margin:2px 0;font-variant-numeric:tabular-nums}
+.fit-detail{color:var(--muted);font-size:12px;margin:4px 0 10px;max-width:90ch}
+.fit-finding .table-wrap{max-height:none}
+.fit-tip{position:fixed;z-index:20;pointer-events:none;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:0 6px 24px #0003;max-width:300px}
+.fit-tip-title{color:var(--muted);margin-bottom:4px}.fit-tip-row{display:flex;gap:14px;justify-content:space-between;align-items:center;white-space:nowrap}.fit-tip-row b{font-weight:600;font-variant-numeric:tabular-nums}
+.fit-tip-row i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+@media(max-width:1150px){.fit-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.fit-bars,#fit-efforts{grid-template-columns:minmax(0,1fr);gap:4px}.fit-track{margin-bottom:12px}td.fit-wrap,th.fit-wrap{min-width:140px}td.fit-what{min-width:170px}}
 </style></head><body><main>
 <header><div class="brand"><span class="wordmark">ASI</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1><p id="subtitle" class="snapshot-caption"></p></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
 <section id="saved-summary" class="panel wide">__SAVED_SUMMARY__</section>
@@ -3366,7 +3402,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 <div id="calendar-totals" class="calendar-totals"></div>
 <div id="monthly-target" class="monthly-target" hidden><div><span id="monthly-target-label"></span><span id="monthly-target-value"></span></div><progress id="monthly-target-bar" max="100" value="0" aria-label="Monthly spending limit"></progress></div>
 </section>
-<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button></nav>
+<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button><button id="tab-fit" role="tab" aria-selected="false" aria-controls="view-fit" tabindex="-1" data-tab="fit">Model fit</button></nav>
 <div class="filters">
 <div class="filter-bar"><label>Period<select id="period"><option value="7">Last 7 days</option><option value="today">Today</option><option value="this-week">This week (Mon–today)</option><option value="this-month">This month</option><option value="last-week">Last week (Mon–Sun)</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom dates</option></select></label>
 <div id="custom-dates" class="date-fields" hidden><label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label></div>
@@ -3384,9 +3420,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions" class="panel" hidden><div class="tools"><h2>Sessions</h2><div><input id="search" type="search" placeholder="Search by ID or title" aria-label="Search the sessions table only"> <select id="session-sort" aria-label="Sort sessions"><option value="cost">Highest cost</option><option value="max_context">Largest input</option><option value="requests">Most requests</option></select></div></div><p class="panel-intro">Open a session to inspect its usage and recorded events within the selected filters. This list also includes event-only sessions; the Charts count includes sessions with usage records.</p><div class="table-wrap"><table id="sessions-table" aria-label="Sessions"></table></div><div class="tools" style="margin-top:16px"><small id="page-info" aria-live="polite"></small><div><button id="prev" aria-label="Previous sessions page">←</button> <button id="next" aria-label="Next sessions page">→</button></div></div></section>
 <section id="view-context" role="tabpanel" aria-labelledby="tab-context" hidden><div class="mini-grid" id="context-cards"></div><section class="panel"><h2>What these traces establish</h2><div id="measurement-basis"></div><p class="panel-intro">Input includes cached tokens. A cache hit changes price, not context size. Compaction does not establish which original blocks survive in the summary.</p></section><div class="grid equal"><section class="panel"><h2>Largest recorded input</h2><p class="panel-intro">Peak input per session, including cached input.</p><div id="context-chart"></div></section><section class="panel"><h2>Tool payload footprint</h2><p class="panel-intro">Result bytes recorded in local logs. Billed tokens and repeated inclusion are unavailable.</p><div id="tool-chart"></div><p class="panel-intro" id="tool-coverage"></p></section></div></section>
 <section id="view-cache" role="tabpanel" aria-labelledby="tab-cache" hidden><div class="cards" id="cache-cards"></div><section class="panel"><h2>Cache by model</h2><p class="panel-intro">Uncached input + cache reads + cache writes equals total input. Costs include priced requests only; unknown cache-write TTLs produce ranges.</p><div class="table-wrap"><table id="cache-table" aria-label="Cache by model"></table></div></section></section>
+<section id="view-fit" role="tabpanel" aria-labelledby="tab-fit" hidden>
+<div id="fit-empty" class="panel empty" hidden><h3 id="fit-empty-title"></h3><p id="fit-empty-text"></p></div>
+<div id="fit-content">
+<p id="fit-scope" class="panel-intro fit-scope"></p>
+<div class="cards" id="fit-cards"></div>
+<section class="panel wide"><div class="tools"><h2>Estimated spend per day by model</h2><small>Hover or focus a day for its values</small></div><div class="legend fit-legend" id="fit-days-legend"></div><div id="fit-days" class="fit-chart"></div><details class="fit-table-view"><summary>Table view</summary><div class="table-wrap" id="fit-days-table"></div></details></section>
+<section class="panel wide"><h2>Spend by task class</h2><p class="panel-intro">Each bar is what a class cost. The coloured parts are the rough saving from the guide’s model and from its effort level (upper bounds).</p><div class="legend fit-legend" id="fit-classes-legend"></div><div class="fit-bars" id="fit-classes"></div><details class="fit-table-view"><summary>Table view</summary><div class="table-wrap" id="fit-classes-table"></div></details></section>
+<div class="grid fit-grid"><section class="panel"><h2>Model used per task class</h2><p class="panel-intro">Estimated spend by the model that did the work; darker cells cost more. The outlined cell is the model the guide starts the class on.</p><div class="table-wrap" id="fit-matrix"></div></section><section class="panel"><h2>Spend by effort</h2><p class="panel-intro">Each turn or subagent run counts under the effort that carried most of its cost.</p><div class="fit-bars" id="fit-efforts"></div></section></div>
+<section class="panel wide"><h2>Findings</h2><p class="panel-intro">Each with its largest examples. Select an example to open its session.</p><div id="fit-findings"></div></section>
+<section class="panel wide"><div class="tools"><h2>Most expensive sessions</h2><small id="fit-sessions-caption"></small></div><div id="fit-sessions"></div></section>
+<p id="fit-note" class="money-note"></p>
+</div></section>
 <details class="pricing-details" id="grok-usage" hidden><summary id="grok-title">Grok reported usage</summary><p id="grok-note"></p></details>
 <footer><span id="footer"></span><details class="method-details"><summary>About the data</summary><div id="method"></div><p class="coverage" id="coverage"></p></details></footer></div></main>
 <dialog id="session-dialog" aria-labelledby="session-title"><div class="tools"><div><div class="eyebrow">Session detail</div><h2 id="session-title"></h2></div><button id="close-session" aria-label="Close session detail">Close ×</button></div><p class="panel-intro" id="session-caption"></p><div class="mini-grid" id="session-cards"></div><div id="session-lifecycle" class="panel-intro"></div><h3>Input per usage observation</h3><div id="session-timeline"></div><section id="observation-detail" class="panel" hidden></section><h3 style="margin-top:24px">Recorded events</h3><p id="events-note" class="panel-intro"></p><div class="table-wrap"><table id="events-table" aria-label="Recorded events"></table></div></dialog>
+<div id="fit-tip" class="fit-tip" aria-hidden="true" hidden></div>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';
 async function loadSnapshot(node){
@@ -3406,7 +3455,7 @@ const shiftDate=(date,days)=>{const value=new Date(date+'T00:00:00Z');value.setU
 const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
 const rangeLabel=range=>range?range.from+' – '+range.to:'';
 const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
-let page=0,modelSort='cost',ascending=false,activeSession=null;
+let page=0,modelSort='cost',ascending=false,activeSession=null,activeTab='overview';
 let allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
 let today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
 function setPeriod(value){
@@ -3567,6 +3616,9 @@ function sessionsTable(rs){
 }
 function showTab(name){
     for(const button of document.querySelectorAll('[data-tab]')){const active=button.dataset.tab===name;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.getAttribute('aria-controls')).hidden=!active}
+    activeTab=name;
+    // The Model fit view measures its chart width, so it renders only while shown.
+    if(name==='fit')renderFit();else fitHideTip();
 }
 function openSession(id){
     activeSession=id;
@@ -3660,6 +3712,251 @@ function renderSpendSummary(){
         $('monthly-target').dataset.level=month.used_percent>=100?'critical':month.used_percent>=80?'warning':'normal';
     }
 }
+// Model fit tab. Python judges every turn and subagent run (D.model_fit); this view
+// only filters and sums. Text from the data goes in through textContent, never markup.
+const FIT_TIERS=['fable','opus','sonnet','haiku','other'];
+const FIT_TIER_NAMES={fable:'Fable',opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',other:'Other'};
+const FIT_EFFORTS=['low','medium','high','xhigh','max'];
+const FIT_EXAMPLES=8,FIT_SESSIONS=25;
+let fitView=null;
+const fitTier=tier=>FIT_TIERS.includes(tier)?tier:'other';
+const fitTierName=(tier,model)=>FIT_TIERS.includes(tier)&&tier!=='other'?FIT_TIER_NAMES[tier]:String(model||'unknown');
+const fitSum=(items,key)=>items.reduce((total,item)=>total+(Number(item[key])||0),0);
+const fitCount=(n,one,many)=>integer(n)+' '+(n===1?one:many);
+const fitShortModel=model=>String(model||'unknown').replace(/^claude-/,'');
+const fitGuideText=(tier,effort,top)=>`${FIT_TIER_NAMES[fitTier(tier)]} · ${effort}${top&&top!==effort?' to '+top:''}`;
+function fitEl(tag,attrs,...kids){
+    const node=['svg','rect','path','line','text'].includes(tag)?document.createElementNS('http://www.w3.org/2000/svg',tag):document.createElement(tag);
+    for(const [key,value] of Object.entries(attrs||{})){
+        if(value==null||value===false)continue;
+        if(key==='text')node.textContent=String(value);else node.setAttribute(key,String(value));
+    }
+    for(const kid of kids)if(kid!=null&&kid!==false)node.append(kid);
+    return node;
+}
+const fitSwatch=color=>fitEl('i',{style:'background:'+color,'aria-hidden':'true'});
+function fitHideTip(){const tip=$('fit-tip');if(tip)tip.hidden=true}
+function fitShowTip(event,title,rows){
+    const tip=$('fit-tip');
+    tip.replaceChildren(fitEl('div',{class:'fit-tip-title',text:title}),...rows.map(([color,name,value])=>fitEl('div',{class:'fit-tip-row'},fitEl('span',{},color?fitSwatch(color):null,name),fitEl('b',{text:value}))));
+    // Measure at the origin so a tip near the right edge is not squeezed before it moves.
+    tip.style.left='0px';tip.style.top='0px';tip.hidden=false;
+    const box=event.currentTarget.getBoundingClientRect(),pointer=event.type==='pointermove';
+    const x=pointer?event.clientX:box.left+box.width/2,y=pointer?event.clientY:box.top;
+    const w=tip.offsetWidth,h=tip.offsetHeight;
+    tip.style.left=Math.max(8,Math.min(x+14,innerWidth-w-8))+'px';
+    tip.style.top=Math.max(8,Math.min(y-h-10<8?y+16:y-h-10,innerHeight-h-8))+'px';
+}
+// Hover and keyboard focus show the same readout; screen readers get it as the label.
+function fitReadout(node,title,rows){
+    node.setAttribute('tabindex','0');
+    node.setAttribute('aria-label',title+': '+rows.map(([,name,value])=>name+' '+value).join(', '));
+    const show=event=>fitShowTip(event,title,rows);
+    node.addEventListener('pointermove',show);node.addEventListener('focus',show);
+    node.addEventListener('pointerleave',fitHideTip);node.addEventListener('blur',fitHideTip);
+    return node;
+}
+function fitTable(label,head,rows){
+    const table=fitEl('table',{'aria-label':label});
+    table.append(fitEl('thead',{},fitEl('tr',{},...head.map(([name,style])=>fitEl('th',{class:style,text:name})))));
+    table.append(fitEl('tbody',{},...rows.map(row=>fitEl('tr',{},...row.map((cell,i)=>cell instanceof Node?fitEl('td',{class:head[i][1]},cell):fitEl('td',{class:head[i][1],text:cell}))))));
+    return fitEl('div',{class:'table-wrap'},table);
+}
+function fitTicks(max){
+    if(!(max>0))return [0,1];
+    const raw=max/4,scale=Math.pow(10,Math.floor(Math.log10(raw))),step=[1,2,2.5,5,10].map(f=>f*scale).find(s=>s>=raw);
+    const ticks=[];for(let i=0;i*step<max+step*.999;i++)ticks.push(+(i*step).toFixed(10));
+    return ticks;
+}
+const fitTick=v=>v>=1000?'$'+(+(v/1000).toFixed(1))+'K':'$'+(+v.toFixed(2)).toLocaleString('en-US');
+function fitSelection(){
+    const fit=D.model_fit,range=selectedRange();
+    if(!fit||!Array.isArray(fit.units)||!fit.events||typeof fit.events!=='object')return {empty:['Model fit is not in this report','This report was saved by an older collector. Run asi dashboard again to add it.']};
+    const provider=$('provider').value,model=$('model').value,project=$('project').value,role=$('role').value,pool=$('pool').value;
+    if(provider&&provider!=='Claude')return {empty:['Model fit covers Claude Code only','Set Provider to All or to Anthropic · Claude to see it.']};
+    if(role==='review')return {empty:['Model fit has no auto-review runs','Auto-review is a Codex role. Model fit covers Claude Code main threads and subagents.']};
+    if(!range)return {empty:['Choose a valid date range','The start date must be on or before the end date.']};
+    // Pool is a session property of the usage rows; a unit or event takes its session's pool.
+    const pools=new Map();if(pool)for(const r of D.rows)pools.set(r.session,r.pool||'interactive');
+    const inside=x=>Boolean(x)&&x.date>=range.from&&x.date<=range.to&&(!project||x.project===project)&&(!pool||(pools.get(x.session)||'interactive')===pool);
+    const units=fit.units.filter(u=>inside(u)&&(!role||u.kind===(role==='main'?'turn':'agent'))&&(!model||u.model===model));
+    if(!units.length)return {empty:['No Claude Code work matches these filters',model?`No turn or subagent run that started in these dates spent most of its cost on ${model}.`:'No main-thread turn or subagent run started in these dates with these filters.']};
+    const events=fit.events,main=role!=='subagent',list=name=>main&&Array.isArray(events[name])?events[name].filter(inside):[];
+    const notes=[];
+    if(model)notes.push(`Model filter: turns and subagent runs that spent most of their cost on ${model}. Effort changes are hidden: they are not split by model.`);
+    if(model||pool)notes.push('Counts of large contexts, long Haiku prompts and fast mode are hidden: they are not split by '+[model&&'model',pool&&'pool'].filter(Boolean).join(' or ')+'.');
+    if(pool)notes.push('Pool comes from the usage records of the same session.');
+    const view={range,units,notes,note:fit.note,guide:new Map((Array.isArray(fit.guide)?fit.guide:[]).map(g=>[g.class,g])),
+        switches:list('switches').filter(e=>!model||e.from===model||e.to===model),
+        cold:list('cold').filter(e=>!model||e.model===model),
+        effortChanges:model?[]:list('effort_changes'),
+        daily:model||pool||!main||!Array.isArray(events.daily)?[]:events.daily.filter(d=>d&&d.date>=range.from&&d.date<=range.to&&(!project||d.project===project))};
+    const classes=new Map();
+    for(const u of units){
+        let c=classes.get(u.class);
+        if(!c){const g=view.guide.get(u.class)||{};c={id:String(u.class),label:String(g.label||u.class),tier:g.tier||u.rec_tier,effort:g.effort||u.rec_effort,top:g.effort_max||u.rec_effort_max,units:0,cost:0,save_model:0,save_effort:0,tiers:{}};classes.set(u.class,c)}
+        const cost=Number(u.cost)||0;c.units++;c.cost+=cost;c.save_model+=Number(u.save_model)||0;c.save_effort+=Number(u.save_effort)||0;c.tiers[fitTier(u.tier)]=(c.tiers[fitTier(u.tier)]||0)+cost;
+    }
+    view.classes=[...classes.values()].sort((a,b)=>b.cost-a.cost);
+    return view;
+}
+function fitDays(view){
+    const root=$('fit-days'),byDate=new Map();
+    for(const u of view.units){const day=byDate.get(u.date)||{},tier=fitTier(u.tier);day[tier]=(day[tier]||0)+(Number(u.cost)||0);byDate.set(u.date,day)}
+    const days=[];
+    for(let i=0;i<view.range.days;i++){const date=shiftDate(view.range.from,i),tiers=byDate.get(date)||{};days.push({date,tiers,total:FIT_TIERS.reduce((n,t)=>n+(tiers[t]||0),0)})}
+    const present=FIT_TIERS.filter(t=>days.some(d=>d.tiers[t]>0)),spent=days.filter(d=>d.total>0);
+    $('fit-days-legend').replaceChildren(...present.map(t=>fitEl('span',{},fitSwatch(`var(--tier-${t})`),FIT_TIER_NAMES[t])));
+    $('fit-days-table').replaceChildren(fitTable('Estimated spend per day by model',[['Day'],...present.map(t=>[FIT_TIER_NAMES[t]]),['Total']],
+        spent.map(d=>[d.date,...present.map(t=>d.tiers[t]?usd(d.tiers[t]):'—'),usd(d.total)])));
+    if(!spent.length){root.replaceChildren(fitEl('div',{class:'empty',text:'No priced spend in these dates.'}));return}
+    const W=Math.max(280,Math.floor(root.clientWidth||720)),H=W<520?200:240,m={l:50,r:6,t:10,b:26};
+    const ticks=fitTicks(Math.max(...days.map(d=>d.total))),top=ticks[ticks.length-1];
+    const pw=W-m.l-m.r,ph=H-m.t-m.b,band=pw/days.length,bw=Math.min(24,band>6?band-4:band*.7),y=v=>m.t+ph-v/top*ph;
+    const svg=fitEl('svg',{viewBox:`0 0 ${W} ${H}`,width:W,height:H,role:'img','aria-label':'Estimated spend per day by model'});
+    for(const v of ticks)svg.append(fitEl('line',{x1:m.l,x2:W-m.r,y1:y(v),y2:y(v),stroke:'var(--line)','stroke-width':1}),fitEl('text',{x:m.l-6,y:y(v)+4,'text-anchor':'end',class:'chart-text',text:fitTick(v)}));
+    const every=Math.max(1,Math.ceil(days.length/Math.max(1,Math.floor(pw/58))));
+    days.forEach((d,i)=>{
+        const x=m.l+i*band+(band-bw)/2,segments=present.filter(t=>d.tiers[t]>0);let below=0;
+        // Stacked in the fixed tier order, 2px apart, rounded only at the top.
+        segments.forEach((t,k)=>{
+            const value=d.tiers[t],head=y(below+value),h=Math.max(y(below)-(k?2:0)-head,.5),r=k===segments.length-1?Math.min(3,bw/2,h):0;
+            svg.append(fitEl('path',{fill:`var(--tier-${t})`,'data-tier':t,d:`M${x},${head+h}V${head+r}Q${x},${head} ${x+r},${head}H${x+bw-r}Q${x+bw},${head} ${x+bw},${head+r}V${head+h}Z`}));
+            below+=value;
+        });
+        if(i%every===0){const centre=x+bw/2,edge=centre>W-24;svg.append(fitEl('text',{x:edge?W-1:Math.max(centre,m.l+16),y:H-8,'text-anchor':edge?'end':'middle',class:'chart-text',text:shortDate(d.date)}))}
+        if(d.total>0)svg.append(fitReadout(fitEl('rect',{class:'fit-hit','data-date':d.date,role:'img',x:m.l+i*band,y:m.t,width:band,height:ph}),d.date,
+            [[null,'Total',usd(d.total)],...segments.slice().reverse().map(t=>[`var(--tier-${t})`,FIT_TIER_NAMES[t],usd(d.tiers[t])])]));
+    });
+    root.replaceChildren(svg);
+}
+function fitClasses(view){
+    $('fit-classes-legend').replaceChildren(...[['var(--fit-kept)','Cost at the guide’s setup'],['var(--fit-save-model)','Rough saving from the guide’s model'],['var(--fit-save-effort)','Rough saving from the guide’s effort']].map(([color,name])=>fitEl('span',{},fitSwatch(color),name)));
+    const max=Math.max(...view.classes.map(c=>c.cost),1e-9),kept=c=>Math.max(c.cost-c.save_model-c.save_effort,0);
+    $('fit-classes').replaceChildren(...view.classes.flatMap(c=>{
+        const parts=[[kept(c),'var(--fit-kept)'],[c.save_model,'var(--fit-save-model)'],[c.save_effort,'var(--fit-save-effort)']].filter(([v])=>v>0);
+        const stack=fitEl('div',{class:'fit-stack',style:`width:${(84*c.cost/max).toFixed(3)}%`},...parts.map(([v,color])=>fitEl('span',{class:'fit-seg',style:`width:${(100*v/c.cost).toFixed(3)}%;background:${color}`})));
+        return [fitEl('div',{class:'fit-name'},fitEl('span',{text:c.label}),fitEl('small',{text:`Guide: ${fitGuideText(c.tier,c.effort,c.top)} · ${fitCount(c.units,'turn or run','turns and runs')}`})),
+            fitReadout(fitEl('div',{class:'fit-track','data-class':c.id,'data-cost':c.cost},stack,fitEl('span',{class:'fit-val',text:usd(c.cost)})),c.label,
+                [[null,'Spent',usd(c.cost)],['var(--fit-kept)','At the guide’s setup',usd(kept(c))],['var(--fit-save-model)','Rough saving, model',usd(c.save_model)],['var(--fit-save-effort)','Rough saving, effort',usd(c.save_effort)]])];
+    }));
+    $('fit-classes-table').replaceChildren(fitTable('Spend by task class',[['Task class','fit-wrap'],['Guide','fit-left'],['Turns and runs'],['Spent'],['At the guide’s setup'],['Rough saving, model'],['Rough saving, effort']],
+        view.classes.map(c=>[c.label,fitGuideText(c.tier,c.effort,c.top),integer(c.units),usd(c.cost),usd(kept(c)),usd(c.save_model),usd(c.save_effort)])));
+}
+function fitMatrix(view){
+    const columns=FIT_TIERS.filter(t=>t!=='other'||view.classes.some(c=>c.tiers.other>0));
+    const max=Math.max(...view.classes.flatMap(c=>columns.map(t=>c.tiers[t]||0)),1e-9);
+    const head=fitEl('tr',{},fitEl('th',{class:'fit-wrap',text:'Task class'}),...columns.map(t=>fitEl('th',{},fitSwatch(`var(--tier-${t})`),FIT_TIER_NAMES[t])),fitEl('th',{text:'Total'}));
+    const rows=view.classes.map(c=>fitEl('tr',{'data-class':c.id},fitEl('td',{class:'fit-wrap',text:c.label}),...columns.map(t=>{
+        const value=c.tiers[t]||0,shade=value>0?.05+.3*Math.sqrt(value/max):0,guide=t===fitTier(c.tier);
+        return fitEl('td',{class:'fit-cell'+(guide?' fit-rec':''),style:`background:rgba(var(--fit-shade),${shade.toFixed(3)})`,title:guide?'The guide starts this class on '+FIT_TIER_NAMES[t]:null,text:value>0?usd(value):''});
+    }),fitEl('td',{text:usd(c.cost)})));
+    $('fit-matrix').replaceChildren(fitEl('table',{class:'fit-matrix','aria-label':'Estimated spend by task class and model'},fitEl('thead',{},head),fitEl('tbody',{},...rows)));
+}
+function fitEfforts(view){
+    const spend=new Map();for(const u of view.units){const e=String(u.effort||'unknown');spend.set(e,(spend.get(e)||0)+(Number(u.cost)||0))}
+    const rank=e=>FIT_EFFORTS.includes(e)?FIT_EFFORTS.indexOf(e):e==='unknown'?99:50;
+    const rows=[...spend].sort((a,b)=>rank(a[0])-rank(b[0])||a[0].localeCompare(b[0]));
+    const total=rows.reduce((n,[,v])=>n+v,0),max=Math.max(...rows.map(([,v])=>v),1e-9);
+    $('fit-efforts').replaceChildren(...rows.flatMap(([effort,value])=>{
+        const label=effort==='unknown'?'Not recorded':effort,share=total?Math.round(100*value/total)+'%':'—';
+        return [fitEl('div',{class:'fit-name'},fitEl('span',{text:label}),fitEl('small',{text:share+' of spend'})),
+            fitReadout(fitEl('div',{class:'fit-track','data-effort':effort},fitEl('div',{class:'fit-stack',style:`width:${(84*value/max).toFixed(3)}%`},value>0?fitEl('span',{class:'fit-seg',style:'width:100%;background:var(--accent)'}):null),fitEl('span',{class:'fit-val',text:usd(value)})),
+                'Effort: '+label,[[null,'Spent',usd(value)],[null,'Share',share]])];
+    }));
+}
+function fitUnitExamples(items){
+    return fitTable('Largest examples',[['Date'],['What it was','fit-what'],['Used','fit-left'],['Guide','fit-left'],['Estimated cost'],['Rough saving']],items.map(u=>{
+        const what=u.title||(u.kind==='turn'?(u.n?'Turn '+u.n:'Before the first prompt'):'Subagent'+(u.agent_type&&u.agent_type!=='unknown'?' · '+u.agent_type:''));
+        const save=(Number(u.save_model)||0)+(Number(u.save_effort)||0);
+        return [String(u.date),fitEl('span',{},fitEl('button',{class:'session-button','data-session':u.session,text:what}),fitEl('small',{text:`${u.signals} · ${u.project}`})),
+            `${fitTierName(u.tier,u.model)} · ${u.effort}`,fitGuideText(u.rec_tier,u.rec_effort,u.rec_effort_max),usd(u.cost),save>0?usd(save):'—'];
+    }));
+}
+function fitEventExamples(items,kind){
+    return fitTable('Largest examples',[['Date'],['Session','fit-what'],['What happened','fit-left'],['Cache tokens written'],['Estimated cost']],items.map(e=>[String(e.date),
+        fitEl('button',{class:'session-button','data-session':e.session,text:sessionLabel(e.session)}),
+        kind==='switches'?`${fitShortModel(e.from)} → ${fitShortModel(e.to)}`:`Idle ${integer(e.gap_min)} min · ${fitShortModel(e.model)}`,
+        compact(e.tokens),e.cost==null?'No price':usd(e.cost)]));
+}
+// The findings of `asi fit`, as filters and sums over the units and events in view.
+function fitFindings(view){
+    const {units}=view,findings=[],top=(items,key)=>items.slice().sort((a,b)=>(Number(b[key])||0)-(Number(a[key])||0)).slice(0,FIT_EXAMPLES);
+    const add=(id,title,metric,detail,examples=[],kind='units')=>findings.push({id,title,metric,detail,examples,kind});
+    const over=units.filter(u=>u.verdict==='over');
+    if(over.length)add('model-over','Work that a smaller model would have covered',`${usd(fitSum(over,'cost'))} spent; about ${usd(fitSum(over,'save_model'))} saved at the guide’s model (${fitCount(over.length,'turn or run','turns and runs')}). Rough, upper bound.`,
+        'Same requests repriced on the guide’s model; main threads are judged per session, subagents per run. A smaller model can need more turns, so try it on one real task first.',top(over,'save_model'));
+    const effortOver=units.filter(u=>u.effort_over);
+    if(effortOver.length)add('effort-over','Effort above what the guide suggests for the task',`${usd(fitSum(effortOver,'cost'))} ran above the suggested effort; lowering it is worth about ${usd(fitSum(effortOver,'save_effort'))}. Rough, upper bound.`,
+        'The guide measured Opus 5.5 at medium for about 70% of the cost of high, and xhigh at 2.5 times the cost of high. Past high, it advises trying the next model up at a lower effort instead.',top(effortOver,'save_effort'));
+    const inherit=units.filter(u=>u.kind==='agent'&&!u.explicit_model&&u.verdict==='over');
+    if(inherit.length)add('agent-inherit','Subagents that ran on the session’s big model with no model passed',`${fitCount(inherit.length,'run','runs')}, ${usd(fitSum(inherit,'cost'))}; about ${usd(fitSum(inherit,'save_model'))} saved on the guide’s model. Rough, upper bound.`,
+        'Search, reading and summary subagents are the guide’s first place for Haiku or Sonnet: a wrong answer is cheap to spot. Pass a model on the spawn or set it in the agent file.',top(inherit,'save_model'));
+    const under=units.filter(u=>u.verdict==='under'&&(Number(u.cost)||0)>=.05);
+    if(under.length)add('model-under','Work that may have been too hard for the model used',`${fitCount(under.length,'turn or run','turns and runs')}, ${usd(fitSum(under,'cost'))}`,
+        'A quality risk, not a cost: check whether these needed rework. The guide’s order is add a self-check, raise effort one step, then go one model up at a lower effort.',top(under,'cost'));
+    const opusHigh=units.filter(u=>u.tier==='opus'&&['xhigh','max'].includes(u.effort));
+    if(opusHigh.length)add('opus-xhigh','Opus at xhigh or max',`${usd(fitSum(opusHigh,'cost'))} across ${fitCount(opusHigh.length,'turn or run','turns and runs')}`,
+        'In the guide’s tests Fable 5.2 at high matched Opus 5.5 at max for about half the cost per task. Where Opus at high falls short, try Fable at medium or high before raising Opus further.',top(opusHigh,'cost'));
+    if(view.switches.length)add('switches','Model switches in the middle of a session',`${fitCount(view.switches.length,'switch','switches')} re-wrote ${compact(fitSum(view.switches,'tokens'))} tokens of cache, about ${usd(fitSum(view.switches,'cost'))}`,
+        'The first turn on a new model pays the cache-write price for the whole conversation. Switch at the start, after /compact, or in a new session with a short written plan.',top(view.switches,'cost'),'switches');
+    if(view.cold.length)add('cold-cache','Full cache rewrites after an idle gap',`${fitCount(view.cold.length,'rewrite','rewrites')}, ${compact(fitSum(view.cold,'tokens'))} tokens, about ${usd(fitSum(view.cold,'cost'))}`,
+        'Coming back to a large session after the cache expired pays for the whole context again. Compact before a break, or start a new session with a short summary.',top(view.cold,'cost'),'cold');
+    const day=key=>fitSum(view.daily,key),mainCost=day('cost');
+    if(day('big_calls')&&mainCost)add('big-context','Main-thread calls above 200k tokens of context',`${fitCount(day('big_calls'),'call','calls')}, ${usd(day('big_cost'))} (${Math.round(100*day('big_cost')/mainCost)}% of main-thread spend)`,
+        'Context is sent again on every turn. Keep the big model’s context lean and push long reading to cheaper subagents.');
+    if(day('haiku_long_calls'))add('haiku-long','Haiku calls with a prompt above 100k tokens',`${fitCount(day('haiku_long_calls'),'call','calls')}, ${usd(day('haiku_long_cost'))}`,
+        'Haiku 5.5 bills prompts over 100k at five times its base rate. Keep its prompts short, or compare the cost per finished task with Sonnet.');
+    if(day('fast_calls'))add('fast-mode','Fast mode',`${fitCount(day('fast_calls'),'call','calls')}, ${usd(day('fast_cost'))} (priced at the fast rate)`,
+        'Fast mode is the same model at a higher price; it fits latency-sensitive interactive work only.');
+    if(view.effortChanges.length>=5)add('effort-changes','Effort changes inside a session',`${fitCount(view.effortChanges.length,'change','changes')}; the next call still read ${Math.round(100*fitSum(view.effortChanges,'read_share')/view.effortChanges.length)}% of its context from cache`,
+        'Measured on your own sessions: unlike a model switch, changing effort did not force a full cache rewrite when this share is high.');
+    $('fit-findings').replaceChildren(...(findings.length?findings.map(f=>{
+        const box=fitEl('article',{class:'fit-finding','data-finding':f.id},fitEl('h3',{text:f.title}),fitEl('p',{class:'fit-metric',text:f.metric}),fitEl('p',{class:'fit-detail',text:f.detail}));
+        if(f.examples.length)box.append(f.kind==='units'?fitUnitExamples(f.examples):fitEventExamples(f.examples,f.kind));
+        return box;
+    }):[fitEl('p',{class:'empty',text:'Nothing stood out in these dates.'})]));
+}
+function fitSessions(view){
+    const sessions=new Map();
+    for(const u of view.units){
+        let s=sessions.get(u.main_session);
+        if(!s){s={id:String(u.main_session),project:u.project,start:u.date,cost:0,save:0,turns:0,agents:0,tiers:{}};sessions.set(u.main_session,s)}
+        const cost=Number(u.cost)||0,tier=fitTier(u.tier);
+        s.cost+=cost;s.save+=(Number(u.save_model)||0)+(Number(u.save_effort)||0);s.tiers[tier]=(s.tiers[tier]||0)+cost;
+        if(u.kind==='turn')s.turns++;else s.agents++;
+        if(u.date<s.start)s.start=u.date;
+    }
+    const all=[...sessions.values()].sort((a,b)=>b.cost-a.cost),shown=all.slice(0,FIT_SESSIONS);
+    $('fit-sessions-caption').textContent=(all.length>shown.length?`Top ${shown.length} of ${integer(all.length)} sessions`:fitCount(all.length,'session','sessions'))+' · select one to open it';
+    $('fit-sessions').replaceChildren(fitTable('Most expensive sessions',[['Started'],['Session','fit-what'],['Project','fit-left'],['Models','fit-left'],['Turns'],['Subagent runs'],['Estimated cost'],['Rough saving']],
+        shown.map(s=>[String(s.start),fitEl('button',{class:'session-button','data-session':s.id,text:sessionLabel(s.id)}),String(s.project),
+            FIT_TIERS.filter(t=>s.tiers[t]>0).sort((a,b)=>s.tiers[b]-s.tiers[a]).map(t=>FIT_TIER_NAMES[t]+' '+usd(s.tiers[t])).join(', '),
+            integer(s.turns),integer(s.agents),usd(s.cost),s.save>0?usd(s.save):'—'])));
+}
+function renderFit(){
+    fitHideTip();
+    const view=fitSelection();fitView=view.empty?null:view;
+    $('fit-empty').hidden=!view.empty;$('fit-content').hidden=Boolean(view.empty);
+    if(view.empty){$('fit-empty-title').textContent=view.empty[0];$('fit-empty-text').textContent=view.empty[1];return}
+    const {units,range}=view,turns=units.filter(u=>u.kind==='turn'),agents=units.filter(u=>u.kind==='agent');
+    const over=units.filter(u=>u.verdict==='over'),effortOver=units.filter(u=>u.effort_over);
+    const total=fitSum(units,'cost'),agentCost=fitSum(agents,'cost'),overCost=fitSum(over,'cost'),effortSave=fitSum(units,'save_effort'),unpriced=fitSum(units,'unpriced');
+    $('fit-scope').textContent=`Claude Code only · ${fitCount(units.length,'turn or subagent run','turns and subagent runs')} that started ${range.from} – ${range.to}. Each counts once, on its start day, under the model and effort that carried most of its cost. Costs are estimated API prices, not a bill.`+(view.notes.length?' '+view.notes.join(' '):'');
+    const tiles=[
+        ['fit-spend','Estimated spend',total,usd(total),`${fitCount(new Set(units.map(u=>u.main_session)).size,'session','sessions')} · ${fitCount(turns.length,'turn','turns')} · ${fitCount(agents.length,'subagent run','subagent runs')}`],
+        ['fit-agents','Run by subagents',agentCost,total?Math.round(100*agentCost/total)+'%':'—',`${usd(agentCost)} in ${fitCount(agents.length,'run','runs')}`],
+        ['fit-over','Bigger model than the guide suggests',overCost,usd(overCost),`About ${usd(fitSum(over,'save_model'))} saved on the guide’s model · rough, upper bound`],
+        ['fit-effort','Rough saving from effort',effortSave,usd(effortSave),`${usd(fitSum(effortOver,'cost'))} ran above the guide’s effort · upper bound`],
+    ];
+    $('fit-cards').replaceChildren(...tiles.map(([id,label,raw,value,note])=>fitEl('div',{class:'card',id,'data-value':raw},fitEl('label',{text:label}),fitEl('div',{class:'value',text:value}),fitEl('small',{text:note}))));
+    fitDays(view);fitClasses(view);fitMatrix(view);fitEfforts(view);fitFindings(view);fitSessions(view);
+    $('fit-note').textContent=String(view.note||'')+(unpriced?` ${fitCount(unpriced,'request','requests')} without a price ${unpriced===1?'is':'are'} left out of every cost and saving here.`:'');
+}
+if(typeof ResizeObserver==='function'){
+    let fitWidth=0;
+    new ResizeObserver(entries=>{const width=Math.round(entries[0].contentRect.width);if(width&&Math.abs(width-fitWidth)>1){fitWidth=width;if(activeTab==='fit'&&fitView)fitDays(fitView)}}).observe($('fit-days'));
+}
 function render(){
     const range=selectedRange(),rs=D.rows.filter(r=>chosen(r,range)),ar=selectedRecords(),d=telemetry(ar),a=aggregate(rs);
     const {previous,priorRecords,priorRows,matchedRows,matched,missingTimes,calendar}=comparisonData(range,rs),b=aggregate(priorRows);
@@ -3686,6 +3983,7 @@ function render(){
     const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);providersTable(rs,priorRows,previous,matchedRows,missingTimes);
     bars('parts',['Uncached input','Cache reads','Cache writes','Output','Web search'].map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i]+(i===2?Math.max(0,a.cost_high-a.cost):0),requests:a.requests,unpriced:a.unpriced})));
     modelsTable(rs);sessionsTable(rs);renderTokenBreakdown(a);renderStatistics(rs,ar,a,d);renderPricingGaps(ar,a,previous?b:null,previous?priorRecords:[]);
+    if(activeTab==='fit')renderFit();
 }
 for(const field of ['from','to','provider','model','project','role','pool','chartmetric','session-sort'])$(field).addEventListener('change',()=>{if(field==='from'||field==='to')$('period').value='custom';page=0;render()});
 $('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};

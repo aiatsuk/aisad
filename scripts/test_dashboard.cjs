@@ -32,7 +32,7 @@ const rows = [
   // Expose lexical helpers only in the synthetic test document, never in shipped HTML.
   const html = (await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8')).replace(
     '})().catch(error=>{',
-    'Object.assign(window,{shiftDate,telemetry,selectedRecords,aggregate,D,chosen});\n})().catch(error=>{');
+    'Object.assign(window,{shiftDate,telemetry,selectedRecords,aggregate,D,chosen,applyLiveSnapshot});\n})().catch(error=>{');
   const pattern = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
   const template = readSnapshot(html.match(pattern)[2]);
   const expected = JSON.parse(await readFile(path.join(__dirname, '../output/demo/expected-usage.json'), 'utf8'));
@@ -47,6 +47,7 @@ const rows = [
     const json = JSON.stringify(data).replace(/</g, '\\u003c');
     const page = await browser.newPage({ locale: 'en-US', timezoneId: 'Pacific/Auckland' });
     page.on('pageerror', e => errors.push(String(e)));
+    page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
     page.on('request', r => network.push(r.url()));
     try {
       await page.setContent(html.replace(pattern, (_, start, unused, end) => start + json + end));
@@ -184,7 +185,7 @@ const rows = [
       assert.equal(await page.locator('#token-cards .card').count(), 4);
     });
     await check('statistics-only views, session drilldown, keyboard and dark theme', template, async page => {
-      assert.equal(await page.locator('[data-tab]').count(), 4);
+      assert.equal(await page.locator('[data-tab]').count(), 5);
       assert.equal(await page.locator('#card-savings, #view-recommendations, #review-next').count(), 0);
       await page.click('#tab-sessions');
       await page.fill('#search', 'large-tool-result');
@@ -206,12 +207,180 @@ const rows = [
       await page.click('#theme');
       assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
       await page.setViewportSize({width:390, height:844});
-      for (const view of ['overview', 'sessions', 'context', 'cache']) {
+      for (const view of ['overview', 'sessions', 'context', 'cache', 'fit']) {
         await page.click('#tab-' + view);
         assert(await page.locator('#view-' + view).isVisible());
         assert(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), view + ' overflows');
-        assert(!/recommendations|scenario savings|review next|possible rebuilds|flagged|benchmark/i.test(await page.locator('main').innerText()));
+        // The statistics views stay free of advice; Model fit is the one view that compares with the guide.
+        if (view !== 'fit') assert(!/recommendations|scenario savings|review next|possible rebuilds|flagged|benchmark/i.test(await page.locator('main').innerText()));
       }
+    });
+    // Model fit: the page only filters and sums the judged units of the demo snapshot.
+    const fit = template.model_fit;
+    const near = (actual, wanted, label) => assert(Math.abs(actual - wanted) < 1e-6, `${label}: ${actual} != ${wanted}`);
+    const sum = (items, key) => items.reduce((total, item) => total + (item[key] || 0), 0);
+    const fitWindow = async (page, pick = () => true) => {
+      const from = await page.locator('#from').inputValue(), to = await page.locator('#to').inputValue();
+      return fit.units.filter(u => u.date >= from && u.date <= to && pick(u));
+    };
+    async function fitTotals(page, units) {
+      assert(units.length > 0, 'the scenario needs units');
+      assert.equal(await page.locator('#fit-empty').isHidden(), true);
+      const tile = Number(await page.locator('#fit-spend').getAttribute('data-value'));
+      near(tile, sum(units, 'cost'), 'spend tile');
+      const classes = await page.locator('#fit-classes .fit-track').evaluateAll(nodes => nodes.map(n => Number(n.dataset.cost)));
+      near(classes.reduce((a, b) => a + b, 0), tile, 'classes add up to the tile');
+      assert.equal(classes.length, new Set(units.map(u => u.class)).size);
+      assert.equal(await page.locator('#fit-matrix tbody tr').count(), classes.length);
+      assert.equal(await page.locator('#fit-matrix td.fit-rec').count(), classes.length);
+      near(Number(await page.locator('#fit-over').getAttribute('data-value')), sum(units.filter(u => u.verdict === 'over'), 'cost'), 'over tile');
+      near(Number(await page.locator('#fit-agents').getAttribute('data-value')), sum(units.filter(u => u.kind === 'agent'), 'cost'), 'subagent tile');
+      near(Number(await page.locator('#fit-effort').getAttribute('data-value')), sum(units, 'save_effort'), 'effort tile');
+    }
+    const findings = page => page.locator('#fit-findings [data-finding]').evaluateAll(nodes => nodes.map(n => n.dataset.finding));
+    const fitEmpty = async page => {
+      assert.equal(await page.locator('#fit-empty').isVisible(), true);
+      assert.equal(await page.locator('#fit-content').isHidden(), true);
+      return page.locator('#fit-empty').innerText();
+    };
+    await check('model fit: tiles, charts, matrix, findings, sessions and readouts from the demo', template, async page => {
+      assert.equal(fit.schema, 1);
+      await page.click('#tab-fit');
+      assert.equal(await page.locator('#tab-fit').getAttribute('aria-selected'), 'true');
+      assert(await page.locator('#view-fit').isVisible());
+      const units = await fitWindow(page);
+      await fitTotals(page, units);
+      assert.equal(await page.locator('#fit-cards .card').count(), 4);
+      const tiers = ['fable', 'opus', 'sonnet', 'haiku', 'other'].filter(t => units.some(u => (u.tier || 'other') === t && u.cost > 0));
+      assert.deepEqual(await page.locator('#fit-days-legend span').allTextContents(), tiers.map(t => t[0].toUpperCase() + t.slice(1)));
+      assert(await page.locator('#fit-days svg path[data-tier]').count() >= new Set(units.filter(u => u.cost > 0).map(u => u.date)).size);
+      assert.equal(await page.locator('#fit-days-table tbody tr').count(), new Set(units.filter(u => u.cost > 0).map(u => u.date)).size);
+      assert.equal(await page.locator('#fit-classes-legend span').count(), 3);
+      assert(await page.locator('#fit-efforts .fit-track').count() >= 2);
+      const ids = await findings(page);
+      for (const id of ['model-over', 'effort-over', 'agent-inherit', 'model-under', 'opus-xhigh', 'switches', 'cold-cache', 'big-context', 'haiku-long', 'effort-changes'])
+        assert(ids.includes(id), id + ' finding');
+      for (const id of ids) assert(await page.locator(`[data-finding="${id}"] tbody tr`).count() <= 8);
+      const over = units.filter(u => u.verdict === 'over').sort((a, b) => b.save_model - a.save_model);
+      assert.equal(await page.locator('[data-finding="model-over"] tbody tr').count(), Math.min(8, over.length));
+      assert.match(await page.locator('[data-finding="model-over"] .fit-metric').textContent(), /Rough, upper bound/);
+      const inherit = units.filter(u => u.kind === 'agent' && !u.explicit_model && u.verdict === 'over');
+      assert.equal(await page.locator('[data-finding="agent-inherit"] tbody tr').count(), Math.min(8, inherit.length));
+      assert.equal(await page.locator('#fit-sessions tbody tr').count(), Math.min(25, new Set(units.map(u => u.main_session)).size));
+      assert.match(await page.locator('#fit-note').textContent(), /upper bounds/);
+      // Hover and keyboard focus give the same readout.
+      const track = page.locator('#fit-classes .fit-track').first();
+      await track.hover();
+      const hovered = await page.locator('#fit-tip').innerText();
+      assert.match(hovered, /Spent/);
+      await page.mouse.move(0, 0);
+      assert.equal(await page.locator('#fit-tip').isHidden(), true);
+      await track.focus();
+      assert.equal(await page.locator('#fit-tip').innerText(), hovered);
+      await page.locator('#fit-days .fit-hit').first().focus();
+      assert.match(await page.locator('#fit-tip').innerText(), /Total/);
+      // An example opens the existing session dialog.
+      const example = page.locator('[data-finding="model-over"] [data-session]').first();
+      const session = await example.getAttribute('data-session');
+      assert.equal(session, over[0].session);
+      await example.click();
+      assert.equal(await page.locator('#session-dialog').evaluate(el => el.open), true);
+      assert.equal(await page.locator('#session-title').textContent(), session);
+      await page.keyboard.press('Escape');
+    });
+    await check('model fit follows the period, project, role, model and pool filters', template, async page => {
+      await page.click('#tab-fit');
+      await page.selectOption('#period', 'all');
+      await fitTotals(page, await fitWindow(page));
+      await page.selectOption('#period', '7');
+      await page.click('#filter-toggle');
+      await page.selectOption('#project', 'atlas-api');
+      await fitTotals(page, await fitWindow(page, u => u.project === 'atlas-api'));
+      assert(!(await page.locator('#fit-sessions tbody').innerText()).includes('design-system'));
+      await page.selectOption('#project', '');
+      await page.selectOption('#role', 'subagent');
+      await fitTotals(page, await fitWindow(page, u => u.kind === 'agent'));
+      assert.equal(await page.locator('#fit-agents .value').textContent(), '100%');
+      for (const id of await findings(page)) assert(!['switches', 'cold-cache', 'big-context', 'effort-changes'].includes(id), id + ' is main-thread only');
+      await page.selectOption('#role', 'main');
+      await fitTotals(page, await fitWindow(page, u => u.kind === 'turn'));
+      await page.selectOption('#role', 'review');
+      assert.match(await fitEmpty(page), /auto-review/i);
+      await page.selectOption('#role', '');
+      await page.selectOption('#model', 'claude-opus-5');
+      await fitTotals(page, await fitWindow(page, u => u.model === 'claude-opus-5'));
+      assert.match(await page.locator('#fit-scope').textContent(), /Model filter/);
+      assert.equal(await page.locator('[data-finding="big-context"], [data-finding="effort-changes"]').count(), 0);
+      await page.selectOption('#model', 'gpt-6-astra');
+      assert.match(await fitEmpty(page), /spent most of its cost on gpt-6-astra/);
+      await page.selectOption('#model', '');
+      await page.selectOption('#pool', 'interactive');
+      await fitTotals(page, await fitWindow(page));
+      assert.equal(await page.locator('[data-finding="big-context"]').count(), 0);
+      await page.selectOption('#pool', 'managed');
+      assert.match(await fitEmpty(page), /No Claude Code work matches these filters/);
+      await page.click('#reset');
+      await fitTotals(page, await fitWindow(page));
+    });
+    await check('model fit: a provider without Claude and an invalid range show the empty state', template, async page => {
+      await page.click('#tab-fit');
+      await page.selectOption('#provider', 'Codex');
+      assert.match(await fitEmpty(page), /Claude Code only/);
+      await page.selectOption('#provider', 'Claude');
+      await fitTotals(page, await fitWindow(page));
+      await page.selectOption('#period', 'custom');
+      await page.fill('#from', '2026-09-06'); await page.locator('#from').dispatchEvent('change');
+      assert.match(await fitEmpty(page), /valid date range/);
+      await page.fill('#from', '2026-01-01'); await page.locator('#from').dispatchEvent('change');
+      await page.fill('#to', '2026-01-31'); await page.locator('#to').dispatchEvent('change');
+      assert.match(await fitEmpty(page), /No Claude Code work/);
+    });
+    await check('model fit: a snapshot from an older collector shows the empty state', { ...template, model_fit: undefined }, async page => {
+      assert.equal((await values(page)).length, 4);
+      await page.click('#tab-fit');
+      assert.match(await fitEmpty(page), /older collector/);
+    });
+    const hostile = '</script><img src=x onerror="window.__fitHacked=1">';
+    const titled = structuredClone(fit);
+    const largest = titled.units.filter(u => u.verdict === 'over' && u.date >= '2026-08-30').sort((a, b) => b.save_model - a.save_model)[0];
+    largest.title = hostile + ' turn';
+    await check('model fit: titles and session labels from the data render as text', { ...template, model_fit: titled,
+      titles: { [titled.events.switches[0].session]: hostile + ' label' } }, async page => {
+      await page.click('#tab-fit');
+      const button = page.locator('[data-finding="model-over"] [data-session]').first();
+      assert.equal(await button.textContent(), hostile + ' turn');
+      assert.equal(await page.locator('[data-finding="switches"] [data-session]').first().textContent(), hostile + ' label');
+      assert.equal(await page.locator('img').count(), 0);
+      assert.equal(await page.evaluate(() => window.__fitHacked), undefined);
+    });
+    await check('model fit re-renders after a live update and empties without model_fit', template, async page => {
+      await page.click('#tab-fit');
+      const before = Number(await page.locator('#fit-spend').getAttribute('data-value'));
+      const applied = await page.evaluate(() => {
+        const next = structuredClone(D);
+        next.sync_revision = '99999999999999999998';
+        for (const u of next.model_fit.units) { u.cost *= 2; u.save_model *= 2; u.save_effort *= 2; }
+        return applyLiveSnapshot(next);
+      });
+      assert.equal(applied, true);
+      assert.equal(await page.locator('#tab-fit').getAttribute('aria-selected'), 'true');
+      near(Number(await page.locator('#fit-spend').getAttribute('data-value')), 2 * before, 'live spend');
+      assert.equal(await page.evaluate(() => { const next = structuredClone(D); delete next.model_fit;
+        next.sync_revision = '99999999999999999999'; return applyLiveSnapshot(next); }), true);
+      assert.match(await fitEmpty(page), /older collector/);
+    });
+    await check('model fit at phone width in the dark theme', template, async page => {
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.click('#theme');
+      await page.click('#tab-fit');
+      assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+      assert(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), 'model fit overflows');
+      assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--tier-fable').trim()), '#3987e5');
+      assert.equal(await page.locator('#fit-days path[data-tier="fable"]').first().evaluate(n => getComputedStyle(n).fill), 'rgb(57, 135, 229)');
+      const chart = await page.locator('#fit-days svg').evaluate(n => n.getBoundingClientRect().right <= n.parentElement.getBoundingClientRect().right + 1);
+      assert(chart, 'the day chart fits its card');
+      await page.click('#theme');
+      assert.equal(await page.locator('#fit-days path[data-tier="fable"]').first().evaluate(n => getComputedStyle(n).fill), 'rgb(42, 120, 214)');
     });
     for (const [basis, label] of [['models_dev_rates', 'models.dev rates (2026-10-22) for all dates'],
                                   ['current_rates', 'Current rates (2026-10-22) for all dates'],

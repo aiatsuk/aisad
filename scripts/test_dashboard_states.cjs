@@ -39,7 +39,7 @@ async function report(overrides={}, preferences={}) {
     });
     return nodes.get(id);
   };
-  const tabs=['overview','sessions','context','cache'].map(name=>{
+  const tabs=['overview','sessions','context','cache','fit'].map(name=>{
     const n=node('tab-'+name);n.dataset.tab=name;n.attributes['aria-controls']='view-'+name;return n;
   });
   node('snapshot').textContent=JSON.stringify({...snapshot,...overrides});
@@ -99,6 +99,7 @@ async function report(overrides={}, preferences={}) {
   r.api.showTab('cache');
   assert.equal(r.node('view-cache').hidden,false);
   assert.equal(r.node('view-overview').hidden,true);
+  assert.equal(r.node('view-fit').hidden,true);
   r.api.openSession('Claude:events');
   assert.equal(r.node('session-dialog').open,true);
   assert.match(r.node('session-timeline').innerHTML,/No usage observations/);
