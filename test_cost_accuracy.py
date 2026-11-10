@@ -31,6 +31,21 @@ class CostAccuracyTests(unittest.TestCase):
                             cache_creation={"ephemeral_5m_input_tokens": 50}, output_tokens=20)
         self.assertAlmostEqual(result["cost"], .000625, places=12)
 
+    def test_fable52_has_its_own_rate_not_the_first_fable_rate(self):
+        # Published USD / 1M: 8 input, 0.20 cache read, 10 five-minute write, 16 one-hour write, 40 output.
+        usage = dict(input_tokens=100000, cache_read_input_tokens=800000, cache_creation_input_tokens=100000,
+                     cache_creation={"ephemeral_5m_input_tokens": 60000, "ephemeral_1h_input_tokens": 40000},
+                     output_tokens=10000)
+        result = self.price("claude-fable-5-2", "Claude", **usage)
+        self.assertEqual(result["price_status"], "priced")
+        self.assertAlmostEqual(result["cost"], .8 + .16 + .6 + .64 + .4, places=12)
+        first = self.price("claude-fable-5", "Claude", **usage)
+        self.assertGreater(first["cost"], result["cost"])
+        # A dated id resolves to the same rate; an unlisted later version stays unpriced, never guessed.
+        dated = self.price("claude-fable-5-2-20261109", "Claude", **usage)
+        self.assertEqual(dated["cost"], result["cost"])
+        self.assertIsNone(self.price("claude-fable-5-3", "Claude", **usage)["cost"])
+
     def test_haiku55_context_tier_boundary(self):
         low = self.price("claude-haiku-5-5", "Claude", input_tokens=99999, output_tokens=100)
         high = self.price("claude-haiku-5-5", "Claude", input_tokens=100001, output_tokens=100)

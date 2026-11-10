@@ -49,6 +49,7 @@ RATE_VALUES = {
  'gpt-5.6-terra': [2,.2,2.5,12], 'gpt-5.6-luna': [.2,.02,.25,1.2],
  'claude-opus-5-5': [4,.2,5,20], 'claude-sonnet-5-5': [2,.1,2.5,10],
  'claude-haiku-5-5': [.1,.01,.125,.5],
+ 'claude-fable-5-2': [8,.2,10,40],
  'claude-fable-5-1': [10,.25,12.5,50], 'claude-fable-5': [10,1,12.5,50],
  'claude-mythos-5-1': [10,.25,12.5,50], 'claude-mythos-5': [10,1,12.5,50],
  'claude-opus-5': [5,.5,6.25,25], 'claude-opus-4-8': [5,.5,6.25,25],
