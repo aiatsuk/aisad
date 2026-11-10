@@ -588,11 +588,20 @@ class WindowTests(FitCase):
         data = self.fit_json('--from', '2026-11-01', '--to', '2026-11-30')
         self.assertEqual((data['totals']['units'], data['totals']['sessions']), (1, 1))
         self.assertEqual(data['period'], {'from': '2026-11-01', 'to': '2026-11-30'})
-        self.assertEqual(sorted(data['days']), ['2026-11-01', '2026-11-02'])
+        self.assertEqual(sorted(data['days']), ['2026-11-01'])
         everything = self.fit_json('--all-time')
         self.assertEqual(everything['totals']['units'], 2)
         self.assertEqual(everything['period'], {'from': '2026-10-01', 'to': '2026-11-01'})
         self.assertAlmostEqual(everything['totals']['cost'], sum(sum(v.values()) for v in everything['days'].values()), places=3)
+
+    def test_days_follow_the_unit_start_date_across_midnight(self):
+        self.session([human('late', ts='2026-11-01T23:29:00.000Z'),
+                      assistant('l1', ts='2026-11-01T23:30:00.000Z'),
+                      assistant('l2', ts='2026-11-02T00:10:00.000Z')], name='late')
+        data = self.fit_json('--from', '2026-11-01', '--to', '2026-11-01')
+        self.assertEqual(data['totals']['units'], 1)
+        self.assertEqual(sorted(data['days']), ['2026-11-01'])
+        self.assertAlmostEqual(sum(data['days']['2026-11-01'].values()), data['totals']['cost'], places=6)
 
     def test_days_end_today(self):
         import datetime as dt
@@ -735,6 +744,18 @@ class CommandTests(FitCase):
             self.assertEqual(result.returncode, 1, args)
             self.assertTrue(result.stderr.strip() and 'Traceback' not in result.stderr, (args, result.stderr[-300:]))
             self.assertEqual(result.stdout, '')
+
+    def test_suggest_applies_the_long_prompt_rule(self):
+        self.session([human('review'), assistant('h1', model='claude-haiku-5-5', read=150_000)], name='longh')
+        current = json.loads(self.run_main('suggest', '--session', 'longh', '--json'))['current']
+        context = current['context_tokens']
+        self.assertGreater(context, 100_000)
+        # Haiku cache read is $0.01 per million, five times that above 100k.
+        self.assertAlmostEqual(current['cache_read_per_call_usd'], context * 0.01 * 5 / 1e6, places=4)
+        self.session([human('review'), assistant('o1', read=150_000)], name='longo')
+        other = json.loads(self.run_main('suggest', '--session', 'longo', '--json'))['current']
+        base = app.fit_rates(self.snapshot(command='suggest')['fit_catalog'], 'claude-haiku-5-5', 20_000)
+        self.assertAlmostEqual(other['switch_now_usd']['haiku'], round(other['context_tokens'] * base[2] * 5 / 1e6, 2), places=2)
 
     def test_suggest_current_model_context_and_switch_cost(self):
         self.session([human(f'please review the parser {PROMPT_MARK}'),

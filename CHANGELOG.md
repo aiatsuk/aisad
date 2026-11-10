@@ -13,6 +13,7 @@
 - New opt-in commands `asi rules on|off|status|show` and `asi autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in `~/.claude/CLAUDE.md`: a first-message model hint, and rules for choosing a model and effort for each subagent. They touch nothing outside the markers and install no hooks. Installing does not switch them on. Autopilot never changes the main session's model.
 - Add [ADR 0005](docs/agent/adr/0005-model-fit.md): model fit is allowed as a second exception to the no-recommendations rule of ADR 0002.
 - The Claude Code transcript parser is more tolerant: a record with an unexpected shape now costs that one record, counted in `quality.invalid_records`, instead of the whole file.
+- Menu bar app users: quit the 1.x app and build the 2.0 one. macOS treats it as a new app, so the menu bar permission is asked again and the saved chart range resets. A 1.x app left running does not follow 2.0 live updates and, sharing the same output folder through the link at the old path, makes both sides re-read the whole history in turn.
 - The first ASI run after this update reparses every Claude Code transcript once (the parser version changed). On a large history this can take a few minutes; later runs use the cache again.
 
 ## 1.5.2 — 2026-11-10

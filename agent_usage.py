@@ -1241,7 +1241,7 @@ def fit_summary(analysis,start=None,end=None,session=None,examples=8,include_tit
         for m,v in u['by_model'].items():by_model[m]+=v
         for e,v in u['by_effort'].items():by_effort[e]+=v
         for row in u['requests']:
-            if row['cost'] is not None:days[row['date']][fit_tier(canonical_model(row['model'])) or 'other']+=row['cost']
+            if row['cost'] is not None:days[u['date']][fit_tier(canonical_model(row['model'])) or 'other']+=row['cost']
     classes={}
     for cid in FIT_CLASSES:
         r=fit_rec(cid)
@@ -1501,12 +1501,18 @@ def fit_settings(args):
         if clean:out['modelSettings']=clean
     return out
 
-def fit_rates(catalog,model,day):
-    """(input, cache read, 1h cache write) USD per million tokens, or None when the model has no price that day."""
+def fit_rates(catalog,model,day,context=0):
+    """(input, cache read, 1h cache write) USD per million tokens, or None when the model has no price that day.
+
+    A prompt of `context` tokens above the rule's long-prompt threshold pays the rule's long-input multiplier.
+    """
     resolved=_dated_rule(catalog,canonical_model(model),day)
     if isinstance(resolved,str):return None
-    _,(ip,cp,_wp,one,_op)=resolved
-    return float(ip),float(cp),float(one)
+    rule,(ip,cp,_wp,one,_op)=resolved
+    mult=1
+    if context and context>rule.get('long_threshold',float('inf')) and rule.get('long_input_multiplier'):
+        mult=float(rule['long_input_multiplier'])
+    return float(ip)*mult,float(cp)*mult,float(one)*mult
 
 def fit_guide_text(catalog,day):
     lines=['Guide (start here; raise effort one step before moving up a model):']
@@ -1558,11 +1564,11 @@ def suggest_command(snapshot,args):
     else:
         row,facts=entry['last'];model=canonical_model(row['model']);tier=fit_tier(model);context=row['input']
         effort=row.get('effort') if row.get('effort') not in (None,'unknown') else facts.get('effort')
-        rates=fit_rates(catalog,model,int(row['ts']//86400))
+        rates=fit_rates(catalog,model,int(row['ts']//86400),context)
         switch={}
         for other in FIT_TIERS:
             if other==tier:continue
-            alternative=fit_rates(catalog,FIT_MODELS[other],day)
+            alternative=fit_rates(catalog,FIT_MODELS[other],day,context)
             # One-time cost of the first call after a switch: the whole context is written to the new
             # model's cache at the 1-hour rate, which main threads request.
             switch[other]=round(context*alternative[2]/1e6,2) if alternative else None

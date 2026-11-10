@@ -304,6 +304,8 @@ def remove_legacy_install(destination):
     old = destination.parent / LEGACY_NAME
     if not old.exists() and not old.is_symlink():
         return
+    lock = old.parent / ('.' + old.name + '.update.lock')
+    had_lock = lock.exists() or lock.is_symlink()
     try:
         # The 1.x updater takes the same lock, so an update in flight is never cut short.
         with update_lock(old):
@@ -315,7 +317,7 @@ def remove_legacy_install(destination):
                 print('Removed the previous AISAD skill at ' + str(old))
                 # Its update lock has nothing left to guard. Unlinking it while held is safe.
                 try:
-                    (old.parent / ('.' + old.name + '.update.lock')).unlink()
+                    lock.unlink()
                 except OSError:
                     pass
                 try:
@@ -325,6 +327,12 @@ def remove_legacy_install(destination):
                 return
     except (OSError, UpdateError) as error:
         problem = str(error)
+    if not had_lock:
+        # The check created this lock and the old skill stays: leave nothing new next to it.
+        try:
+            lock.unlink()
+        except OSError:
+            pass
     print('Kept the previous AISAD skill at ' + str(old) + ' (' + problem + '); remove it yourself when no longer needed', file=sys.stderr)
 
 

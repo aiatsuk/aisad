@@ -287,7 +287,7 @@ Start at the model and effort in the table; if the result falls short, add a sel
 
 - **Units.** One typed prompt and everything done until the next prompt is a turn. One subagent run is a unit of its own.
 - **Class.** A heuristic puts each unit in a task class from what happened in it: tools used, files edited, number of calls and a few keywords in the prompt. The guide gives the class its model and effort.
-- **Verdicts.** `over`: a smaller model would have covered it. `under`: the model may have been too hard for it, a quality risk to check. `effort-over` and `effort-under`: the effort was above or below the guide's range. `session`: see below. `fits`: no difference.
+- **Verdicts.** `over`: a smaller model would have covered it. `under`: the work may have been too hard for the model that ran, a quality risk to check. `effort-over` and `effort-under`: the effort was above or below the guide's range. `session`: see below. `fits`: no difference.
 - **Main threads are judged per session.** A main thread keeps one cache, and a model switch re-writes it, so its model is a per-session choice: the strongest model any substantial turn needed. A small turn in a session that also holds hard work gets the verdict `session`. That is not waste.
 - **Subagents are judged per run.** Each has its own context, so each could have had its own model.
 - **Effort is judged per unit.** Changing effort keeps the cache.

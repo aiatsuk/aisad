@@ -928,6 +928,11 @@ class LegacyInstallTests(unittest.TestCase):
         (self.old / 'notes.txt').write_text('keep me')
         _, errors = self.run_install()
         self.assertIn('Kept the previous AISAD skill', errors)
+        self.assertTrue(self.old.is_dir())
+        self.assertFalse(lock.exists())                                     # the check made no new stray lock
+        # A lock that was there before the install stays.
+        lock.write_bytes(b'')
+        self.run_install()
         self.assertTrue(self.old.is_dir() and lock.exists())
 
     def test_failed_delete_of_the_1x_skill_is_reported_and_install_succeeds(self):

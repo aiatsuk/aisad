@@ -20,13 +20,13 @@ Show model and effort use across sessions and explain where a different choice w
 
    If the placeholder reached you unfilled, use this skill's base directory in place of `${CLAUDE_SKILL_DIR}`.
 
-3. Build and open the dashboard for the same period (use the period flags from step 1 in place of `--days 30`):
+3. Build and open the dashboard (it takes no period flags):
 
    ```sh
-   python3 "${CLAUDE_SKILL_DIR}/../../scripts/asi.py" dashboard --days 30 --open
+   python3 "${CLAUDE_SKILL_DIR}/../../scripts/asi.py" dashboard --open
    ```
 
-   It prints the path of the HTML page and opens it in the browser. Its "Model fit" tab holds the charts behind the findings.
+   It prints the path of the HTML page and opens it in the browser. The page always opens on the last 7 days and ignores `--days`, `--from`, `--to` and `--all-time`; tell the user to pick the same period from step 1 in the Period filter of the "Model fit" tab, which holds the charts behind the findings.
 
 4. Read the JSON. The keys that matter: `insights` (the findings; each has `id`, `title`, `metric`, `detail` and `examples`), `classes` (per task class: units, cost, `by_tier`, `save_model`, `save_effort`), `sessions` (the most expensive ones, with their savings), `totals` (cost, `main_cost`, `agent_cost`, `save_model`, `save_effort`, `unpriced_requests`), `by_model`, `by_effort`, `days` and `period`. Finding ids include `model-over`, `effort-over`, `agent-inherit`, `model-under`, `opus-xhigh`, `switches`, `cold-cache`, `big-context`, `haiku-long`, `fast-mode` and `effort-changes`; `big-context`, `haiku-long`, `fast-mode` and `effort-changes` have no examples, and the examples of `switches` and `cold-cache` are cache events (session, date, model change or idle gap, tokens, cost). Other examples have `session`, `project`, `date`, `kind`, `what` (the prompt or agent description), `used`, `rec`, `class`, `signals`, `calls`, `cost` and the savings. For each finding, look at its examples and decide whether the heuristic class is believable from what was asked and the signals. Drop or correct examples that are clearly misjudged, and say when a finding rests on weak examples.
 
