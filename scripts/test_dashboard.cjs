@@ -1,6 +1,9 @@
 // Browser regression checks with synthetic data only. Requires Playwright/Chromium.
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const { readFile } = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const { chromium } = require('playwright');
@@ -28,6 +31,167 @@ const rows = [
   row('Codex', '2026-02-24', 'too-old', 10000, 0, 0, 99, 99),
   row('Codex', '2026-03-11', 'future', 10000, 0, 0, 99, 99),
 ];
+// Large histories. A tiny part size stands in for the 32 MB one, so the demo
+// travels in many parts; a small preview budget leaves the oldest sessions out.
+const PART = 60000, BUDGET = 1000000;
+const ROOT = path.join(__dirname, '..');
+const python = (code, args, input, env = {}) => execFileSync(process.env.PYTHON || 'python3', ['-B', '-c', code, ...args],
+  { cwd: ROOT, input, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env: { ...process.env, ...env } });
+const BUILD = `
+import json,sys; import agent_usage as a
+s=json.load(sys.stdin)
+s['event_previews'],s['event_preview_limit']=a.bound_event_previews({k:v for k,v in s['event_previews'].items() if v is not None},int(sys.argv[2]))
+s.update(json.loads(sys.argv[3]))
+sys.stdout.write(a.render_html(s,part_chars=int(sys.argv[1])))`;
+const PUBLISH = `
+import json,sys; import agent_usage as a
+s=json.load(sys.stdin)
+s['event_previews'],s['event_preview_limit']=a.bound_event_previews({k:v for k,v in s['event_previews'].items() if v is not None},int(sys.argv[2]))
+for r in s['rows']+s['request_stats']:
+    r['cost']=(r['cost'] or 0)*2;r['cost_high']=(r['cost_high'] or 0)*2
+for u in s['model_fit']['units']:u['cost']*=2
+a.publish_shared_usage(s,a.parser().parse_args(['chart','--output',sys.argv[1]]),'1'.zfill(20))`;
+const SNAPSHOT = /(<script id="snapshot" type="application\/json">)([\s\S]*?)(<\/script>)/;
+function parts(html) {
+  const data = JSON.parse(html.match(SNAPSHOT)[2]);
+  assert.equal(data.encoding, 'gzip-base64-parts');
+  return { data, texts: data.data.map(blob => zlib.gunzipSync(Buffer.from(blob, 'base64')).toString('utf8')) };
+}
+function instrument(html) {
+  // Record the startup note while parts load, and expose D and openSession to the test only.
+  const notes = '<script>window.__notes=[];new MutationObserver(()=>window.__notes.push(document.getElementById(\'startup-note\')?.textContent)).observe(document.getElementById(\'saved-summary\'),{subtree:true,childList:true,characterData:true});</script>';
+  return html.replace('<script id="snapshot"', notes + '<script id="snapshot"')
+    .replace('})().catch(error=>{', 'Object.assign(window,{D,openSession});\n})().catch(error=>{');
+}
+async function largeHistory(browser, template, errors, network) {
+  const input = JSON.stringify(template);
+  const whole = python(BUILD, ['0', String(BUDGET), '{}'], input);
+  const chunked = python(BUILD, [String(PART), String(BUDGET), '{}'], input);
+  assert.equal(JSON.parse(whole.match(SNAPSHOT)[2]).encoding, 'gzip-base64');
+  const { data, texts } = parts(chunked);
+  assert(texts.length >= 50, `many parts: ${texts.length}`);
+  for (const text of texts) assert(text.length <= PART && /^[\x00-\x7f]*$/.test(text), 'a part stays within the bound');
+  const previews = Object.assign({}, ...data.parts.map((p, i) => p.key === 'event_previews' ? JSON.parse(texts[i]) : {}));
+  const omitted = Object.keys(previews).filter(id => previews[id] === null), kept = Object.keys(previews).filter(id => previews[id]);
+  assert(omitted.length > 20 && kept.length > 20, 'the budget keeps some sessions and leaves others out');
+  async function open(html) {
+    const page = await browser.newPage({ locale: 'en-US', timezoneId: 'UTC' });
+    page.on('pageerror', e => errors.push(String(e)));
+    page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+    page.on('request', r => network.push(r.url()));
+    await page.setContent(instrument(html));
+    await page.waitForSelector('#interactive-dashboard', { state: 'visible' });
+    return page;
+  }
+  const readings = async page => {
+    const result = {};
+    for (const period of ['7', '30', 'all']) {
+      await page.selectOption('#period', period);
+      result['cards ' + period] = await page.locator('#cards .value').allTextContents();
+    }
+    await page.click('#tab-fit');
+    for (const id of ['fit-spend', 'fit-over', 'fit-agents', 'fit-effort'])
+      result[id] = await page.locator('#' + id).getAttribute('data-value');
+    result.classes = await page.locator('#fit-classes .fit-track').evaluateAll(nodes => nodes.map(n => n.dataset.cost));
+    result.findings = await page.locator('#fit-findings [data-finding]').evaluateAll(nodes => nodes.map(n => n.dataset.finding));
+    await page.click('#tab-overview');
+    return result;
+  };
+  let scenarios = 0;
+  const reference = await open(whole), page = await open(chunked);
+  try {
+    assert.deepEqual(await page.evaluate(() => D), await reference.evaluate(() => D));
+    const expected = await readings(reference);
+    assert.notEqual(expected['cards all'][0], '—');
+    assert.deepEqual(await readings(page), expected);
+    const notes = await page.evaluate(() => window.__notes);
+    assert(notes.includes(`Loading interactive charts: part 1 of ${texts.length}…`), 'loading state shows the first part');
+    assert(notes.includes(`Loading interactive charts: part ${texts.length} of ${texts.length}…`), 'and the last');
+    console.log(`PASS large history: ${texts.length} parts of at most ${PART} characters give the same cards, Model fit and dataset as one snapshot`);
+    scenarios++;
+    // A session within the budget lists its events; an older one says how to read them.
+    await page.selectOption('#period', 'all');
+    await page.evaluate(id => openSession(id), kept[0]);
+    assert(await page.locator('#events-table tbody tr').count() > 0);
+    assert.doesNotMatch(await page.locator('#events-note').textContent(), /not saved/);
+    await page.keyboard.press('Escape');
+    const old = omitted[0];
+    await page.evaluate(id => openSession(id), old);
+    assert.equal(await page.locator('#session-dialog').evaluate(el => el.open), true);
+    assert.equal(await page.locator('#events-note').textContent(),
+      `Events for this session are not saved in this dashboard file, which keeps them only for the newest sessions to stay within its size limit; to see them, run asi session --session ${old} --all-time --json.`);
+    assert.equal(await page.locator('#events-table tr').count(), 0);
+    assert(await page.locator('#session-timeline').isVisible());
+    await page.keyboard.press('Escape');
+    console.log('PASS large history: a session past the preview budget names the command for its events');
+    scenarios++;
+  } finally { await page.close(); await reference.close(); }
+
+  // One unreadable part leaves the saved summary and the failure note, not a half-built page.
+  const broken = structuredClone(data);
+  broken.data[Math.floor(broken.data.length / 2)] = zlib.gzipSync('{"cut":').toString('base64').slice(0, 16);
+  const failing = await browser.newPage();
+  const failures = [];
+  failing.on('console', m => { if (m.type() === 'error') failures.push(m.text()); });
+  failing.on('pageerror', e => errors.push(String(e)));
+  failing.on('request', r => network.push(r.url()));
+  try {
+    await failing.setContent(chunked.replace(SNAPSHOT, (_, start, unused, end) => start + JSON.stringify(broken) + end));
+    await failing.waitForFunction(() => /could not load/.test(document.getElementById('startup-note').textContent));
+    assert.equal(await failing.locator('#interactive-dashboard').isHidden(), true);
+    assert.equal(await failing.locator('#saved-summary').isVisible(), true);
+    assert.equal(await failing.locator('#saved-summary .card').count(), 4);
+    assert(failures.length === 1 && failures[0].startsWith('ASI report could not initialize'), failures.join('\n'));
+    console.log('PASS large history: a corrupted part shows the failure state with the saved totals');
+    scenarios++;
+  } finally { await failing.close(); }
+
+  // A live update in parts, written by the collector next to a dashboard opened from disk.
+  // Chromium's enforcement of the page's own CSP (script-src 'unsafe-inline') blocks the
+  // polled script files on file:// (already so in 2.0.0), so the test runs the two files
+  // the collector wrote as inline scripts: the same handlers, in the same order.
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'asi-live-'));
+  const live = await browser.newPage({ locale: 'en-US', timezoneId: 'UTC' });
+  const requests = [], blocked = [];
+  live.on('pageerror', e => errors.push(String(e)));
+  live.on('console', m => {
+    if (m.type() !== 'error') return;
+    if (/^Loading the script 'file:[^']*\/usage-live(-data)?[.]js[?]t=\d+' violates the following Content Security Policy directive/.test(m.text())) blocked.push(m.text());
+    else errors.push(m.text());
+  });
+  live.on('request', r => requests.push(r.url()));
+  try {
+    const env = { ASI_SNAPSHOT_PART_CHARS: String(PART) };
+    fs.writeFileSync(path.join(folder, 'dashboard.html'), python(BUILD.replace('part_chars=int(sys.argv[1])', 'part_chars=None'),
+      ['0', String(BUDGET), JSON.stringify({ live_updates: true, sync_revision: '00000000000000000001' })], input, env));
+    assert.equal(parts(fs.readFileSync(path.join(folder, 'dashboard.html'), 'utf8')).data.encoding, 'gzip-base64-parts');
+    await live.goto('file://' + path.join(folder, 'dashboard.html'));
+    await live.waitForSelector('#interactive-dashboard', { state: 'visible' });
+    await live.selectOption('#period', 'all');
+    const money = text => Number(text.replace(/[$,]/g, ''));
+    const before = money((await live.locator('#cards .value').allTextContents())[0]);
+    await live.click('#tab-fit');
+    const fitBefore = Number(await live.locator('#fit-spend').getAttribute('data-value'));
+    python(PUBLISH, [folder, String(BUDGET)], input, env);
+    const script = fs.readFileSync(path.join(folder, 'usage-live-data.js'), 'utf8');
+    assert(script.startsWith('globalThis.asiLiveData?.(') && script.includes('"encoding": "gzip-base64-parts"'), 'the live file is in parts');
+    await live.click('#tab-overview');
+    const inline = text => live.evaluate(code => { const tag = document.createElement('script'); tag.textContent = code; document.head.append(tag); tag.remove(); }, text);
+    await inline(fs.readFileSync(path.join(folder, 'usage-live.js'), 'utf8'));
+    await inline(script);
+    await live.waitForFunction(value => Number(document.querySelector('#cards .value').textContent.replace(/[$,]/g, '')) > value * 1.5, before, { timeout: 15000 });
+    assert(Math.abs(money((await live.locator('#cards .value').allTextContents())[0]) - 2 * before) < 0.02);
+    assert.equal(await live.locator('#period').inputValue(), 'all');
+    await live.click('#tab-fit');
+    assert(Math.abs(Number(await live.locator('#fit-spend').getAttribute('data-value')) - 2 * fitBefore) < 1e-6);
+    assert.match(await live.locator('#footer').textContent(), /Shared local data/);
+    assert(requests.every(url => url.startsWith('file://')), requests.filter(url => !url.startsWith('file://')).join('\n'));
+    console.log('PASS large history: a live update delivered in parts replaces the dataset and keeps the filters');
+    scenarios++;
+  } finally { await live.close(); fs.rmSync(folder, { recursive: true, force: true }); }
+  return scenarios;
+}
+
 (async () => {
   // Expose lexical helpers only in the synthetic test document, never in shipped HTML.
   const html = (await readFile(path.join(__dirname, '../output/demo/dashboard.html'), 'utf8')).replace(
@@ -405,6 +569,7 @@ const rows = [
           assert.ok((await page.locator('#money-note').textContent()).includes(label));
         });
     }
+    passed += await largeHistory(browser, template, errors, network);
     assert.deepEqual(errors, []);
     assert.deepEqual(network, []);
     console.log(`${passed} dashboard regression scenarios passed; no browser errors or network requests.`);
