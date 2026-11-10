@@ -15,7 +15,7 @@ TABLES = ('source_files','sessions','events','event_sources','usage_observations
 
 class IncrementalTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='aisad incremental ')
+        self.temp=tempfile.TemporaryDirectory(prefix='asi incremental ')
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.home=self.root/'profile';self.output=self.root/'report'
 

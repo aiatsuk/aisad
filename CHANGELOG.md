@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Rename AISAD to ASI: the skill is `skills/asi`, the launcher `scripts/asi.py`, the terminal command `asi`, the release archive `asi-skill-vX.Y.Z.zip`, the menu bar app `ASIMenuBar.app` (bundle ID `com.aiatsuk.asi.menubar`), environment variables `ASI_*` and the data directory `~/.local/share/asi`.
+- AISAD 1.x installations cannot update themselves to ASI; they keep working at their version. Run the ASI installer once. It removes an unmodified 1.x `skills/aisad` next to the new skill, keeps one with local changes and says so, and makes a 1.x `aisad` command from `--cli-dir` run `asi`.
+- The first `asi` command moves `~/.local/share/aisad` to `~/.local/share/asi`; if the move fails it keeps using the old directory and says so. The menu bar app uses the new directory if it exists, else the old one, and never moves data.
+- `AISAD_*` environment variables still apply when the `ASI_*` variable is unset. Shared live updates and the saved dashboard theme written by 1.x are still read. `asi menubar` also opens a 1.x `AISAD.app`.
+
 ## 1.5.2 — 2026-11-10
 
 - Price Claude Fable 5.2 requests. The built-in table had no rate for the model, so its requests were reported as unpriced. The published rate per million tokens is $8 input, $0.20 cache read, $10 five-minute cache write and $40 output.

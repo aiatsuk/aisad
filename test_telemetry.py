@@ -181,7 +181,22 @@ class TelemetryTests(unittest.TestCase):
     def test_portable_ui_fallback_does_not_prepare_a_dataset(self):
         with patch.object(app,'terminal_ui_dataset',side_effect=AssertionError('Unexpected UI preparation')):
             with patch.object(app.shutil,'which',return_value=None):self.assertIsNone(app.terminal_ink_ui({},None))
+            with patch.dict(os.environ,{'ASI_TERMINAL_UI':'python'}):self.assertIsNone(app.terminal_ink_ui({},None))
+            # The 1.x name still selects the portable view; the new name wins when both are set.
             with patch.dict(os.environ,{'AISAD_TERMINAL_UI':'python'}):self.assertIsNone(app.terminal_ink_ui({},None))
+
+    def test_settings_read_the_new_name_then_the_1x_name(self):
+        clean={key:value for key,value in os.environ.items() if not key.startswith(('ASI_','AISAD_'))}
+        with patch.dict(os.environ,clean,clear=True):
+            self.assertIsNone(app.setting('TERMINAL_UI'));self.assertEqual(app.setting('TERMINAL_UI','ink'),'ink')
+            for values,expected in [({'AISAD_TERMINAL_UI':'python'},'python'),({'ASI_TERMINAL_UI':'ink','AISAD_TERMINAL_UI':'python'},'ink'),
+                                    ({'ASI_TERMINAL_UI':'','AISAD_TERMINAL_UI':'python'},'python'),({'ASI_TERMINAL_UI':'','AISAD_TERMINAL_UI':''},None)]:
+                with self.subTest(values=values),patch.dict(os.environ,values):self.assertEqual(app.setting('TERMINAL_UI'),expected)
+            # The new name overrides the old one: the Ink lookup still runs.
+            with patch.dict(os.environ,{'ASI_TERMINAL_UI':'ink','AISAD_TERMINAL_UI':'python'}),patch.object(app.shutil,'which',return_value=None) as which:
+                self.assertIsNone(app.ink_runtime());which.assert_called_once_with('bun')
+            with patch.dict(os.environ,{'AISAD_TERMINAL_UI':'python'}),patch.object(app.shutil,'which') as which:
+                self.assertIsNone(app.ink_runtime());which.assert_not_called()
 
     def test_chart_opens_on_the_cached_dataset_then_swaps_in_fresh_numbers(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -193,7 +208,7 @@ class TelemetryTests(unittest.TestCase):
                 rows=[row('2026-09-06',20),row('2026-10-04',cost)]
                 return dict(as_of_date='2026-10-08',generated='2026-10-08T12:00:00Z',timezone='UTC',rows=rows,request_stats=rows,grok_records=[])
             old=app.terminal_ui_dataset(snapshot(10),args,False)
-            found=('bun',output/'aisad-ui.mjs')
+            found=('bun',output/'asi-ui.mjs')
             with patch.object(app,'ink_runtime',return_value=found):
                 # No cache yet, or a cache for other options: the ordinary start.
                 self.assertIsNone(app.terminal_ink_live(args,False))
@@ -208,7 +223,7 @@ class TelemetryTests(unittest.TestCase):
                 seen=[]
                 def ui(found,source,state,color,poll=None):
                     seen.append(json.loads(source.read_text()))
-                    worker=next(t for t in threading.enumerate() if t.name=='aisad-refresh')
+                    worker=next(t for t in threading.enumerate() if t.name=='asi-refresh')
                     release.set();worker.join(5)
                     self.assertFalse(worker.is_alive())
                     seen.append(json.loads(source.read_text()))
@@ -227,7 +242,7 @@ class TelemetryTests(unittest.TestCase):
                 with patch.object(app,'make_snapshot',side_effect=slow),patch.object(app,'run_ink',return_value=dict(month='2026-09',view='graph')):
                     early=app.terminal_ink_live(args,False)
                 gate.set()
-                for worker in [t for t in threading.enumerate() if t.name=='aisad-refresh']:worker.join(5)
+                for worker in [t for t in threading.enumerate() if t.name=='asi-refresh']:worker.join(5)
                 self.assertEqual((early['view'],early['monthly_budget']['known_cost_usd']),('graph',20))
 
     def test_r_in_the_ui_requests_one_background_collection(self):
@@ -247,7 +262,7 @@ class TelemetryTests(unittest.TestCase):
                 for _ in range(3):poll()
                 self.assertEqual(calls,[])
                 (source.parent/'refresh.request').write_text('');poll()
-                next(t for t in threading.enumerate() if t.name=='aisad-refresh').join(5)
+                for worker in [t for t in threading.enumerate() if t.name=='asi-refresh']:worker.join(5)
                 poll()
                 self.assertFalse((source.parent/'refresh.request').exists())
                 fresh=json.loads(source.read_text())
@@ -260,7 +275,7 @@ class TelemetryTests(unittest.TestCase):
             def broken(*unused,**ignored):raise ValueError('bad trace')
             def ui_fail(found,source,state,color,poll):
                 (source.parent/'refresh.request').write_text('');poll()
-                next(t for t in threading.enumerate() if t.name=='aisad-refresh').join(5)
+                for worker in [t for t in threading.enumerate() if t.name=='asi-refresh']:worker.join(5)
                 shown=json.loads(source.read_text());self.assertNotIn('stale',shown)
                 self.assertEqual(shown['months'][-1]['report']['monthly_budget']['known_cost_usd'],10)
                 return dict(month='2026-10',view='graph')

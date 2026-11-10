@@ -58,7 +58,7 @@ def build_demo():
     models = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra',
               'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5']
     projects = ['atlas-api', 'design-system', 'mobile-app', 'data-pipeline', 'docs-site']
-    with tempfile.TemporaryDirectory(prefix='aisad synthetic demo ') as folder:
+    with tempfile.TemporaryDirectory(prefix='asi synthetic demo ') as folder:
         profile = Path(folder) / 'profile'
         registry = []
         for day in range(28):

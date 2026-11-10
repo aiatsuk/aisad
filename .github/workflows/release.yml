@@ -61,12 +61,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="$(python3 scripts/release.py version)"
-          ASSETS=(dist/agent_usage.py "dist/aisad-skill-$TAG.zip" dist/SHA256SUMS)
+          ASSETS=(dist/agent_usage.py "dist/asi-skill-$TAG.zip" dist/SHA256SUMS)
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Republishing keeps whichever release is already marked Latest.
-            gh release edit "$TAG" --title "AISAD ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release edit "$TAG" --title "ASI ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
             gh release create "$TAG" "${ASSETS[@]}" \
-              --verify-tag --latest --title "AISAD ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
+              --verify-tag --latest --title "ASI ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
           fi

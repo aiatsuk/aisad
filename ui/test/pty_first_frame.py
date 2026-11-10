@@ -4,14 +4,14 @@ from pathlib import Path
 from pty_motion import ROOT,Screen,fixture
 
 def check():
-    with tempfile.TemporaryDirectory(prefix='aisad-first-frame-') as directory:
+    with tempfile.TemporaryDirectory(prefix='asi-first-frame-') as directory:
         root=Path(directory);dataset=fixture();dataset['initial_view']='graph'
         source=root/'dataset.json';source.write_text(json.dumps(dataset))
         master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',30,110,0,0))
         before=termios.tcgetattr(slave)
         env={**os.environ,'TERM':'xterm-256color','FORCE_COLOR':'3'}
-        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
-        process=subprocess.Popen([os.environ.get('AISAD_TEST_BUN','bun'),str(ROOT/'ui/dist/aisad-ui.mjs'),str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
+        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','ASI_REDUCED_MOTION','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
+        process=subprocess.Popen([os.environ.get('ASI_TEST_BUN','bun'),str(ROOT/'ui/dist/asi-ui.mjs'),str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
         screen=Screen(110,30);wire=b'';frames=[]
         def read(seconds):
             nonlocal wire

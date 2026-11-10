@@ -104,7 +104,7 @@ def models_dev_fetch(etag=None,url=MODELS_DEV_URL,timeout=30):
     local copy is still current. The only outbound request this collector ever
     makes, and only when a price refresh is asked for explicitly.
     """
-    request=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'aisad/'+VERSION})
+    request=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'asi/'+VERSION})
     if etag:request.add_header('If-None-Match',etag)
     try:
         with urllib.request.urlopen(request,timeout=timeout) as response:
@@ -1065,13 +1065,15 @@ def shared_usage_enabled(args):
     return not any(getattr(args,key,None) for key in
         ('home','codex_dir','claude_dir','no_cowork','timezone','prices','managed_session'))
 
-LIVE_PREFIX='globalThis.aisadLiveRevision?.('
+LIVE_PREFIX='globalThis.asiLiveRevision?.('
+LEGACY_LIVE_PREFIX='globalThis.aisadLiveRevision?.('  # Written by 1.x (AISAD); read, never written.
 
 def read_shared_commit(output):
     try:
         text=(Path(output)/'usage-live.js').read_text()
-        if not text.startswith(LIVE_PREFIX) or not text.endswith(');'):return {}
-        value=json.loads(text[len(LIVE_PREFIX):-2])
+        prefix=next((item for item in (LIVE_PREFIX,LEGACY_LIVE_PREFIX) if text.startswith(item)),None)
+        if prefix is None or not text.endswith(');'):return {}
+        value=json.loads(text[len(prefix):-2])
         revision=value.get('revision')
         if value.get('schema_version')!=1 or not isinstance(revision,str) or not re.fullmatch(r'[0-9]{20}',revision):return {}
         return value
@@ -1122,7 +1124,7 @@ def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
             packed=dict(encoding='gzip-base64',data=base64.b64encode(
                 gzip.compress(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode(),mtime=0)).decode())
             atom_write(output/'usage-live-data.js',
-                ('globalThis.aisadLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
+                ('globalThis.asiLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
             if previous and read_json_file(output/SHARED_USAGE).get('revision')==previous['revision']:
                 os.replace(output/SHARED_USAGE,output/'usage-state.previous.json')
             atom_json(output/SHARED_USAGE,value)
@@ -1630,7 +1632,7 @@ def forecast_period(days,first,start,end,quantile):
 def forecast_ledger_read(output):
     path=Path(output)/FORECAST_LEDGER;data=read_json_file(path)
     if data and (not isinstance(data,dict) or data.get('schema_version')!=1):
-        raise ValueError('Unsupported forecast ledger; preserve this file and use a compatible AISAD version: '+str(path))
+        raise ValueError('Unsupported forecast ledger; preserve this file and use a compatible ASI version: '+str(path))
     entries=data.get('entries') if data else {}
     return path,entries if isinstance(entries,dict) else {}
 
@@ -2053,11 +2055,15 @@ def ui_cache_key(args,color):
     options={key:value for key,value in vars(args).items()}
     return hashlib.sha256(json.dumps([VERSION,bool(color),options],sort_keys=True,default=str).encode()).hexdigest()
 
+def setting(name,default=None):
+    """ASI_<name>, else the 1.x AISAD_<name>; an empty value counts as unset."""
+    return next((value for value in (os.environ.get('ASI_'+name),os.environ.get('AISAD_'+name)) if value),default)
+
 def ink_runtime():
-    if os.environ.get('AISAD_TERMINAL_UI')=='python':return None
+    if setting('TERMINAL_UI')=='python':return None
     runtime=shutil.which('bun')
     root=Path(__file__).resolve().parent
-    bundle=next((path for path in (root/'ui/aisad-ui.mjs',root/'ui/dist/aisad-ui.mjs') if path.is_file()),None)
+    bundle=next((path for path in (root/'ui/asi-ui.mjs',root/'ui/dist/asi-ui.mjs') if path.is_file()),None)
     return (runtime,bundle) if runtime and bundle else None
 
 def run_ink(found,source,state,color,poll=None):
@@ -2099,7 +2105,7 @@ def ink_session(found,args,color,dataset,snapshot=None):
     import threading
     output=Path(args.output).expanduser().resolve();key=ui_cache_key(args,color)
     latest=dict(snapshot=snapshot,dataset=dataset,revision='');worker=[None]
-    with tempfile.TemporaryDirectory(prefix='aisad-ui-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='asi-ui-') as temporary:
         directory=Path(temporary);source=directory/'aggregates.json';state=directory/'state.json'
         request=directory/'refresh.request'
         atom_json(source,dict(dataset,refresh=True,**({} if snapshot is not None else {'stale':True})))
@@ -2121,7 +2127,7 @@ def ink_session(found,args,color,dataset,snapshot=None):
             with contextlib.suppress(OSError):publish(latest['dataset'])
         def start():
             if worker[0] is None or not worker[0].is_alive():
-                worker[0]=threading.Thread(target=refresh,name='aisad-refresh',daemon=True);worker[0].start()
+                worker[0]=threading.Thread(target=refresh,name='asi-refresh',daemon=True);worker[0].start()
         signature=[None]
         def follow_shared():
             if not shared_usage_enabled(args):return
@@ -2439,7 +2445,7 @@ def statusline_text(result,color=False):
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
-<title>AISAD · Usage statistics</title><style>
+<title>ASI · Usage statistics</title><style>
 :root{color-scheme:light;--bg:#fff;--card:#fff;--ink:#000;--muted:#6b6b6b;--line:#e2e2e2;--accent:#000;--shade:#f6f6f6;--previous:#afafaf;--green:#0e8345;--green-bg:#eaf6ed;--orange:#9f6402;--red:#de1135;--focus:#276ef1}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#141414;--card:#1f1f1f;--ink:#fff;--muted:#afafaf;--line:#3d3d3d;--accent:#eee;--shade:#292929;--previous:#6b6b6b;--green:#66d19e;--green-bg:#163526;--orange:#ffc043;--red:#ff8f9e;--focus:#a0bff8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px Arial,Helvetica,sans-serif;line-height:1.5}main{max-width:1536px;margin:auto;padding:32px 40px 48px}header{display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line);padding-bottom:22px}.brand{display:flex;gap:20px;align-items:center}.wordmark{font-size:27px;font-weight:800;letter-spacing:-1.3px;border-right:1px solid var(--line);padding-right:20px}.eyebrow{font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);font-weight:600}h1{font-size:25px;line-height:1.2;letter-spacing:-.8px;margin:3px 0 0}h2{font-size:18px;letter-spacing:-.4px;margin:0}h3{font-size:16px;margin:0 0 8px}p{margin:8px 0}.muted,small{color:var(--muted)}small{font-size:12px}.header-tools{display:flex;align-items:center;gap:12px}.badge,.tag{display:inline-flex;align-items:center;gap:6px;border-radius:6px;background:var(--shade);padding:5px 9px;font-size:12px;white-space:nowrap}.badge:before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}button,select,input{font:inherit;color:var(--ink);border:1px solid transparent;background:var(--shade);border-radius:8px;min-height:40px;padding:9px 12px}button{cursor:pointer;font-weight:500}button:hover,select:hover{background:var(--line)}button:disabled{cursor:default;opacity:.4}button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}select{max-width:220px}a{color:inherit;text-underline-offset:3px}label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}label select,label input{color:var(--ink);font-size:13px}.tabs{display:flex;gap:8px;padding:24px 0 20px;overflow:auto}.tabs button{white-space:nowrap;border-radius:30px;padding:9px 18px;background:var(--shade)}.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}.count{font-size:11px;opacity:.65;margin-left:5px}.filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:16px;background:var(--shade);border-radius:12px}.filters select,.filters input,.filters button{background:var(--card);border-color:var(--line)}.filters label{flex:1;min-width:118px}.filters label:first-child{flex:1.1}.filters select,.filters input{width:100%;max-width:none;min-width:0}.filters label.dates{flex:.9}.comparison{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:16px 0 12px}.comparison p{margin:0;font-size:12px;color:var(--muted);max-width:1100px}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card,.panel{border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0;background:var(--card)}.card{padding:20px 18px}.card label{display:block;color:var(--muted);font-size:13px}.value{font-size:29px;letter-spacing:-1.1px;line-height:1.2;font-weight:600;margin:12px 0 8px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.delta{display:block;border-top:1px solid var(--line);padding-top:10px;margin-top:16px;font-size:12px;color:var(--muted)}.usage-strip{display:flex;gap:24px;align-items:center;flex-wrap:wrap;margin:16px 0;font-size:12px;color:var(--muted)}.usage-strip b{color:var(--ink);font-weight:600}.money-note{font-size:11px;color:var(--muted);margin:10px 0 20px}.grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.tools{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.tools h2{margin:0}.tools p{font-size:12px;color:var(--muted)}.wide{margin-top:16px}.panel-intro{color:var(--muted);font-size:12px;margin:6px 0 18px}.barrow{display:grid;grid-template-columns:140px 1fr 90px;align-items:center;gap:12px;margin:14px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:8px;background:var(--shade);border-radius:3px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:3px}.barvalue{text-align:right;font-size:12px;font-variant-numeric:tabular-nums}svg{display:block;width:100%;height:auto;max-height:300px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:11px;color:var(--muted);margin:10px 0}.dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:var(--accent)}.dot.previous{background:var(--previous)}.table-wrap{overflow:auto;max-height:660px}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{white-space:nowrap;text-align:right;padding:13px 12px;border-bottom:1px solid var(--line);font-size:12px}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);color:var(--muted);font-weight:500}td:first-child{max-width:300px;overflow:hidden;text-overflow:ellipsis}th button{padding:0;min-height:0;border-radius:0;background:none;color:var(--muted);font-size:12px}.provider-button,.session-button{background:none;padding:0;min-height:0;color:inherit;border-radius:2px;font:inherit;text-align:left;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:4px}.provider-button:hover,.session-button:hover{background:none;text-decoration-color:var(--ink)}.empty{padding:40px 16px;text-align:center;color:var(--muted)}.empty h3{color:var(--ink)}.pool-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.pool-card+.pool-card{border-left:1px solid var(--line);padding-left:24px}.pool-card strong{font-size:25px;font-weight:600;letter-spacing:-.7px}.pool-track{height:6px;border-radius:3px;background:var(--shade);margin:14px 0 8px;overflow:hidden}.pool-track span{display:block;background:var(--ink);height:100%}.nudge{color:var(--orange);font-size:12px}.mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:16px 0}.mini-grid .value{font-size:26px}.mini-grid .card{background:var(--shade);border:0}.coverage{font-size:12px;color:var(--muted)}details{margin-top:20px}summary{cursor:pointer;font-weight:600}details p,details li{color:var(--muted);overflow-wrap:anywhere;font-size:13px;max-width:1100px}footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:24px;font-size:11px;color:var(--muted)}[hidden]{display:none!important}dialog{width:min(1100px,calc(100% - 32px));max-height:90vh;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);padding:28px}dialog::backdrop{background:#0008}dialog .tools{position:sticky;top:-28px;background:var(--card);padding-top:4px;z-index:2}dialog h2{overflow-wrap:anywhere}#session-caption{overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
@@ -2483,10 +2489,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 @media(max-width:760px){.calendar-totals{gap:12px}.calendar-total strong{font-size:21px}.calendar-total small{font-size:10px}}
 @media(max-width:420px){.calendar-totals{gap:10px}.calendar-total strong{font-size:18px}.section-heading small{max-width:100%}}
 </style></head><body><main>
-<header><div class="brand"><span class="wordmark">AISAD</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1><p id="subtitle" class="snapshot-caption"></p></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
+<header><div class="brand"><span class="wordmark">ASI</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1><p id="subtitle" class="snapshot-caption"></p></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
 <section id="saved-summary" class="panel wide">__SAVED_SUMMARY__</section>
 <div id="interactive-dashboard" hidden>
-<p id="demo-notice" class="panel-intro" hidden><strong>Synthetic demo data.</strong> These sample figures are for the README preview. Run AISAD locally to see this device’s usage.</p>
+<p id="demo-notice" class="panel-intro" hidden><strong>Synthetic demo data.</strong> These sample figures are for the README preview. Run ASI locally to see this device’s usage.</p>
 <section id="calendar-spend" class="calendar-spend" aria-label="Calendar spend" hidden>
 <div class="section-heading"><h2>Spend</h2><small>All Claude + Codex usage · not affected by filters</small></div>
 <div id="calendar-totals" class="calendar-totals"></div>
@@ -2861,18 +2867,18 @@ function applyTheme(dark){
     $('theme').setAttribute('aria-label','Switch to '+(dark?'light':'dark')+' theme');
 }
 let savedTheme;
-try{savedTheme=localStorage.getItem('aisad-theme')}catch{}
+try{savedTheme=localStorage.getItem('asi-theme')??localStorage.getItem('aisad-theme')}catch{}
 applyTheme(savedTheme==='dark'||(savedTheme!=='light'&&globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches));
 $('theme').onclick=()=>{
     applyTheme(document.documentElement.dataset.theme!=='dark');
-    try{localStorage.setItem('aisad-theme',document.documentElement.dataset.theme)}catch{}
+    try{localStorage.setItem('asi-theme',document.documentElement.dataset.theme)}catch{}
 };
 function updatePricingNotice(){
 $('method').innerHTML=`<p>Local Claude and Codex traces. Duplicate usage records are removed. Missing traces cannot be recovered; chat contents stay on this device.</p><p>API-equivalent prices as of ${esc(D.price_as_of)}, not subscription charges. Unknown prices stay unknown; cache-write uncertainty is shown as a range. Input includes cached tokens.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a></p>`;
 }
 updatePricingNotice();
 renderSpendSummary();
-$('footer').textContent=`AISAD ${D.version} · Saved snapshot · Open Dashboard in AISAD or rerun aisad dashboard to update`;render();
+$('footer').textContent=`ASI ${D.version} · Saved snapshot · Open Dashboard in ASI or rerun asi dashboard to update`;render();
 $('interactive-dashboard').hidden=false;$('saved-summary').hidden=true;
 // Release the serialized copy after the interactive report is ready.
 $('snapshot').textContent='';
@@ -2889,12 +2895,12 @@ function applyLiveSnapshot(next){
     updateSnapshotHeader();updatePricingNotice();setPeriod(period);
     renderSpendSummary();render();
     if(activeSession&&$('session-dialog').open)openSession(activeSession);
-    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    $('footer').textContent='ASI '+D.version+' · Shared local data · Updates from CLI and menu bar';
     return true;
 }
 function startLiveUpdates(){
     if(!D.live_updates||globalThis.location?.protocol!=='file:')return;
-    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    $('footer').textContent='ASI '+D.version+' · Shared local data · Updates from CLI and menu bar';
     let stopped=false,timer,loading=false,requested='';
     const scripts=new Set();
     function script(name,done){
@@ -2902,12 +2908,13 @@ function startLiveUpdates(){
         tag.src=name+'?t='+Date.now();tag.onload=tag.onerror=()=>{tag.remove();scripts.delete(tag);done?.()};
         document.head.append(tag);
     }
-    globalThis.aisadLiveRevision=manifest=>{
+    // 1.x (AISAD) writers call the aisad names; both reach the same handlers.
+    globalThis.asiLiveRevision=globalThis.aisadLiveRevision=manifest=>{
         const revision=manifest?.revision;
         if(stopped||loading||!/^[0-9]{20}$/.test(revision)||revision<=(D.sync_revision||''))return;
         loading=true;requested=revision;script('usage-live-data.js',()=>{loading=false});
     };
-    globalThis.aisadLiveData=async(revision,packed)=>{
+    globalThis.asiLiveData=globalThis.aisadLiveData=async(revision,packed)=>{
         try{
             const next=await loadSnapshot({textContent:JSON.stringify(packed)});
             if(!stopped&&revision===requested&&next.sync_revision===revision)applyLiveSnapshot(next);
@@ -2921,7 +2928,7 @@ function startLiveUpdates(){
     function stop(){
         stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);
         for(const tag of scripts)tag.remove();scripts.clear();
-        delete globalThis.aisadLiveRevision;delete globalThis.aisadLiveData;
+        delete globalThis.asiLiveRevision;delete globalThis.asiLiveData;delete globalThis.aisadLiveRevision;delete globalThis.aisadLiveData;
     }
     function visible(){if(!document.hidden){clearTimeout(timer);poll()}}
     document.addEventListener('visibilitychange',visible);
@@ -2931,7 +2938,7 @@ function startLiveUpdates(){
 startLiveUpdates();
 // Dashboard initialization complete.
 })().catch(error=>{
-    console.error('AISAD report could not initialize',error);
+    console.error('ASI report could not initialize',error);
     document.getElementById('startup-note').textContent='Interactive charts could not load. The saved totals below remain available. Try reopening this file in an up-to-date browser.';
 });
 </script></body></html>'''
@@ -3032,7 +3039,7 @@ def parser():
 def main(argv=None):
     args=parser().parse_args(argv)
     if args.watch is not None or args.stdin:
-        raise SystemExit('AISAD runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
+        raise SystemExit('ASI runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
     for value in [args.budget,args.managed_budget,args.monthly_budget]:
         if value is not None and (not math.isfinite(value) or value<=0):raise SystemExit('Budgets must be finite positive USD amounts')
     if args.offset<0 or not 1<=args.limit<=10000:raise SystemExit('--offset must be nonnegative and --limit must be between 1 and 10000')

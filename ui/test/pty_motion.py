@@ -66,7 +66,7 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
     for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','FORCE_COLOR'):env.pop(name,None)
     if color:env['FORCE_COLOR']='3'
     screen=Screen(110,30)
-    command=[os.environ.get('AISAD_TEST_BUN','bun'),'--preload',str(root/'guard.mjs'),str(ROOT/'ui/dist/aisad-ui.mjs'),str(source),str(root/'state.json')]
+    command=[os.environ.get('ASI_TEST_BUN','bun'),'--preload',str(root/'guard.mjs'),str(ROOT/'ui/dist/asi-ui.mjs'),str(source),str(root/'state.json')]
     process=subprocess.Popen(command,stdin=slave,stdout=slave,stderr=slave,env=env)
     def read(seconds):
         out=b'';deadline=time.monotonic()+seconds
@@ -142,8 +142,8 @@ def check(root,env_overrides=None,ascii=False,color=True,exit_key=b'q',expected_
         os.close(master);os.close(slave)
 
 if __name__=='__main__':
-    with tempfile.TemporaryDirectory(prefix='aisad-motion-pty-') as directory:
+    with tempfile.TemporaryDirectory(prefix='asi-motion-pty-') as directory:
         root=Path(directory)
         (root/'guard.mjs').write_text("import net from 'node:net';import tls from 'node:tls';const block=()=>{throw new Error('Unexpected network operation')};const originalFetch=globalThis.fetch;globalThis.fetch=(url,...args)=>String(url).startsWith('data:')?originalFetch(url,...args):block();net.connect=block;net.createConnection=block;tls.connect=block;Bun.connect=block;Bun.listen=block;\n")
-        for name,options in [('animated',{}),('reduced',{'env_overrides':{'AISAD_REDUCED_MOTION':'1'}}),('ascii',{'ascii':True}),('no color',{'color':False}),('screen reader',{'env_overrides':{'INK_SCREEN_READER':'true'}}),('Ctrl+C',{'exit_key':b'\x03','expected_code':130})]:
+        for name,options in [('animated',{}),('reduced',{'env_overrides':{'ASI_REDUCED_MOTION':'1'}}),('ascii',{'ascii':True}),('no color',{'color':False}),('screen reader',{'env_overrides':{'INK_SCREEN_READER':'true'}}),('Ctrl+C',{'exit_key':b'\x03','expected_code':130})]:
             check(root,**options);print('PASS:',name,flush=True)

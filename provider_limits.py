@@ -280,13 +280,13 @@ def claude():
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("accessToken")
     if not isinstance(token, str) or not token:
-        raise Unavailable("Claude sign-in is unavailable to AISAD.", "not_connected", 300)
+        raise Unavailable("Claude sign-in is unavailable to ASI.", "not_connected", 300)
     expires = oauth.get("expiresAt")
     if numeric(expires) and expires / 1000 <= time.time():
         raise Unavailable("Claude sign-in expired. Open Claude, then Refresh.", "not_connected", 300)
     request = urllib.request.Request("https://api.anthropic.com/api/oauth/usage",
         headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
-                 "Accept": "application/json", "User-Agent": "AISAD/1.4.3"})
+                 "Accept": "application/json", "User-Agent": "ASI/1.4.3"})
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
             data = response.read(MAX_BYTES + 1)
@@ -316,7 +316,7 @@ def claude_worker():
         except subprocess.TimeoutExpired:
             raise Unavailable("Claude sign-in could not be read in time.", "not_connected", 300)
         if process.returncode != 0 or len(output) > MAX_BYTES:
-            raise Unavailable("Claude sign-in is unavailable to AISAD.", "not_connected", 300)
+            raise Unavailable("Claude sign-in is unavailable to ASI.", "not_connected", 300)
         return json.loads(output)
     finally:
         stop_child(process)
@@ -333,11 +333,11 @@ def fetch(name, direct=False):
             rows, plan = claude()
         elif name == "codex":
             payload = rpc(name, ["app-server", "--stdio"],
-                          {"clientInfo": {"name": "aisad", "version": "1.4.3"}}, "account/rateLimits/read")
+                          {"clientInfo": {"name": "asi", "version": "1.4.3"}}, "account/rateLimits/read")
             rows, plan = parse_codex(payload)
         else:
             payload = rpc(name, ["agent", "stdio"],
-                {"protocolVersion": 1, "clientInfo": {"name": "AISAD", "version": "1.4.3"},
+                {"protocolVersion": 1, "clientInfo": {"name": "ASI", "version": "1.4.3"},
                  "clientCapabilities": {}}, "_x.ai/billing")
             rows, plan = parse_grok(payload), payload.get("subscription_tier")
         if not rows:

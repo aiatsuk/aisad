@@ -5,7 +5,7 @@
 - Decision source: user asked for a statistics-only weekly and monthly forecast with a suggested monthly budget, and chose an explicit carve-out from the no-recommendations rule.
 
 ## Context
-Version 1.0.1 removed the recommendation engine, findings, hypothetical savings, routing suggestions and statusline coaching so that AISAD only collects and displays usage statistics. The existing shared-budget forecast averages observed days only, so idle days are ignored and it overshoots (about +20% weekly on the maintainer's history).
+Version 1.0.1 removed the recommendation engine, findings, hypothetical savings, routing suggestions and statusline coaching so that ASI only collects and displays usage statistics. The existing shared-budget forecast averages observed days only, so idle days are ignored and it overshoots (about +20% weekly on the maintainer's history).
 
 ## Decision
 Allow one narrow kind of derived number: a deterministic Python forecast of known spend for the current Monday-Sunday week and calendar month, plus a suggested budget (a configurable quantile of the forecast, default 80%). It is off by default and switched with `budget --forecast on|off`; `budget --quantile Q` sets the quantile.

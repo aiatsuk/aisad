@@ -24,7 +24,7 @@ describe('stale-while-revalidate start',()=>{
     expect(()=>parseDataset({...before,stale:'yes'})).toThrow();
   });
   test('the watcher ignores stale rewrites and delivers the fresh file once',async()=>{
-    const dir=mkdtempSync(join(tmpdir(),'aisad-live-')),path=join(dir,'data.json');
+    const dir=mkdtempSync(join(tmpdir(),'asi-live-')),path=join(dir,'data.json');
     const write=(value:unknown)=>{writeFileSync(path+'.tmp',JSON.stringify(value));renameSync(path+'.tmp',path);};
     const stale=dataset([['2026-10',fixture()]],'2026-10',true);write(stale);
     const seen:Dataset[]=[];const stop=watchDataset(path,d=>seen.push(d),5);
@@ -37,7 +37,7 @@ describe('stale-while-revalidate start',()=>{
     expect(seen).toHaveLength(1);expect(seen[0]!.months[0]!.report.series[0]!.known_cost_usd).toBeCloseTo(190.7);
   });
   test('a continuous reader accepts multiple external commits and stops cleanly',async()=>{
-    const dir=mkdtempSync(join(tmpdir(),'aisad-follow-')),path=join(dir,'data.json');
+    const dir=mkdtempSync(join(tmpdir(),'asi-follow-')),path=join(dir,'data.json');
     const write=(value:Dataset)=>{writeFileSync(path+'.tmp',JSON.stringify(value));renameSync(path+'.tmp',path);};
     write(dataset([['2026-10',fixture()]]));
     const seen:number[]=[];
@@ -50,7 +50,7 @@ describe('stale-while-revalidate start',()=>{
     expect(seen[0]).toBeCloseTo(190.7);expect(seen[1]).toBeCloseTo(286.05);
   });
   test('fresh data follows the new initial month until the user navigates',async()=>{
-    process.env.AISAD_REDUCED_MOTION='1';
+    process.env.ASI_REDUCED_MOTION='1';
     const sep=fixture('2026-09',30),oct=fixture('2026-10');
     const stale=dataset([['2026-08',fixture('2026-08')],['2026-09',sep]],'2026-09',true);
     const fresh=mergeDataset(stale,dataset([['2026-08',fixture('2026-08')],['2026-09',sep],['2026-10',oct]],'2026-10'));
@@ -75,6 +75,6 @@ describe('stale-while-revalidate start',()=>{
     let asked=0;const app=render(<Dashboard dataset={{...fresh,refresh:true}} onRefresh={()=>{asked++;}} onExit={()=>{}}/>,{stdout,stdin,patchConsole:false,exitOnCtrlC:false,interactive:true});
     await Bun.sleep(40);(stdin as unknown as PassThrough).write('r');await Bun.sleep(20);app.unmount();
     expect(asked).toBe(1);expect(text).toContain('R refresh');
-    delete process.env.AISAD_REDUCED_MOTION;
+    delete process.env.ASI_REDUCED_MOTION;
   });
 });

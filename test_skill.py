@@ -7,12 +7,13 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
@@ -25,8 +26,24 @@ def module(name, path):
     return value
 
 
-skill = module('aisad_skill', ROOT / 'skills/aisad/scripts/aisad.py')
-release = module('aisad_release', ROOT / 'scripts/build_release.py')
+skill = module('asi_skill', ROOT / 'skills/asi/scripts/asi.py')
+release = module('asi_release', ROOT / 'scripts/build_release.py')
+SANDBOX = {}
+
+
+def setUpModule():
+    # The launcher moves ~/.local/share/aisad when no data directory is set. Every
+    # test here, in process or in a child process, sees a temporary home instead.
+    SANDBOX['home'] = tempfile.TemporaryDirectory(prefix='asi test home ')
+    SANDBOX['environ'] = patch.dict(os.environ, {'HOME': SANDBOX['home'].name})
+    SANDBOX['environ'].start()
+    for key in [key for key in os.environ if key.startswith(('ASI_', 'AISAD_'))]:
+        del os.environ[key]
+
+
+def tearDownModule():
+    SANDBOX['environ'].stop()
+    SANDBOX['home'].cleanup()
 
 
 class MenubarLauncherTests(unittest.TestCase):
@@ -38,8 +55,8 @@ class MenubarLauncherTests(unittest.TestCase):
         self.assertEqual(launch.call_count, 2)
 
     def test_prefers_user_app_and_handles_spaces(self):
-        with tempfile.TemporaryDirectory(prefix='aisad user ') as home:
-            app = Path(home) / 'Applications/AISAD.app'
+        with tempfile.TemporaryDirectory(prefix='asi user ') as home:
+            app = Path(home) / 'Applications/ASI.app'
             app.mkdir(parents=True)
             with patch.object(skill.sys, 'platform', 'darwin'), \
                  patch.object(skill.Path, 'home', return_value=Path(home)), \
@@ -48,7 +65,7 @@ class MenubarLauncherTests(unittest.TestCase):
             invoke.assert_called_once_with(['/usr/bin/open', str(app)])
 
     def test_system_and_development_bundle_names(self):
-        for app in (Path('/Applications/AISAD.app'), Path('/Applications/AISADMenuBar.app')):
+        for app in (Path('/Applications/ASI.app'), Path('/Applications/ASIMenuBar.app')):
             with self.subTest(app=app), patch.object(skill.sys, 'platform', 'darwin'), \
                  patch.object(skill.Path, 'is_dir', autospec=True, side_effect=lambda path: path == app), \
                  patch.object(skill.subprocess, 'call', return_value=0) as invoke:
@@ -56,14 +73,44 @@ class MenubarLauncherTests(unittest.TestCase):
                 invoke.assert_called_once_with(['/usr/bin/open', str(app)])
 
     def test_registered_app_fallback_and_launch_failure(self):
+        new = ['/usr/bin/open', '-b', 'com.aiatsuk.asi.menubar']
+        old = ['/usr/bin/open', '-b', 'com.aiatsuk.aisad.menubar']
         with patch.object(skill.sys, 'platform', 'darwin'), \
              patch.object(skill.Path, 'is_dir', return_value=False), \
              patch.object(skill.subprocess, 'call', return_value=0) as invoke:
             self.assertEqual(skill.launch_menubar(), 0)
-            invoke.assert_called_once_with(['/usr/bin/open', '-b', 'com.aiatsuk.aisad.menubar'])
-            invoke.return_value = 1
-            with self.assertRaisesRegex(skill.UpdateError, 'Install AISAD.app'):
+            invoke.assert_called_once_with(new, stderr=skill.subprocess.DEVNULL)
+            # The new bundle ID is not registered: the 1.x app opens instead.
+            invoke.reset_mock(); invoke.side_effect = [1, 0]
+            self.assertEqual(skill.launch_menubar(), 0)
+            self.assertEqual(invoke.call_args_list, [call(new, stderr=skill.subprocess.DEVNULL), call(old)])
+            invoke.reset_mock(); invoke.side_effect = None; invoke.return_value = 1
+            with self.assertRaisesRegex(skill.UpdateError, 'Install ASI.app'):
                 skill.launch_menubar()
+            self.assertEqual(invoke.call_args_list, [call(new, stderr=skill.subprocess.DEVNULL), call(old)])
+
+    def test_new_app_names_come_before_the_1x_names(self):
+        user, system = Path.home() / 'Applications', Path('/Applications')
+        checked = []
+        def present(*names):
+            def is_dir(path):
+                checked.append(path)
+                return path in names
+            return is_dir
+        with patch.object(skill.sys, 'platform', 'darwin'), \
+             patch.object(skill.Path, 'is_dir', autospec=True, side_effect=present()), \
+             patch.object(skill.subprocess, 'call', return_value=0):
+            skill.launch_menubar()
+        self.assertEqual(checked, [user / 'ASI.app', system / 'ASI.app', user / 'ASIMenuBar.app', system / 'ASIMenuBar.app',
+                                   user / 'AISAD.app', system / 'AISAD.app', user / 'AISADMenuBar.app', system / 'AISADMenuBar.app'])
+        for existing, expected in [((user / 'AISAD.app', system / 'ASIMenuBar.app'), system / 'ASIMenuBar.app'),
+                                   ((user / 'AISADMenuBar.app', system / 'AISAD.app'), system / 'AISAD.app'),
+                                   ((user / 'AISADMenuBar.app',), user / 'AISADMenuBar.app')]:
+            with self.subTest(existing=existing), patch.object(skill.sys, 'platform', 'darwin'), \
+                 patch.object(skill.Path, 'is_dir', autospec=True, side_effect=present(*existing)), \
+                 patch.object(skill.subprocess, 'call', return_value=0) as invoke:
+                self.assertEqual(skill.launch_menubar(), 0)
+                invoke.assert_called_once_with(['/usr/bin/open', str(expected)])
 
     def test_unsupported_platform_does_not_open_app(self):
         with patch.object(skill.sys, 'platform', 'linux'), \
@@ -75,12 +122,12 @@ class MenubarLauncherTests(unittest.TestCase):
 
 class SkillTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='aisad install test ')
+        self.temporary = tempfile.TemporaryDirectory(prefix='asi install test ')
         self.root = Path(self.temporary.name)
         self.version, self.assets = release.build(ROOT, self.root / 'dist')
         self.archive = self.assets[1]
         self.manifest, self.files = skill.checked_archive(self.archive.read_bytes(), self.assets[2].read_bytes(), self.archive.name)
-        self.installed = self.root / 'profile/skills/aisad'
+        self.installed = self.root / 'profile/skills/asi'
         self.data = self.root / 'local data'
 
     def tearDown(self):
@@ -95,7 +142,7 @@ class SkillTests(unittest.TestCase):
         files['runtime/agent_usage.py'] = files['runtime/agent_usage.py'].replace(
             ("VERSION = '" + self.version + "'").encode(), b"VERSION = '99.0.0'")
         files['SKILL.md'] += b'\nUpdated instructions.\n'
-        files['scripts/aisad.py'] += b'\n# Updated helper.\n'
+        files['scripts/asi.py'] += b'\n# Updated helper.\n'
         manifest['files'] = {name: skill.digest(files[name]) for name in manifest['files']}
         files['manifest.json'] = json.dumps(manifest).encode()
         return manifest, files
@@ -104,7 +151,7 @@ class SkillTests(unittest.TestCase):
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as archive:
             for name, data in files.items():
-                archive.writestr('aisad/' + name, data)
+                archive.writestr('asi/' + name, data)
         return output.getvalue()
 
     def test_deterministic_release_whitelist_and_tag(self):
@@ -133,7 +180,7 @@ class SkillTests(unittest.TestCase):
                 skill.unpack_archive(self.zip(dict(self.files, **{name: b'bad'})))
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as archive:
-            info = zipfile.ZipInfo('aisad/link')
+            info = zipfile.ZipInfo('asi/link')
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             archive.writestr(info, '/outside')
@@ -173,7 +220,7 @@ class SkillTests(unittest.TestCase):
         self.data.mkdir()
         report = self.data / 'usage.json'
         report.write_text('Keep local usage', encoding='utf-8')
-        command = [sys.executable, '-I', str(ROOT / 'skills/aisad/scripts/aisad.py'),
+        command = [sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'),
                    'install', '--archive', str(self.archive), '--checksum-file', str(self.assets[2]),
                    '--dest', str(self.installed.parent)]
         blocked = subprocess.run(command, capture_output=True, text=True)
@@ -230,7 +277,7 @@ class SkillTests(unittest.TestCase):
 
     def test_daily_check_then_auto_update_uses_cached_release(self):
         self.install()
-        newer = dict(version='99.0.0', tag='v99.0.0', archive='aisad-skill-v99.0.0.zip')
+        newer = dict(version='99.0.0', tag='v99.0.0', archive='asi-skill-v99.0.0.zip')
         with patch.object(skill, 'release_info', return_value=newer) as metadata:
             result, _ = skill.check_update(self.installed, self.data)
             self.assertTrue(result['available'])
@@ -250,7 +297,7 @@ class SkillTests(unittest.TestCase):
             self.assertFalse(skill.update(self.installed, self.data, automatic=True))
             metadata.assert_called_once()
         skill.state_path(self.installed, self.data).unlink()
-        newer = dict(version='99.0.0', tag='v99.0.0', archive='aisad-skill-v99.0.0.zip')
+        newer = dict(version='99.0.0', tag='v99.0.0', archive='asi-skill-v99.0.0.zip')
         with patch.object(skill, 'release_info', return_value=newer), patch.object(skill, 'download_release', side_effect=OSError('Offline')) as download:
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(OSError):
                 skill.update(self.installed, self.data, automatic=True)
@@ -261,7 +308,7 @@ class SkillTests(unittest.TestCase):
     def test_launch_never_waits_on_the_network(self):
         self.install()
         arguments = ['usage', '--data-dir', str(self.data), '--json', '--provider', 'claude']
-        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/asi.py')), \
              patch.object(skill, 'update', side_effect=AssertionError('Foreground network check')), \
              patch.object(skill, 'refresh_prices', side_effect=AssertionError('Foreground price refresh')):
             with patch.object(skill.subprocess, 'Popen') as background, patch.object(skill.subprocess, 'call', return_value=0) as invoke:
@@ -269,7 +316,7 @@ class SkillTests(unittest.TestCase):
                 self.assertEqual(invoke.call_args[0][0], [sys.executable, str(self.installed / 'runtime/agent_usage.py'),
                                  'usage', '--output', str(self.data.resolve() / 'output'), '--json', '--provider', 'claude'])
                 command = background.call_args[0][0]
-                self.assertEqual(command[1:5], [str(self.installed / 'scripts/aisad.py'), 'maintain', '--data-dir', str(self.data.resolve())])
+                self.assertEqual(command[1:5], [str(self.installed / 'scripts/asi.py'), 'maintain', '--data-dir', str(self.data.resolve())])
                 self.assertEqual(command[5:], ['update', 'prices'])
                 self.assertIs(background.call_args[1]['stdin'], skill.subprocess.DEVNULL)
             with patch.object(skill.subprocess, 'Popen', side_effect=AssertionError('Network work offline')), \
@@ -281,7 +328,7 @@ class SkillTests(unittest.TestCase):
         calls = []
         with patch.object(skill, 'update', side_effect=lambda *a, **k: calls.append(('update', k))), \
              patch.object(skill, 'refresh_prices', side_effect=lambda *a: calls.append(('prices',))), \
-             patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+             patch.object(skill, '__file__', str(self.installed / 'scripts/asi.py')), \
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(skill.main(['maintain', '--data-dir', str(self.data)]), 0)
         self.assertEqual(calls, [('update', {'automatic': True}), ('prices',)])
@@ -294,7 +341,7 @@ class SkillTests(unittest.TestCase):
 
     def test_every_forwarding_command_reaches_the_collector_with_its_options(self):
         self.install()
-        with patch.object(skill, '__file__', str(self.installed / 'scripts/aisad.py')), \
+        with patch.object(skill, '__file__', str(self.installed / 'scripts/asi.py')), \
              patch.object(skill, 'maintenance_tasks', return_value=[]):
             for command in ('usage', 'analyze', 'statusline', 'collect', 'sessions', 'session', 'prices', 'chart', 'budget', 'forecast', 'menubar'):
                 with patch.object(skill.subprocess, 'call', return_value=0) as invoke:
@@ -333,12 +380,12 @@ class SkillTests(unittest.TestCase):
         self.assertFalse(skill.update_due(self.installed, self.data))
 
     def test_copied_bundle_cli_and_json_without_dependencies(self):
-        installer = ROOT / 'skills/aisad/scripts/aisad.py'
+        installer = ROOT / 'skills/asi/scripts/asi.py'
         destination = self.installed.parent
         run = subprocess.run([sys.executable, '-I', str(installer), 'install', '--archive', str(self.archive),
                               '--checksum-file', str(self.assets[2]), '--dest', str(destination)], capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
-        helper = self.installed / 'scripts/aisad.py'
+        helper = self.installed / 'scripts/asi.py'
         run = subprocess.run([sys.executable, '-I', str(helper), 'usage', '--offline', '--json', '--include-requests',
                               '--data-dir', str(self.data), '--home', str(self.root / 'empty profile'), '--provider', 'openai'],
                              capture_output=True, text=True)
@@ -370,36 +417,295 @@ class SkillTests(unittest.TestCase):
         self.assertFalse((self.data / 'output/dashboard.html').exists())
         self.assertFalse((self.data / 'output/status.json').exists())
         run = subprocess.run([sys.executable, '-I', str(helper), 'version'], capture_output=True, text=True)
-        self.assertEqual(run.stdout.strip(), 'AISAD ' + self.version)
+        self.assertEqual(run.stdout.strip(), 'ASI ' + self.version)
+        self.assertEqual(Path.home(), Path(SANDBOX['home'].name))
+        self.assertFalse((Path.home() / '.local').exists())
 
     def test_install_targets_honor_profile_directories(self):
         codex, claude = self.root / 'codex profile', self.root / 'claude profile'
         with patch.dict(os.environ, {'CODEX_HOME': str(codex), 'CLAUDE_CONFIG_DIR': str(claude)}), contextlib.redirect_stdout(io.StringIO()):
             skill.main(['install', '--target', 'both', '--archive', str(self.archive), '--checksum-file', str(self.assets[2])])
         for directory in [codex, claude]:
-            self.assertTrue((directory / 'skills/aisad/runtime/agent_usage.py').is_file())
+            self.assertTrue((directory / 'skills/asi/runtime/agent_usage.py').is_file())
 
 
     def test_optional_ui_bundle_is_whitelisted_and_rejects_stale_sources(self):
         repository=self.root/'ui-repository';repository.mkdir()
         (repository/'agent_usage.py').write_bytes((ROOT/'agent_usage.py').read_bytes())
         for name in release.SKILL_FILES:
-            source=repository/'skills/aisad'/name;source.parent.mkdir(parents=True,exist_ok=True)
-            source.write_bytes((ROOT/'skills/aisad'/name).read_bytes())
+            source=repository/'skills/asi'/name;source.parent.mkdir(parents=True,exist_ok=True)
+            source.write_bytes((ROOT/'skills/asi'/name).read_bytes())
         ui=repository/'ui';(ui/'src').mkdir(parents=True);(ui/'dist').mkdir()
         names=['build.ts','package.json','tsconfig.json','bun.lock','src/main.tsx']
         for name in names:(ui/name).write_text('synthetic '+name)
         meta={'schema_version':1,'inputs':{name:release.sha256((ui/name).read_bytes()) for name in names}}
         (ui/'dist/build-meta.json').write_text(json.dumps(meta))
-        (ui/'dist/aisad-ui.mjs').write_text('// synthetic UI')
+        (ui/'dist/asi-ui.mjs').write_text('// synthetic UI')
         (ui/'dist/THIRD_PARTY_NOTICES.txt').write_text('Synthetic license notice')
         _,assets=release.build(repository,self.root/'ui-dist',with_ui=True)
         manifest,files=skill.checked_archive(assets[1].read_bytes(),assets[2].read_bytes(),assets[1].name)
-        self.assertEqual(files['runtime/ui/aisad-ui.mjs'],b'// synthetic UI')
+        self.assertEqual(files['runtime/ui/asi-ui.mjs'],b'// synthetic UI')
         self.assertIn('runtime/ui/THIRD_PARTY_NOTICES.txt',manifest['files'])
         self.assertNotIn('build-meta.json',files)
         (ui/'src/main.tsx').write_text('changed source')
         with self.assertRaisesRegex(ValueError,'rebuild'):release.build(repository,self.root/'stale-dist',with_ui=True)
+
+
+def clean_environment(**values):
+    """os.environ without ASI_/AISAD_ settings, plus the given values."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
+    environment.update(values)
+    return patch.dict(os.environ, environment, clear=True)
+
+
+class SettingsAndDataDirectoryTests(unittest.TestCase):
+    """1.x (AISAD) names and the 1.x data directory keep working after the rename."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='asi data test ')
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / 'home'
+        self.new, self.old = self.home / '.local/share/asi', self.home / '.local/share/aisad'
+
+    def test_new_setting_wins_then_the_1x_name_then_the_default(self):
+        with clean_environment():
+            self.assertIsNone(skill.setting('AUTO_UPDATE'))
+            self.assertEqual(skill.setting('AUTO_UPDATE', '1'), '1')
+        for values, expected in [({'AISAD_AUTO_UPDATE': '0'}, '0'), ({'ASI_AUTO_UPDATE': '1', 'AISAD_AUTO_UPDATE': '0'}, '1'),
+                                 ({'ASI_AUTO_UPDATE': '', 'AISAD_AUTO_UPDATE': '0'}, '0'), ({'ASI_AUTO_UPDATE': '', 'AISAD_AUTO_UPDATE': ''}, '1')]:
+            with self.subTest(values=values), clean_environment(**values):
+                self.assertEqual(skill.setting('AUTO_UPDATE', '1'), expected)
+
+    def test_maintenance_switches_accept_both_names(self):
+        root, data = self.home / 'skill', self.home / 'data'
+        with patch.object(skill, 'update_due', return_value=True), patch.object(skill, 'prices_due', return_value=True):
+            for values, expected in [({}, ['update', 'prices']), ({'AISAD_AUTO_UPDATE': '0'}, ['prices']),
+                                     ({'AISAD_AUTO_PRICES': '0'}, ['update']), ({'ASI_AUTO_UPDATE': '0', 'ASI_AUTO_PRICES': '0'}, []),
+                                     ({'ASI_AUTO_UPDATE': '1', 'AISAD_AUTO_UPDATE': '0'}, ['update', 'prices'])]:
+                with self.subTest(values=values), clean_environment(**values):
+                    self.assertEqual(skill.maintenance_tasks(root, data, 'usage', False), expected)
+
+    def test_data_directory_option_then_new_then_1x_variable(self):
+        self.old.mkdir(parents=True)
+        first, second, third = (self.home / name for name in ('first', 'second', 'third'))
+        with patch.object(skill.Path, 'home', return_value=self.home):
+            with clean_environment(ASI_DATA_DIR=str(first), AISAD_DATA_DIR=str(second)):
+                self.assertEqual(skill.data_directory(), first.resolve())
+                self.assertEqual(skill.data_directory(str(third)), third.resolve())
+            with clean_environment(AISAD_DATA_DIR=str(second)):
+                self.assertEqual(skill.data_directory(), second.resolve())
+        # A configured directory never moves the default one.
+        self.assertTrue(self.old.is_dir()); self.assertFalse(self.new.exists())
+
+    def test_1x_data_directory_moves_once_and_keeps_its_files(self):
+        (self.old / 'output').mkdir(parents=True)
+        (self.old / 'output/budget.json').write_text('{"monthly_budget_usd": 3210}')
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(), self.new.resolve())
+            self.assertIn('Moved local data from ' + str(self.old), errors.getvalue())
+            self.assertFalse(self.old.exists())
+            self.assertEqual((self.new / 'output/budget.json').read_text(), '{"monthly_budget_usd": 3210}')
+            # Later runs find the new directory and stay quiet, even if the old one reappears.
+            self.old.mkdir()
+            self.assertEqual(skill.data_directory(), self.new.resolve())
+        self.assertEqual(errors.getvalue().count('Moved'), 1)
+        self.assertTrue(self.old.is_dir())
+
+    def test_new_directory_without_an_old_one_is_used_as_is(self):
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(), self.new.resolve())
+        self.assertEqual(errors.getvalue(), '')
+        self.assertFalse(self.old.exists())
+
+    def test_failed_move_keeps_using_the_1x_directory(self):
+        self.old.mkdir(parents=True)
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             patch.object(skill.Path, 'rename', side_effect=PermissionError('Operation not permitted')), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(), self.old.resolve())
+        self.assertIn('Keeping local data in ' + str(self.old), errors.getvalue())
+        self.assertIn('Operation not permitted', errors.getvalue())
+        self.assertTrue(self.old.is_dir()); self.assertFalse(self.new.exists())
+
+    def test_move_lost_to_another_launcher_uses_the_new_directory(self):
+        self.old.mkdir(parents=True)
+        rename = Path.rename
+        def raced(path, target):
+            rename(path, target)  # The other launcher moved it first ...
+            raise FileNotFoundError('No such file or directory')  # ... so this attempt fails.
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             patch.object(skill.Path, 'rename', autospec=True, side_effect=raced), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(), self.new.resolve())
+        self.assertNotIn('Keeping', errors.getvalue())
+
+    def test_command_line_moves_the_directory_under_a_temporary_home(self):
+        (self.old / 'output').mkdir(parents=True)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
+        environment['HOME'] = str(self.home)
+        run = subprocess.run([sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'), 'version'],
+                             capture_output=True, text=True, env=environment)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn('Moved local data', run.stderr)
+        self.assertTrue((self.new / 'output').is_dir()); self.assertFalse(self.old.exists())
+
+
+class LegacyInstallTests(unittest.TestCase):
+    """Installing ASI next to an AISAD 1.x skill or terminal command."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='asi legacy test ')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.version, assets = release.build(ROOT, self.root / 'dist')
+        self.install = ['install', '--archive', str(assets[1]), '--checksum-file', str(assets[2])]
+        self.skills = self.root / 'profile/skills'
+        self.old = self.skills / 'aisad'
+
+    def legacy(self):
+        """A 1.x release install as its installer left it, with a bytecode cache."""
+        files = {'SKILL.md': b'---\nname: aisad\n---\n', 'agents/openai.yaml': b'interface: {}\n',
+                 'scripts/aisad.py': b'# 1.x launcher\n', 'runtime/agent_usage.py': b"VERSION = '1.5.2'\n"}
+        for name, data in files.items():
+            (self.old / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.old / name).write_bytes(data)
+        manifest = dict(schema=1, repository='aiatsuk/aisad', version='1.5.2', files={name: skill.digest(data) for name, data in files.items()})
+        (self.old / 'manifest.json').write_text(json.dumps(manifest))
+        (self.old / 'scripts/__pycache__').mkdir()
+        (self.old / 'scripts/__pycache__/aisad.cpython-314.pyc').write_bytes(b'cache')
+        return files
+
+    def run_install(self, *extra):
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.main(self.install + ['--dest', str(self.skills)] + list(extra)), 0)
+        self.assertTrue((self.skills / 'asi/runtime/agent_usage.py').is_file())
+        return output.getvalue(), errors.getvalue()
+
+    def test_unmodified_1x_skill_is_removed(self):
+        self.legacy()
+        output, errors = self.run_install()
+        self.assertFalse(self.old.exists())
+        self.assertIn('Removed the previous AISAD skill at ' + str(self.old), output)
+        self.assertEqual(errors, '')
+        self.assertEqual([path.name for path in self.skills.iterdir() if not path.name.startswith('.')], ['asi'])
+        self.assertEqual([path.name for path in self.skills.iterdir() if '.removed-' in path.name], [])
+
+    def test_failed_delete_of_the_1x_skill_is_reported_and_install_succeeds(self):
+        self.legacy()
+        with patch.object(skill.shutil, 'rmtree', side_effect=PermissionError('Operation not permitted')):
+            output, errors = self.run_install()
+        self.assertFalse(self.old.exists())
+        self.assertIn('Removed the previous AISAD skill', output)
+        leftovers = [path for path in self.skills.iterdir() if path.name.startswith('.aisad.removed-')]
+        self.assertEqual(len(leftovers), 1)
+        self.assertIn('Could not delete its files at ' + str(leftovers[0]), errors)
+        self.assertTrue((leftovers[0] / 'manifest.json').is_file())
+
+    def test_1x_skill_with_local_changes_is_kept_with_one_line(self):
+        for change in ('edit', 'extra', 'missing', 'no manifest', 'other repository'):
+            with self.subTest(change=change):
+                shutil.rmtree(self.skills, ignore_errors=True)
+                self.legacy()
+                if change == 'edit':
+                    (self.old / 'SKILL.md').write_bytes(b'My own notes\n')
+                elif change == 'extra':
+                    (self.old / 'notes.txt').write_text('keep me')
+                elif change == 'missing':
+                    (self.old / 'agents/openai.yaml').unlink()
+                elif change == 'no manifest':
+                    (self.old / 'manifest.json').unlink()
+                else:
+                    manifest = json.loads((self.old / 'manifest.json').read_text())
+                    (self.old / 'manifest.json').write_text(json.dumps(dict(manifest, repository='someone/else')))
+                before = sorted(path.relative_to(self.old).as_posix() for path in self.old.rglob('*'))
+                output, errors = self.run_install()
+                self.assertTrue(self.old.is_dir())
+                self.assertEqual(sorted(path.relative_to(self.old).as_posix() for path in self.old.rglob('*')), before)
+                self.assertEqual(len(errors.strip().splitlines()), 1, errors)
+                self.assertIn('Kept the previous AISAD skill at ' + str(self.old), errors)
+                self.assertNotIn('Removed', output)
+
+    def test_symlinked_or_locked_1x_skill_is_kept(self):
+        target = self.root / 'elsewhere'
+        target.mkdir()
+        self.skills.mkdir(parents=True)
+        self.old.symlink_to(target, target_is_directory=True)
+        _, errors = self.run_install()
+        self.assertTrue(self.old.is_symlink()); self.assertTrue(target.is_dir())
+        self.assertIn('not a plain directory', errors)
+        self.old.unlink()
+        self.legacy()
+        # A 1.x update in flight holds the same lock file.
+        with (self.skills / '.aisad.update.lock').open('a+b') as lock:
+            skill.fcntl.flock(lock, skill.fcntl.LOCK_EX | skill.fcntl.LOCK_NB)
+            _, errors = self.run_install()
+        self.assertTrue((self.old / 'manifest.json').is_file())
+        self.assertIn('Another ASI update is running', errors)
+        self.assertEqual(len(errors.strip().splitlines()), 1, errors)
+
+    def test_no_1x_skill_means_no_message(self):
+        output, errors = self.run_install()
+        self.assertNotIn('AISAD', output + errors)
+        self.assertFalse(self.old.exists())
+
+    def test_1x_terminal_command_becomes_an_alias(self):
+        bin_dir = self.root / 'bin dir'
+        bin_dir.mkdir()
+        old_command = bin_dir / 'aisad'
+        old_command.write_text('#!/bin/sh\n# AISAD CLI launcher\nexec python3 /old/skills/aisad/scripts/aisad.py "$@"\n')
+        old_command.chmod(0o755)
+        output, errors = self.run_install('--cli-dir', str(bin_dir))
+        command = bin_dir / 'asi'
+        self.assertIn('# ASI CLI launcher', command.read_text())
+        self.assertIn(str(self.skills / 'asi/scripts/asi.py'), command.read_text())
+        alias = old_command.read_text()
+        self.assertTrue(alias.startswith('#!/bin/sh\n# AISAD CLI launcher\n'))
+        self.assertIn('exec ' + skill.shlex.quote(str(command)) + ' "$@"', alias)
+        self.assertNotIn('/old/skills', alias)
+        self.assertTrue(os.access(old_command, os.X_OK))
+        self.assertIn('now runs ' + str(command), output)
+        self.assertEqual(errors, '')
+        # The alias really runs the new command; a temporary home keeps real data untouched.
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
+        environment.update(HOME=str(self.root / 'home'), ASI_DATA_DIR=str(self.root / 'data'))
+        run = subprocess.run([str(old_command), 'version'], capture_output=True, text=True, env=environment)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), 'ASI ' + self.version)
+        self.assertFalse((self.root / 'home/.local').exists())
+        # Installing again leaves both commands as they are.
+        self.run_install('--cli-dir', str(bin_dir))
+        self.assertEqual(old_command.read_text(), alias)
+
+    def test_unrelated_or_symlinked_aisad_command_is_left_alone(self):
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        unrelated = '#!/bin/sh\necho my own aisad\n'
+        (bin_dir / 'aisad').write_text(unrelated)
+        _, errors = self.run_install('--cli-dir', str(bin_dir))
+        self.assertEqual((bin_dir / 'aisad').read_text(), unrelated)
+        self.assertEqual(errors, '')
+        (bin_dir / 'aisad').unlink()
+        target = self.root / 'real-aisad'
+        target.write_text('#!/bin/sh\n# AISAD CLI launcher\nexec true\n')
+        (bin_dir / 'aisad').symlink_to(target)
+        self.run_install('--cli-dir', str(bin_dir))
+        self.assertEqual(target.read_text(), '#!/bin/sh\n# AISAD CLI launcher\nexec true\n')
+        (bin_dir / 'aisad').unlink()
+        # No 1.x command: none is created.
+        self.run_install('--cli-dir', str(bin_dir))
+        self.assertFalse((bin_dir / 'aisad').exists())
+
+    def test_unwritable_1x_command_is_reported_and_install_still_succeeds(self):
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        legacy = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 /old/aisad.py "$@"\n'
+        (bin_dir / 'aisad').write_text(legacy)
+        (bin_dir / 'aisad').chmod(0o444)
+        self.addCleanup((bin_dir / 'aisad').chmod, 0o644)
+        _, errors = self.run_install('--cli-dir', str(bin_dir))
+        self.assertIn('Could not point ' + str(bin_dir / 'aisad'), errors)
+        self.assertEqual((bin_dir / 'aisad').read_text(), legacy)
+        self.assertTrue((bin_dir / 'asi').is_file())
 
 
 if __name__ == '__main__':

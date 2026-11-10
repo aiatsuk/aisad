@@ -44,6 +44,22 @@ class SharedUsageTests(unittest.TestCase):
         for field in ('sources','device','requests','events','source_files'):
             self.assertNotIn(field,data)
 
+    def test_writer_uses_new_names_and_reader_accepts_the_1x_names(self):
+        result=self.publish(10,1)
+        live=(self.output/'usage-live.js').read_text()
+        self.assertTrue(live.startswith('globalThis.asiLiveRevision?.('))
+        self.assertTrue((self.output/'usage-live-data.js').read_text().startswith('globalThis.asiLiveData?.('))
+        self.assertNotIn('aisad',live+(self.output/'usage-live-data.js').read_text())
+        # A 1.x writer (AISAD) committed the same revision under the old global name.
+        (self.output/'usage-live.js').write_text(live.replace('globalThis.asiLiveRevision?.(','globalThis.aisadLiveRevision?.(',1))
+        self.assertEqual(app.read_shared_commit(self.output)['revision'],result['revision'])
+        self.assertEqual(app.read_shared_usage(self.output)['revision'],result['revision'])
+        # Any other prefix, or a truncated file, is not a commit.
+        for broken in (live.replace('asiLiveRevision','otherLiveRevision',1),live[:-2],'globalThis.aisadLiveRevision?.({broken);'):
+            (self.output/'usage-live.js').write_text(broken)
+            self.assertEqual(app.read_shared_commit(self.output),{})
+            self.assertIsNone(app.read_shared_usage(self.output))
+
     def test_late_collection_cannot_roll_back_any_reader(self):
         newest=self.publish(30,30)
         before=(self.output/app.SHARED_USAGE).read_bytes()

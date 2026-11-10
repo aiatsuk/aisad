@@ -1,4 +1,4 @@
-# AISAD — AI Session Analysis Dashboard
+# ASI
 
 An independent, on-demand analyzer of local Claude Code and Codex session files. Collect usage and event metadata, inspect sessions, and build an offline dashboard. Commands run on demand; the terminal dashboard waits for keyboard input and exits with Q/Escape. The optional skill invokes the same standalone commands.
 
@@ -6,17 +6,17 @@ An independent, on-demand analyzer of local Claude Code and Codex session files.
 
 ## See it work
 
-Weekday view (`aisad chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
+Weekday view (`asi chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
 
-![aisad weekday view: browsing months with weekly totals, spend intensity and insights](docs/terminal-weeks.gif)
+![asi weekday view: browsing months with weekly totals, spend intensity and insights](docs/terminal-weeks.gif)
 
-Daily graph (`aisad chart`), same history: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table.
+Daily graph (`asi chart`), same history: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table.
 
-![Interactive aisad chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
+![Interactive asi chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
 
 Statusline, the optional spend forecast and its saved setting, recorded on the same real history:
 
-![aisad statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
+![asi statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
 
 *These recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
 
@@ -27,14 +27,14 @@ For the exact token formulas, cache-rate definition, pricing assumptions and com
 Clone into a writable directory and build a snapshot:
 
 ```sh
-git clone https://github.com/aiatsuk/aisad.git
-cd aisad
+git clone https://github.com/aiatsuk/asi.git
+cd asi
 python3 agent_usage.py dashboard --open
 ```
 
 The command reads existing local files, updates `output/sessions.sqlite`, writes a self-contained HTML file, opens it and exits. Rerun the command when you want fresh data. Opening or interacting with the dashboard does not collect anything.
 
-AISAD supports macOS and Linux. On macOS, `Run.command` performs the same one-shot action. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
+ASI supports macOS and Linux. On macOS, `Run.command` performs the same one-shot action. Python 3.9+ and its standard library are sufficient; the collector remains a single portable file.
 
 To update a clone, run `git pull --ff-only`. Existing snapshots remain usable offline.
 
@@ -61,11 +61,11 @@ baseline shows the USD change without an undefined percentage.
 With the CLI and native app installed, open the menu bar app with:
 
 ```sh
-aisad menubar
+asi menubar
 ```
 
 The launcher looks in `~/Applications` and `/Applications`, then asks macOS for the
-registered app. It does not build or install the app. `aisad menubar --json` keeps
+registered app; a 1.x app is found too (see [Upgrading from AISAD 1.x](#upgrading-from-aisad-1x)). It does not build or install the app. `asi menubar --json` keeps
 returning the aggregate report without launching the app.
 
 From a clone, with Xcode Command Line Tools and Python 3.9+ installed:
@@ -74,12 +74,12 @@ From a clone, with Xcode Command Line Tools and Python 3.9+ installed:
 ./script/build_and_run.sh
 ```
 
-This builds `dist/AISADMenuBar.app` and opens it as a menu bar accessory (no Dock icon).
+This builds `dist/ASIMenuBar.app` and opens it as a menu bar accessory (no Dock icon).
 The Codex Run action uses the same script. No login item is installed. Quit from the menu
 stops the app and its refresh task. Use `--build-only` to build without launching.
 This is a local development bundle; distribution signing is not configured.
 
-On macOS Tahoe, AISAD must be enabled in **System Settings → Menu Bar → Allow in the
+On macOS Tahoe, ASI must be enabled in **System Settings → Menu Bar → Allow in the
 Menu Bar** to show its icon. The app owns its insertion state and keeps running if macOS
 hides the item. Reopening it does not override the system's visibility choice.
 Snapshot export runs without constructing the menu-bar scene and does not stop the normal app.
@@ -108,11 +108,12 @@ server or listener. Session lifecycle/event evidence retains its own collection 
 when a lightweight usage update arrives. Provider quota refresh schedules remain separate.
 
 Dollar reports use the bundled local Python collector and make no network requests. **Monthly budget…**
-edits the same `budget.json` as `aisad budget --set USD`, preserving forecast settings.
-There are no day/week limits. The default shared data root is `~/.local/share/aisad`;
-`AISAD_DATA_DIR` overrides it and `AISAD_PYTHON` can select a Python interpreter.
-The clone's CLI normally uses `./output`: pass `--output ~/.local/share/aisad/output`
-to share settings with the app and installed `aisad` command.
+edits the same `budget.json` as `asi budget --set USD`, preserving forecast settings.
+There are no day/week limits. The default shared data root is `~/.local/share/asi`;
+`ASI_DATA_DIR` overrides it and `ASI_PYTHON` can select a Python interpreter (1.x names
+and data: [Upgrading from AISAD 1.x](#upgrading-from-aisad-1x)).
+The clone's CLI normally uses `./output`: pass `--output ~/.local/share/asi/output`
+to share settings with the app and installed `asi` command.
 
 A row of **Claude**, **Codex** and **Grok** rings shows subscription limits below the spend
 summary, each with its aggregate weekly percentage remaining; missing or expired weekly readings
@@ -128,7 +129,7 @@ Click a provider to open its pace popover:
   *behind pace* means less remains than an even spend would leave.
 - **Runs out** projects the average rate so far to exhaustion; a window that would outlast its
   reset says so instead. Early in a window the projection is necessarily rough.
-- A chart of the remaining allowance across the window, one column per day: the readings AISAD
+- A chart of the remaining allowance across the window, one column per day: the readings ASI
   already fetched, the dotted even-pace line and the projection. Hover it to read an earlier point.
 - Every other window (session, model-specific weekly) with a bar, the percentage left and its
   reset, shown relatively within a day (for example, **resets in 2h 18m**).
@@ -143,7 +144,7 @@ reading the app already fetched, at most 4,000 of them, dropped a day after thei
 It holds no credentials, prompts or session content and causes no extra provider requests;
 deleting it only empties the chart until new readings arrive.
 
-Provider data refreshes every minute while AISAD runs. Opening a popover uses the latest reading and
+Provider data refreshes every minute while ASI runs. Opening a popover uses the latest reading and
 does not send requests. The single footer refresh action updates both dollar usage and plan limits,
 respecting provider cooldowns. Readings and reset times refresh their display every 30 seconds.
 Unknown quotas show a question mark; stale/expired readings show a clock and never invent a refill.
@@ -151,8 +152,8 @@ Temporary failures retain the last reading; authentication failures clear it.
 
 Limits use the existing signed-in Codex/Grok CLI over stdio and Claude's existing OAuth login
 from its credentials file or macOS Keychain. Authenticated usage reads contact the provider;
-credentials stay transient, are never logged or saved by AISAD, and are never refreshed or
-replaced by AISAD. The app does not start model turns, import browser cookies, or change login
+credentials stay transient, are never logged or saved by ASI, and are never refreshed or
+replaced by ASI. The app does not start model turns, import browser cookies, or change login
 or system settings. A missing or inaccessible sign-in is shown explicitly.
 
 Amounts are API-equivalent estimates for all local Claude/Codex sessions and pools,
@@ -165,7 +166,7 @@ pricing checks and remaining estimation assumptions.
 For aggregate JSON without the app:
 
 ```sh
-python3 agent_usage.py menubar --json --output ~/.local/share/aisad/output
+python3 agent_usage.py menubar --json --output ~/.local/share/asi/output
 ```
 
 Development checks: `python3 -m unittest discover -q`, `swift test --package-path macos`,
@@ -203,7 +204,7 @@ python3 agent_usage.py usage --json --all-time --include-requests
 
 | JSON field | Contents |
 | --- | --- |
-| `schema_version`, `version` | Report schema and AISAD release versions |
+| `schema_version`, `version` | Report schema and ASI release versions |
 | `period`, `previous_period`, `filters`, `timezone` | Exact scope of the report |
 | `current.totals`, `previous.totals` | Requests, distinct sessions, tokens, weighted cache share, pricing coverage and cost components |
 | `current.by_provider`, `by_model`, `by_project`, `by_role`, `by_session`, `by_date` | Breakdowns; also present under `previous` |
@@ -222,7 +223,7 @@ python3 agent_usage.py usage --json --all-time --include-requests
 
 Use `usage --json --include-requests` to inspect request timing, input/output tokens, cache usage, and numeric tool/MCP counts and sizes. These records support questions such as “Which sessions had the largest tool payloads?” or “How did cache usage change this week?” Tool bytes are measured locally and are not converted into billed tokens. Missing tool telemetry is reported explicitly.
 
-`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. AISAD does not generate recommendations, flag workflow patterns, or estimate hypothetical savings. The one exception is the optional, off-by-default spend forecast below, which is a statistical projection of known cost.
+`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. ASI does not generate recommendations, flag workflow patterns, or estimate hypothetical savings. The one exception is the optional, off-by-default spend forecast below, which is a statistical projection of known cost.
 
 Usage and status-line JSON now use `schema_version: 2`. Usage reports replace `diagnostics` with `telemetry` and `analysis_records` with `request_stats`; `analysis_rules` is removed. Status-line reports omit coaching fields. Token and cost totals, breakdowns, periods and comparisons keep their existing field names. The full `usage.json` snapshot exposes numeric request statistics in `request_stats`.
 
@@ -263,7 +264,7 @@ finally:
     connection.close()
 ```
 
-`event_sources` provides the source-file ID, line, byte offset and parsed-record SHA-256 fingerprint. Resolve paths through `source_files`. The fingerprint is SHA-256 of AISAD's canonical JSON representation (`evidence_id(raw_record)`), not a hash of the raw line bytes. Request records link to events through `observation_events`; `request_stats.evidence` exposes those references in JSON and HTML. The selected price catalog is saved in database metadata and `prices-used.json`.
+`event_sources` provides the source-file ID, line, byte offset and parsed-record SHA-256 fingerprint. Resolve paths through `source_files`. The fingerprint is SHA-256 of ASI's canonical JSON representation (`evidence_id(raw_record)`), not a hash of the raw line bytes. Request records link to events through `observation_events`; `request_stats.evidence` exposes those references in JSON and HTML. The selected price catalog is saved in database metadata and `prices-used.json`.
 
 The database is a derived snapshot, rebuilt transactionally from discovered sources and the parse cache. Repeated collection does not add usage. Copied records are deduplicated; removed source files disappear from the next snapshot. An interrupted database transaction preserves its previous complete state. Files can continue growing while they are read: each read stops at its initial size, tolerates an incomplete final line, and reports collection issues in `quality`. Different files are not an atomic snapshot of the running applications.
 
@@ -275,7 +276,7 @@ Usage and session JSON expose `measurement_basis`: tokens and logged result byte
 
 ### Migration from monitoring modes
 
-`--watch` and `--stdin` are rejected before collecting. No dashboard server or browser polling remains. `statusline` is retained only as a manually invoked one-shot text/JSON snapshot. If you previously configured an external status hook or scheduler, remove that configuration yourself; AISAD does not edit other tools' settings.
+`--watch` and `--stdin` are rejected before collecting. No dashboard server or browser polling remains. `statusline` is retained only as a manually invoked one-shot text/JSON snapshot. If you previously configured an external status hook or scheduler, remove that configuration yourself; ASI does not edit other tools' settings.
 
 ## Status line
 
@@ -285,7 +286,7 @@ python3 agent_usage.py statusline --monthly-budget 3000 --color
 python3 agent_usage.py statusline --json
 ```
 
-AISAD prints one compact line; Claude Code's own mode indicator can appear beneath it:
+ASI prints one compact line; Claude Code's own mode indicator can appear beneath it:
 
 ```text
 td $11.45 · wk $647.75 vs $353.64 (+83%) · mo $950.02 vs $1,156.65 (-18%) [██▊░░░] 47.5%
@@ -313,23 +314,23 @@ The bar is six terminal cells wide, with eighth-cell precision, a dark gray back
 ## Terminal dashboard and saved budget
 
 ```sh
-aisad chart --offline --color
-aisad chart --offline --color --interactive
-aisad chart --offline --color --snapshot
-aisad chart --offline --color --view weeks --month 2026-09 --snapshot
-aisad chart --offline --json
-aisad budget
-aisad budget --set 3000
-aisad budget --reset
-aisad budget --forecast on --quantile 0.8
-aisad forecast
+asi chart --offline --color
+asi chart --offline --color --interactive
+asi chart --offline --color --snapshot
+asi chart --offline --color --view weeks --month 2026-09 --snapshot
+asi chart --offline --json
+asi budget
+asi budget --set 3000
+asi budget --reset
+asi budget --forecast on --quantile 0.8
+asi forecast
 ```
 
 `chart` opens a keyboard-driven view when both input and output are a terminal, or prints one snapshot when piped or given `--snapshot`: days 01 through the last day of the selected calendar month (current by default) on the horizontal axis, daily USD cost on the vertical axis with automatic rounded steps. Every day has a number and a two-letter weekday beneath it; weekends are highlighted. The whole month always stays in one plot, so month changes morph at any width: three columns per day from about 100 columns, two columns with odd day numbers and a weekday initial under every day from about 70, and one column with weekly day numbers (01, 08, 15, 22, 29) and initials below that, down to 48 columns. The weekly table likewise keeps every week side by side: it shortens weekday names, then drops cents, before splitting into panels. Claude, Codex and other observed providers have separate colored step lines with rounded corners and a compact legend; use `--color` to force colors, `--no-color` to disable them, or `--ascii` for plain ASCII line drawing. It fits the terminal width (48–240 columns) and supports a 4–30-row maximum height. Dates follow `--timezone`, and future dates remain blank. Use `--month YYYY-MM` for another calendar month; custom date ranges belong to `usage`.
 
 The enhanced terminal view uses strict TypeScript, React and public upstream Ink, built into one module with Bun. Ink manages layout through Yoga, key handling, live terminal resize and alternate-screen cleanup. Python still collects and prices usage; the UI receives only monthly numeric aggregates, never transcript text, source paths or project names. Navigation reuses those aggregates and does not open network connections or rescan sessions.
 
-When the bundled UI and Bun are available, `aisad chart` selects it automatically. Otherwise the portable Python view remains available. Set `AISAD_TERMINAL_UI=python` to select that view explicitly. Snapshot and JSON commands continue to use Python without launching the UI. The enhanced UI browses loaded months, from the earliest available history/requested month through the current month.
+When the bundled UI and Bun are available, `asi chart` selects it automatically. Otherwise the portable Python view remains available. Set `ASI_TERMINAL_UI=python` to select that view explicitly. Snapshot and JSON commands continue to use Python without launching the UI. The enhanced UI browses loaded months, from the earliest available history/requested month through the current month.
 
 For UI development and a local bundle:
 
@@ -347,7 +348,7 @@ The UI bundle includes its dependencies and third-party notices; no package inst
 
 In the terminal, press **W** to switch between the graph and a weekday table, **H** for the previous month, **L** for the next month (up to the current month), and **Q** or Escape to exit. Left/right arrow keys also change months. `--interactive` requires a terminal; `--view weeks --snapshot` prints the table without waiting for keys. Navigation reuses the initial local snapshot; it does not poll, rescan, start a server or reach the network. Exiting restores the terminal.
 
-The Ink UI animates in the style of the Codex CLI welcome mark. When the graph opens, its lines grow out of the $0 baseline from left to right; between months they flow into the next month's lines. Particles are bound to provider and day and transfer from the dots on screen: a day's dots move up or down in place, split off when its line grows and merge when it shrinks, and new days flow in from neighbouring days; only a provider with nothing within about four days dissolves or grows from $0. The plot keeps one height and one y-axis width for every month, so each morph starts exactly on the dots shown. A wave crosses the occupied span in the navigation direction (H and L mirror it); particles hop along arcs, lift toward the camera with perspective, glow in flight, flash as they land with a slight overshoot and leave short comet tails where they move fast. Colors blend between providers and the plot tilts slightly. Rendering uses a per-dot z-buffer and studio lighting (key, shadow, cool rim and a warm specular glint) averaged into one truecolor foreground per Braille cell. Text and table cells sweep in from a dimmed state in the same direction. Provider amounts in the legend and the monthly budget amount and percentage roll from the previous month's values (a new provider counts up from $0) with a slight stagger; digits that are still changing glow warm and flash as they settle. A 20-cell, two-row minimap shows the selected month's real daily costs in provider colors. It stays visible in both graph and weekly views; left to right covers the full calendar month, with a shared vertical scale based on that month's largest provider daily cost. Gaps/future days stay blank and unpriced days retain `?`; thin connected lines retain provider/day correspondence while morphing, missing samples fade in place, and a light band sweeps across during the morph. Coincident lines share a terminal cell's foreground color. The plot keeps the same number of rows for every month (finer 1/1.5/2/2.5/3/4/5/6/8 ticks keep the top within a third of the maximum), so navigation never moves the legend or footer. Exact costs, axes and table cells stay ordinary text, and every animation settles to the exact colors and glyphs. Transitions prepare before the first new-month frame: plot and minimap morphs and graph text take 620 ms, the opening growth 700 ms and weekly-table sweeps 420 ms, all with quintic easing (zero endpoint velocity and acceleration). Animation stops at rest; rapid input retargets from the visible particle positions. Lighting assumes a dark terminal background; 256- and 16-color terminals receive the nearest palette colors. Set `AISAD_REDUCED_MOTION=1` to disable movement. Screen readers, CI, ASCII, no-color output and the Python fallback stay static. Narrow/multi-panel graphs switch directly while the minimap provides the transition. Resizing settles graph geometry immediately; narrow terminals use a 16-cell minimap. Animations share one 8 ms clock (about 120 fps); unchanged rows are cached, so a frame costs about 2 ms even on a slow machine. Outside screen-reader mode the dashboard writes frames itself: it rewrites only changed lines inside a synchronized terminal update, while Ink keeps input, resize and terminal restoration (see [ADR 0003](docs/agent/adr/0003-direct-frame-writer.md)). To measure actual terminal pacing on your machine, run `python3 ui/test/pty_performance.py` after building the UI.
+The Ink UI animates in the style of the Codex CLI welcome mark. When the graph opens, its lines grow out of the $0 baseline from left to right; between months they flow into the next month's lines. Particles are bound to provider and day and transfer from the dots on screen: a day's dots move up or down in place, split off when its line grows and merge when it shrinks, and new days flow in from neighbouring days; only a provider with nothing within about four days dissolves or grows from $0. The plot keeps one height and one y-axis width for every month, so each morph starts exactly on the dots shown. A wave crosses the occupied span in the navigation direction (H and L mirror it); particles hop along arcs, lift toward the camera with perspective, glow in flight, flash as they land with a slight overshoot and leave short comet tails where they move fast. Colors blend between providers and the plot tilts slightly. Rendering uses a per-dot z-buffer and studio lighting (key, shadow, cool rim and a warm specular glint) averaged into one truecolor foreground per Braille cell. Text and table cells sweep in from a dimmed state in the same direction. Provider amounts in the legend and the monthly budget amount and percentage roll from the previous month's values (a new provider counts up from $0) with a slight stagger; digits that are still changing glow warm and flash as they settle. A 20-cell, two-row minimap shows the selected month's real daily costs in provider colors. It stays visible in both graph and weekly views; left to right covers the full calendar month, with a shared vertical scale based on that month's largest provider daily cost. Gaps/future days stay blank and unpriced days retain `?`; thin connected lines retain provider/day correspondence while morphing, missing samples fade in place, and a light band sweeps across during the morph. Coincident lines share a terminal cell's foreground color. The plot keeps the same number of rows for every month (finer 1/1.5/2/2.5/3/4/5/6/8 ticks keep the top within a third of the maximum), so navigation never moves the legend or footer. Exact costs, axes and table cells stay ordinary text, and every animation settles to the exact colors and glyphs. Transitions prepare before the first new-month frame: plot and minimap morphs and graph text take 620 ms, the opening growth 700 ms and weekly-table sweeps 420 ms, all with quintic easing (zero endpoint velocity and acceleration). Animation stops at rest; rapid input retargets from the visible particle positions. Lighting assumes a dark terminal background; 256- and 16-color terminals receive the nearest palette colors. Set `ASI_REDUCED_MOTION=1` to disable movement. Screen readers, CI, ASCII, no-color output and the Python fallback stay static. Narrow/multi-panel graphs switch directly while the minimap provides the transition. Resizing settles graph geometry immediately; narrow terminals use a 16-cell minimap. Animations share one 8 ms clock (about 120 fps); unchanged rows are cached, so a frame costs about 2 ms even on a slow machine. Outside screen-reader mode the dashboard writes frames itself: it rewrites only changed lines inside a synchronized terminal update, while Ink keeps input, resize and terminal restoration (see [ADR 0003](docs/agent/adr/0003-direct-frame-writer.md)). To measure actual terminal pacing on your machine, run `python3 ui/test/pty_performance.py` after building the UI.
 
 The interactive chart opens on the dataset it showed last time (`output/chart-ui.json`, monthly aggregates only, keyed by version and options), marked "Updating…" in the footer, while the collector rescans traces in the background. When fresh numbers arrive, changed months morph and roll to them; unchanged months stay still and the selected month is kept (or follows today's month if you have not navigated). Quitting before the refresh ends exits immediately. The first launch, or a launch with other options, waits for the scan as before. Press R at any time to collect again without leaving the chart; the footer shows "Updating…" until the new numbers arrive (one collection at a time; a failure keeps the shown numbers and is reported on exit).
 
@@ -357,29 +358,29 @@ Run the command in the terminal to see the actual colored chart; an ASCII recons
 
 `budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
 
-To add the `aisad` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
+To add the `asi` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
 
 ```sh
-python3 skills/aisad/scripts/aisad.py install --target both \
-  --archive dist/aisad-skill-v1.5.0.zip --checksum-file dist/SHA256SUMS \
+python3 skills/asi/scripts/asi.py install --target both \
+  --archive dist/asi-skill-vX.Y.Z.zip --checksum-file dist/SHA256SUMS \
   --cli-dir "$HOME/.local/bin"
 ```
 
-This installs a small launcher without editing shell settings and refuses to overwrite an unrelated existing command. Without it, invoke the installed helper with Python and the same commands. The existing offline HTML dashboard remains available through `aisad run --offline -- --open`.
+This installs a small launcher without editing shell settings and refuses to overwrite an unrelated existing command. An `aisad` command that the 1.x installer wrote in the same directory now runs `asi`. Without it, invoke the installed helper with Python and the same commands. The existing offline HTML dashboard remains available through `asi run --offline -- --open`.
 
 ## Install the skill
 
 From a clone of this repository:
 
 ```sh
-python3 skills/aisad/scripts/aisad.py install --target codex
+python3 skills/asi/scripts/asi.py install --target codex
 ```
 
-Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/aisad` and `~/.claude/skills/aisad`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version 1.0.7` to install that published release. The package includes its own collector; you do not need to keep the clone afterward.
+Use `--target claude` for Claude Code or `--target both` for both applications. Defaults are `~/.codex/skills/asi` and `~/.claude/skills/asi`, honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Use `--dest '/path/to/skills'` for a custom skills parent directory, or `--version X.Y.Z` to install that published ASI release. The package includes its own collector; you do not need to keep the clone afterward.
 
-You can also ask Codex's skill installer to install `skills/aisad` from `aiatsuk/aisad`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
+You can also ask Codex's skill installer to install `skills/asi` from `aiatsuk/asi`. A raw GitHub skill installation downloads its bundled runtime on first use. A release installation already includes the runtime and works offline immediately.
 
-In a new turn, invoke `$aisad usage` in Codex or `/aisad usage` in Claude Code. Ask follow-up questions such as:
+In a new turn, invoke `$asi usage` in Codex or `/asi usage` in Claude Code. Ask follow-up questions such as:
 
 - “Which models cost the most this week?”
 - “Compare Claude and Codex with the previous week.”
@@ -388,41 +389,52 @@ In a new turn, invoke `$aisad usage` in Codex or `/aisad usage` in Claude Code. 
 - “Show the largest recorded context and tool payloads by session.”
 - “Inspect this session’s recorded events and tool calls.”
 
-The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/aisad/SKILL.md](skills/aisad/SKILL.md).
+The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/asi/SKILL.md](skills/asi/SKILL.md).
 
 For this unreleased source version, build and install the local bundle without contacting GitHub:
 
 ```sh
-python3 scripts/build_release.py --tag v1.1.0
-python3 skills/aisad/scripts/aisad.py install --archive dist/aisad-skill-v1.1.0.zip --checksum-file dist/SHA256SUMS --target codex
+python3 scripts/build_release.py --tag vX.Y.Z
+python3 skills/asi/scripts/asi.py install --archive dist/asi-skill-vX.Y.Z.zip --checksum-file dist/SHA256SUMS --target codex
 ```
+
+### Upgrading from AISAD 1.x
+
+ASI was named AISAD (AI Session Analysis Dashboard) up to 1.5.2. A 1.x installation cannot update itself to ASI: its updater accepts only AISAD release files, so it stays at its version and keeps working. Run the ASI installer once, as above. The ASI installer installs ASI releases only. What carries over:
+
+- The skill moves to `skills/asi`. An unmodified 1.x `skills/aisad` next to it is removed; one with local changes, or one the installer cannot verify, stays where it is and the installer prints one line about it.
+- With `--cli-dir`, an `aisad` command that the 1.x installer wrote there now runs `asi`.
+- The first `asi` command moves `~/.local/share/aisad` to `~/.local/share/asi` (budget, reports, forecast and update state), unless a data directory is configured. If the move fails, it keeps using the old directory and says so on stderr. The menu bar app never moves data: it uses `~/.local/share/asi` if that exists, otherwise `~/.local/share/aisad` if that exists.
+- `ASI_*` environment variables replace `AISAD_*`. An `AISAD_*` variable still applies when its `ASI_*` twin is unset or empty.
+- Dashboards, the terminal chart and the menu bar app also follow shared updates written by 1.x, and a dashboard theme saved by 1.x still applies.
+- `asi menubar` opens `ASI.app` or `ASIMenuBar.app`, then a 1.x `AISAD.app` or `AISADMenuBar.app`. The rebuilt app has the bundle ID `com.aiatsuk.asi.menubar`, so macOS treats it as a new app: allow it in the menu bar again, and the remembered chart range starts at Week.
 
 ### Updates and offline use
 
 The installed helper supports:
 
 ```sh
-python3 ~/.codex/skills/aisad/scripts/aisad.py version
-python3 ~/.codex/skills/aisad/scripts/aisad.py check-update
-python3 ~/.codex/skills/aisad/scripts/aisad.py update
-python3 ~/.codex/skills/aisad/scripts/aisad.py usage --json
-python3 ~/.codex/skills/aisad/scripts/aisad.py usage --offline
-python3 ~/.codex/skills/aisad/scripts/aisad.py analyze --json
-python3 ~/.codex/skills/aisad/scripts/aisad.py sessions --offline --json
-python3 ~/.codex/skills/aisad/scripts/aisad.py run -- --open
+python3 ~/.codex/skills/asi/scripts/asi.py version
+python3 ~/.codex/skills/asi/scripts/asi.py check-update
+python3 ~/.codex/skills/asi/scripts/asi.py update
+python3 ~/.codex/skills/asi/scripts/asi.py usage --json
+python3 ~/.codex/skills/asi/scripts/asi.py usage --offline
+python3 ~/.codex/skills/asi/scripts/asi.py analyze --json
+python3 ~/.codex/skills/asi/scripts/asi.py sessions --offline --json
+python3 ~/.codex/skills/asi/scripts/asi.py run -- --open
 ```
 
-Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline`, `chart` and `run` check for a newer stable release at most once every 24 hours when invoked. The check runs in a detached background helper (`aisad.py maintain`, output in `maintenance.log` in the data directory), so a report never waits for it; a newer release replaces the skill, launcher and collector together and applies from the next launch. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Existing HTML files remain fixed until another dashboard command generates a new snapshot.
+Substitute your installed skill directory if it differs. `usage`, `analyze`, `statusline`, `chart` and `run` check for a newer stable release at most once every 24 hours when invoked. The check runs in a detached background helper (`asi.py maintain`, output in `maintenance.log` in the data directory), so a report never waits for it; a newer release replaces the skill, launcher and collector together and applies from the next launch. Update messages go to stderr, keeping JSON stdout clean. `check-update` checks immediately without replacing code; `update` applies a newer release immediately. Existing HTML files remain fixed until another dashboard command generates a new snapshot.
 
-Checks and downloads contact only the public GitHub repository for release metadata and code. They transmit no traces, metrics or device identifiers. `--offline` skips those requests. Set `AISAD_AUTO_UPDATE=0` to disable automatic checks persistently in your environment; explicit `check-update` and `update` still work. If an automatic check fails, the installed version remains usable. No scheduler or startup service is installed.
+Checks and downloads contact only the public GitHub repository for release metadata and code. They transmit no traces, metrics or device identifiers. `--offline` skips those requests. Set `ASI_AUTO_UPDATE=0` to disable automatic checks persistently in your environment; explicit `check-update` and `update` still work. If an automatic check fails, the installed version remains usable. No scheduler or startup service is installed.
 
-Skill reports default to `~/.local/share/aisad/output`, outside the replaceable installation. `AISAD_DATA_DIR` or the helper's `--data-dir` selects another local data directory. Collector arguments can follow `--`; keep custom outputs outside the skill directory. Updates verify SHA-256 checksums and the package manifest, preserve local modifications by refusing to overwrite them, and restore the previous installation if replacement fails.
+Skill reports default to `~/.local/share/asi/output`, outside the replaceable installation. `ASI_DATA_DIR` or the helper's `--data-dir` selects another local data directory. Collector arguments can follow `--`; keep custom outputs outside the skill directory. Updates verify SHA-256 checksums and the package manifest, preserve local modifications by refusing to overwrite them, and restore the previous installation if replacement fails.
 
-For offline installation, download the skill ZIP and `SHA256SUMS` from a [release](https://github.com/aiatsuk/aisad/releases), then use a local copy of the helper:
+For offline installation, download the skill ZIP and `SHA256SUMS` from a [release](https://github.com/aiatsuk/asi/releases), then use a local copy of the helper:
 
 ```sh
-python3 skills/aisad/scripts/aisad.py install \
-  --archive aisad-skill-v1.0.7.zip --checksum-file SHA256SUMS --target codex
+python3 skills/asi/scripts/asi.py install \
+  --archive asi-skill-vX.Y.Z.zip --checksum-file SHA256SUMS --target codex
 ```
 
 ## What you can explore
@@ -452,7 +464,7 @@ Comparisons use recorded observations, not guaranteed complete coverage. The cur
 
 ## How cost is estimated
 
-**Local token counts cannot reveal subscription charges, remaining account limits or a provider invoice.** Even Claude SDK `total_cost_usd` is an estimate. AISAD does not add it to request-level costs because it may already include subagents and cumulative totals across turns.
+**Local token counts cannot reveal subscription charges, remaining account limits or a provider invoice.** Even Claude SDK `total_cost_usd` is an estimate. ASI does not add it to request-level costs because it may already include subagents and cumulative totals across turns.
 
 Rates calculate an **API-equivalent estimate** from each model's input, output, cache usage and available processing mode/geography. It is a current-rate scenario applied to the available history, not a reconstructed billing history. Reports use the refreshed catalog when one exists, the built-in table otherwise, and `price_as_of`, `price_basis` and `price_sources` always name which.
 
@@ -465,9 +477,9 @@ python3 agent_usage.py prices --json       # what is stored locally
 
 `prices --refresh` is the only outbound request the collector ever makes, and it happens only when asked. It reads [models.dev](https://models.dev/api.json), revalidates with the stored ETag, and keeps the last good catalog if anything fails: an oversized response, a payload that carries no first-party model, or rates the pricer would reject. The result lands in `output/prices-models-dev.json` beside a metadata file with the ETag, fetch time and payload SHA-256.
 
-Only the `anthropic` and `openai` providers are read, so a reseller entry never shadows a first-party rate. Published base rates, context tiers and fast-mode rates become `input`/`cached`/`write_5m`/`output`, `long_threshold` with its multipliers, and `fast_multiplier`. What that source does not publish — Anthropic's one-hour cache writes, the flex and batch discounts — stays at its built-in value, and a model missing from the source keeps its built-in rate rather than turning historical observations unpriced. Models it publishes that AISAD did not know about are added.
+Only the `anthropic` and `openai` providers are read, so a reseller entry never shadows a first-party rate. Published base rates, context tiers and fast-mode rates become `input`/`cached`/`write_5m`/`output`, `long_threshold` with its multipliers, and `fast_multiplier`. What that source does not publish — Anthropic's one-hour cache writes, the flex and batch discounts — stays at its built-in value, and a model missing from the source keeps its built-in rate rather than turning historical observations unpriced. Models it publishes that ASI did not know about are added.
 
-The launcher (`skills/aisad/scripts/aisad.py`) refreshes at most once every 24 hours in the background, alongside its existing update check; new rates apply from the next report. `--offline` or `AISAD_AUTO_PRICES=0` disables that; the refresh never blocks or fails a report.
+The launcher (`skills/asi/scripts/asi.py`) refreshes at most once every 24 hours in the background, alongside its existing update check; new rates apply from the next report. `--offline` or `ASI_AUTO_PRICES=0` disables that; the refresh never blocks or fails a report.
 
 Missing tiers default to Standard and missing geography defaults to global. An unknown model or unsupported mode has a missing price, not a zero price; the request is excluded from the displayed cost subtotal and comparison, with its count disclosed separately. If a Claude cache-write TTL is unknown, cost is shown as a 5-minute to 1-hour range.
 
@@ -530,20 +542,20 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 
 The dashboard opens as a saved file. No local server or background process is started.
 
-**Clone the code on each device; keep its reports local.** Default output, JSONL traces, databases, local data exports and price overrides are excluded through `.gitignore`. If you use a custom `--output` directory, place it outside the repository or add it to your local Git exclusions. Reports still contain session and project metadata; publishing them is not required to use AISAD.
+**Clone the code on each device; keep its reports local.** Default output, JSONL traces, databases, local data exports and price overrides are excluded through `.gitignore`. If you use a custom `--output` directory, place it outside the repository or add it to your local Git exclusions. Reports still contain session and project metadata; publishing them is not required to use ASI.
 
 `refresh.py` is an alternative entry point with the same behavior.
 
 ## Versions and releases
 
-`python3 agent_usage.py --version` prints the installed collector version. AISAD uses semantic release versions. The JSON contracts are versioned separately with `schema_version`; incompatible report changes increment that field. Scripts consuming JSON should check it before reading the report.
+`python3 agent_usage.py --version` prints the installed collector version. ASI uses semantic release versions. The JSON contracts are versioned separately with `schema_version`; incompatible report changes increment that field. Scripts consuming JSON should check it before reading the report.
 
 GitHub's Latest release is the update source, and the release workflow explicitly marks the new release as Latest.
 
-`VERSION` in `agent_usage.py` is the source of truth. Release tags use `vX.Y.Z` and must match it. See [CHANGELOG.md](CHANGELOG.md) for changes and [GitHub Releases](https://github.com/aiatsuk/aisad/releases) for published assets:
+`VERSION` in `agent_usage.py` is the source of truth. Release tags use `vX.Y.Z` and must match it. See [CHANGELOG.md](CHANGELOG.md) for changes and [GitHub Releases](https://github.com/aiatsuk/asi/releases) for published assets:
 
 - `agent_usage.py`: standalone collector and dashboard.
-- `aisad-skill-vX.Y.Z.zip`: skill instructions, helper, bundled collector and file manifest.
+- `asi-skill-vX.Y.Z.zip`: skill instructions, helper, bundled collector and file manifest.
 - `SHA256SUMS`: checksums for both downloads.
 
 For maintainers, update `VERSION` and the changelog, then test and build:
@@ -558,7 +570,7 @@ The builder uses an explicit source-file list and deterministic ZIP metadata. Lo
 ### Releasing
 
 1. In the release pull request, bump `VERSION` in `agent_usage.py` (the only version file) and add a `## X.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md`. `python3 scripts/release.py check --tag vX.Y.Z` confirms they agree.
-2. Merge it. The `Tag release` workflow sees the new `VERSION` on main, tags the merged commit `vX.Y.Z` and starts the release workflow. To tag by hand instead, push `git tag -a vX.Y.Z -m "AISAD X.Y.Z" <merged main sha>`.
+2. Merge it. The `Tag release` workflow sees the new `VERSION` on main, tags the merged commit `vX.Y.Z` and starts the release workflow. To tag by hand instead, push `git tag -a vX.Y.Z -m "ASI X.Y.Z" <merged main sha>`.
 3. The release workflow checks the tag with `scripts/release.py check`, runs the tests, builds the assets and publishes the GitHub Release with that version's changelog section (`scripts/release.py notes`) as its notes.
 4. To republish an existing tag, for example after a failed run, use `gh workflow run release.yml -f tag=vX.Y.Z`. It updates the existing release's notes and assets instead of failing.
 
@@ -608,7 +620,7 @@ Inspired by Visibility & Education and figures 11–12 in [Uber: The Efficient S
 
 The dashboard follows [Uber Base](https://base.uber.com/6d2425e9f/p/294ab4-base-design-system) conventions using the public [Base Web colors](https://baseweb.design/guides/colors/) and [theme guidance](https://baseweb.design/guides/theming/): neutral surfaces, black primary controls, clear type, and semantic status colors. It includes a dark theme and keyboard navigation. The implementation stays dependency-free, with system fonts and no remote assets; it does not bundle proprietary Uber fonts or require access to private design-system pages.
 
-Forked Codex traces can contain copied parent usage with rewritten timestamps. AISAD excludes that prefix when the first local turn context establishes the fork boundary, then keeps subsequent usage under the child session. Files without a turn context retain their uncertain records and are counted in `quality.codex_fork_without_turn_context`.
+Forked Codex traces can contain copied parent usage with rewritten timestamps. ASI excludes that prefix when the first local turn context establishes the fork boundary, then keeps subsequent usage under the child session. Files without a turn context retain their uncertain records and are counted in `quality.codex_fork_without_turn_context`.
 
 Supported sources are local **Claude Code and Codex** traces, not all cloud conversations in Claude.ai or ChatGPT. Deleted or unsaved sessions cannot be recovered. Log format changes may require parser updates; diagnostics expose missing data and unknown models.
 

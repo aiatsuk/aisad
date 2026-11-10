@@ -5,13 +5,13 @@ CI assertions. Pass an older bundle path to reproduce a before/after comparison.
 import sys,os,pty,fcntl,termios,struct,subprocess,select,time,json,tempfile
 from pathlib import Path
 from pty_motion import ROOT,fixture
-bundle=sys.argv[1] if len(sys.argv)>1 else str(ROOT/'ui/dist/aisad-ui.mjs')
-with tempfile.TemporaryDirectory(prefix='aisad-perf-') as directory:
+bundle=sys.argv[1] if len(sys.argv)>1 else str(ROOT/'ui/dist/asi-ui.mjs')
+with tempfile.TemporaryDirectory(prefix='asi-perf-') as directory:
  root=Path(directory);source=root/'dataset.json';data=fixture();data['initial_view']='graph';source.write_text(json.dumps(data))
  master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,110,0,0))
  env={**os.environ,'TERM':'xterm-256color','FORCE_COLOR':'3'}
- for name in ('CI','NO_COLOR','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
- p=subprocess.Popen([os.environ.get('AISAD_TEST_BUN','bun'),bundle,str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
+ for name in ('CI','NO_COLOR','ASI_REDUCED_MOTION','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
+ p=subprocess.Popen([os.environ.get('ASI_TEST_BUN','bun'),bundle,str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
  def capture(seconds):
   deadline=time.monotonic()+seconds;times=[];wire=b'';total=0
   while time.monotonic()<deadline:

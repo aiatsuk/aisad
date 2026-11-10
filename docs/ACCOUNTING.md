@@ -2,7 +2,7 @@
 
 Reviewed against provider documentation and comparable tools on September 7, 2026.
 
-AISAD reads existing local records when invoked. It counts recorded usage observations, not user prompts or unique pieces of text. Reusing the same cached prefix on ten model calls legitimately contributes ten cache reads. Repeated delivery or copied history of the same observation must be deduplicated.
+ASI reads existing local records when invoked. It counts recorded usage observations, not user prompts or unique pieces of text. Reusing the same cached prefix on ten model calls legitimately contributes ten cache reads. Repeated delivery or copied history of the same observation must be deduplicated.
 
 ## Token categories
 
@@ -25,7 +25,7 @@ This is a token-weighted read rate, not the average of per-request percentages, 
 
 For each observation, sum the uncached-input, cache-read, cache-write and output components using that model's applicable rates and recorded processing mode. Add recorded billable tool charges separately. Five-minute and one-hour Claude writes use their respective rates; unrecorded TTL produces a range. Current prices come from [OpenAI](https://developers.openai.com/api/docs/pricing) and [Claude](https://platform.claude.com/docs/en/about-claude/pricing).
 
-Codex can record mode changes in `event_msg/thread_settings_applied`. A recorded `priority` or legacy `fast` value applies to subsequent observations; a recorded `default` restores Standard. Unrelated settings do not reset the last tier. Unknown explicit tiers remain unpriced. Unmarked history uses the existing, disclosed Standard assumption; AISAD does not apply the current global configuration retroactively. Fast multipliers come from the model's price rule, not a universal assumption about every model.
+Codex can record mode changes in `event_msg/thread_settings_applied`. A recorded `priority` or legacy `fast` value applies to subsequent observations; a recorded `default` restores Standard. Unrelated settings do not reset the last tier. Unknown explicit tiers remain unpriced. Unmarked history uses the existing, disclosed Standard assumption; ASI does not apply the current global configuration retroactively. Fast multipliers come from the model's price rule, not a universal assumption about every model.
 
 Version 1.1.0's accounting audit fixed a missing reader for these settings events. Before that fix, Fast observations without a tier in `turn_context` were priced as Standard. Token counts and cache rates were unaffected. The parser cache version is incremented so old parsed records are refreshed.
 
@@ -36,7 +36,7 @@ These amounts are API-equivalent estimates, not subscription charges or provider
 - Claude: use message identifiers to coalesce streamed updates and copied history; retain one coherent input snapshot and final/max output. SDK cumulative cost reports remain separate.
 - Codex: use `last_token_usage` for a recorded usage observation. An unchanged consecutive cumulative counter identifies a repeated snapshot. A reset begins a new sequence. Recognized fork prefixes are excluded before counting the child's local usage; unresolved fork boundaries are reported.
 - Cumulative counters must not be summed as if each value were a new request. A delta can also include history imported into a session or a bookkeeping reset, so it must not blindly replace an available per-request observation.
-- Current AISAD does not recover observations when `last_token_usage` is absent; it reports `quality.codex_missing_last_usage`. Missing logs cannot be reconstructed. Counts represent observed records, not a guaranteed count of every provider API request.
+- Current ASI does not recover observations when `last_token_usage` is absent; it reports `quality.codex_missing_last_usage`. Missing logs cannot be reconstructed. Counts represent observed records, not a guaranteed count of every provider API request.
 
 ## Comparison with other tools
 

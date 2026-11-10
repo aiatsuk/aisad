@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "aisad-terminal-ui",
+      "name": "asi-terminal-ui",
       "dependencies": {
         "ink": "8.0.0",
         "react": "19.3.0",

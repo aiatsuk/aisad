@@ -1,7 +1,7 @@
 import {mkdir,readdir,readFile,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 await mkdir('dist',{recursive:true});
-const result=await Bun.build({entrypoints:['src/main.tsx'],outdir:'dist',naming:'aisad-ui.mjs',target:'bun',format:'esm',minify:true,define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'offline-ink',setup(build){
+const result=await Bun.build({entrypoints:['src/main.tsx'],outdir:'dist',naming:'asi-ui.mjs',target:'bun',format:'esm',minify:true,define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'offline-ink',setup(build){
   // Ink's optional devtools import is discovered before dead-code elimination.
   // Pin the public dependency's development-only gate off in this bundle.
   build.onLoad({filter:/\/ink\/build\/reconciler\.js$/},async ({path})=>{
@@ -23,7 +23,7 @@ for(const entry of (await readdir('node_modules')).sort()) {
   }
 }
 await writeFile('dist/THIRD_PARTY_NOTICES.txt',notices.join('\n\n---\n\n'));
-console.log('Bundled AISAD Ink UI and dependency license notices.');
+console.log('Bundled ASI Ink UI and dependency license notices.');
 
 const inputs:Record<string,string>={};
 for(const name of ['build.ts','package.json','tsconfig.json','bun.lock',...(await readdir('src')).sort().map(name=>'src/'+name)]) {

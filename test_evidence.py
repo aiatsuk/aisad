@@ -13,7 +13,7 @@ import agent_usage as app
 
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='aisad evidence ')
+        self.temp=tempfile.TemporaryDirectory(prefix='asi evidence ')
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.home=self.root/'profile';self.output=self.root/'report'
 

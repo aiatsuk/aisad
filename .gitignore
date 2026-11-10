@@ -32,8 +32,8 @@ node_modules/
 
 # Generated releases and bootstrapped skill runtime.
 /dist/
-/skills/aisad/runtime/
-/skills/aisad/manifest.json
+/skills/asi/runtime/
+/skills/asi/manifest.json
 
 # Optional TypeScript terminal UI build output.
 /ui/dist/

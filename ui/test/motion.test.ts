@@ -61,8 +61,12 @@ describe('normalized motion core',()=>{
   });
   test('ASCII, no color, screen readers, reduced motion and CI are static',()=>{
     const options={ascii:false,color:true};expect(motionEnabled(options,{TERM:'xterm'})).toBe(true);
-    for(const env of [{AISAD_REDUCED_MOTION:'1'},{CI:'true'},{TERM:'dumb'},{INK_SCREEN_READER:'1'}])expect(motionEnabled(options,env)).toBe(false);
+    for(const env of [{ASI_REDUCED_MOTION:'1'},{CI:'true'},{TERM:'dumb'},{INK_SCREEN_READER:'1'}])expect(motionEnabled(options,env)).toBe(false);
     expect(motionEnabled(options,{},true)).toBe(false);
+    // The 1.x AISAD_ name still works; the ASI_ name wins when both are set, and empty counts as unset.
+    expect(motionEnabled(options,{AISAD_REDUCED_MOTION:'1'})).toBe(false);
+    expect(motionEnabled(options,{ASI_REDUCED_MOTION:'0',AISAD_REDUCED_MOTION:'1'})).toBe(true);
+    expect(motionEnabled(options,{ASI_REDUCED_MOTION:'',AISAD_REDUCED_MOTION:'1'})).toBe(false);
     expect(motionEnabled({...options,ascii:true},{})).toBe(false);expect(motionEnabled({...options,color:false},{})).toBe(false);
   });
 });

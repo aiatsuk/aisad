@@ -6,7 +6,7 @@
 
 ## Goal
 
-When switched on, AISAD forecasts the next week's and month's known spend from local history and shows a
+When switched on, ASI forecasts the next week's and month's known spend from local history and shows a
 suggested monthly budget (a high quantile of the forecast). Each forecast is fixed for its whole period and
 recomputed only when the period rolls over. All numbers come from a deterministic Python script; no LLM.
 
