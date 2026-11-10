@@ -557,10 +557,11 @@ class SubskillTests(unittest.TestCase):
         (self.skills / 'asi-analyze').symlink_to(elsewhere, target_is_directory=True)
         (self.skills / 'asi-autopilot').write_text('a file')
         code, output, errors = self.install('--target', 'claude')
-        self.assertEqual(code, 1)
-        self.assertEqual(len(errors.strip().splitlines()), 3, errors)
+        self.assertEqual(code, 0)          # the tool is installed; only these links are missing
+        self.assertEqual(len(errors.strip().splitlines()), 4, errors)
         for name in ('asi-suggest', 'asi-analyze', 'asi-autopilot'):
             self.assertIn('Kept ' + str(self.skills / name) + ': it is not a link into asi/subskills/', errors)
+        self.assertEqual(errors.strip().splitlines()[-1], '3 sub-skills were not linked (see above); ASI itself is installed')
         self.assertEqual((mine / 'SKILL.md').read_text(), 'my own skill')
         self.assertEqual(os.readlink(str(self.skills / 'asi-analyze')), str(elsewhere))
         self.assertEqual((self.skills / 'asi-autopilot').read_text(), 'a file')
@@ -569,7 +570,7 @@ class SubskillTests(unittest.TestCase):
         self.assertTrue((self.installed / 'runtime/agent_usage.py').is_file())
         self.assertIn('Installed ASI ' + self.version, output)
 
-    def test_dangling_link_elsewhere_is_kept_and_the_command_line_exits_1(self):
+    def test_dangling_link_elsewhere_is_kept_and_the_command_line_still_exits_0(self):
         self.skills.mkdir(parents=True)
         (self.skills / 'asi-ultraanalyze').symlink_to('asi/other/asi-ultraanalyze')
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
@@ -577,9 +578,11 @@ class SubskillTests(unittest.TestCase):
         run = subprocess.run([sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'), 'install', '--target', 'claude',
                               '--archive', str(self.assets[1]), '--checksum-file', str(self.assets[2])],
                              capture_output=True, text=True, env=environment)
-        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stderr.strip().splitlines(), ['Kept ' + str(self.skills / 'asi-ultraanalyze') + ': it is not a link into '
-                                                           'asi/subskills/; move it away and install again to get /asi-ultraanalyze'])
+                                                           'asi/subskills/; move it away and install again to get /asi-ultraanalyze',
+                                                           '1 sub-skill was not linked (see above); ASI itself is installed'])
+        self.assertIn('Installed ASI ' + self.version, run.stdout)
         self.assertEqual(os.readlink(str(self.skills / 'asi-ultraanalyze')), 'asi/other/asi-ultraanalyze')
         self.assertEqual([os.readlink(str(self.skills / name)) for name in ('asi-analyze', 'asi-autopilot', 'asi-suggest')],
                          ['asi/subskills/asi-analyze', 'asi/subskills/asi-autopilot', 'asi/subskills/asi-suggest'])
@@ -670,7 +673,8 @@ class SubskillTests(unittest.TestCase):
     def test_a_subskill_runs_the_launcher_through_its_link(self):
         self.assertEqual(self.install('--target', 'claude')[0], 0)
         through_link = self.skills / 'asi-suggest/../../scripts/asi.py'
-        self.assertEqual(skill.skill_root(str(through_link)), Path(os.path.realpath(str(self.installed))))
+        # Only the sub-skill link is followed; the rest of the path stays as given (here /var, not /private/var).
+        self.assertEqual(skill.skill_root(str(through_link)), self.installed)
         self.assertEqual(skill.skill_root(str(self.installed / 'scripts/asi.py')), self.installed)
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
         environment.update(HOME=str(self.root / 'home'), ASI_DATA_DIR=str(self.data), ASI_AUTO_UPDATE='0', ASI_AUTO_PRICES='0')
@@ -682,9 +686,52 @@ class SubskillTests(unittest.TestCase):
         with patch.object(skill, '__file__', str(through_link)), patch.object(skill, 'maintenance_tasks', return_value=[]), \
              patch.object(skill.subprocess, 'call', return_value=0) as invoke:
             self.assertEqual(skill.main(['suggest', '--data-dir', str(self.data), '--session', 'abc']), 0)
-        self.assertEqual(invoke.call_args[0][0][1:3], [os.path.realpath(str(self.installed / 'runtime/agent_usage.py')), 'suggest'])
+        self.assertEqual(invoke.call_args[0][0][1:3], [str(self.installed / 'runtime/agent_usage.py'), 'suggest'])
         self.assertEqual(invoke.call_args[0][0][-2:], ['--session', 'abc'])
         self.assertFalse((self.root / 'home/.local').exists())
+
+    def test_a_symlinked_skill_directory_is_refused_on_both_routes(self):
+        real = self.root / 'dotfiles/skills/asi'
+        skill.install_files(real, self.manifest, self.files)
+        self.skills.mkdir(parents=True)
+        self.installed.symlink_to(real, target_is_directory=True)
+        for name in skill.SUBSKILLS:
+            (self.skills / name).symlink_to('asi/subskills/' + name)
+        before = {path.relative_to(real).as_posix(): path.read_bytes() for path in real.rglob('*') if path.is_file()}
+        newer = self.release_of('99.0.0')
+        latest = dict(version='99.0.0', tag='v99.0.0', archive='asi-skill-v99.0.0.zip')
+        routes = {'direct': self.installed / 'scripts/asi.py', 'sub-skill': self.skills / 'asi-suggest/../../scripts/asi.py'}
+        for route, script in routes.items():
+            with self.subTest(route=route):
+                self.assertTrue(script.is_file())
+                root = skill.skill_root(str(script))
+                self.assertEqual(root, self.installed)
+                with self.assertRaisesRegex(skill.UpdateError, 'symlinked skill directory'):
+                    skill.verify_replaceable(root, newer[1])
+                # The background update that a launch on this route starts refuses as well.
+                with patch.object(skill, '__file__', str(script)), patch.object(skill, 'release_info', return_value=latest), \
+                     patch.object(skill, 'download_release', return_value=newer), \
+                     contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(skill.main(['maintain', '--data-dir', str(self.data / route), 'update']), 0)
+                self.assertIn('Update skipped; keeping installed code: Refusing to replace a symlinked skill directory', errors.getvalue())
+        self.assertTrue(self.installed.is_symlink())
+        self.assertEqual({path.relative_to(real).as_posix(): path.read_bytes() for path in real.rglob('*') if path.is_file()}, before)
+
+    def test_stepping_out_of_a_link_follows_only_that_link(self):
+        base = self.root / 'tree'
+        (base / 'real/inner').mkdir(parents=True)
+        (base / 'skills').mkdir()
+        (base / 'skills/top').symlink_to(base / 'real', target_is_directory=True)        # a link that is kept
+        (base / 'skills/hop').symlink_to('top/inner')                                      # the one '..' leaves
+        (base / 'skills/chain').symlink_to('hop')                                          # a link to a link
+        for path, expected in ((base / 'skills/hop/../x', base / 'skills/top/x'),       # 'top' stays a link
+                               (base / 'skills/chain/../../y', base / 'y'),             # the second '..' leaves 'top'
+                               (base / 'skills/top/../z', base / 'z')):
+            self.assertEqual(skill.step_out(path), expected)
+            self.assertEqual(os.path.realpath(str(expected)), os.path.realpath(str(path)))   # where the system goes too
+        (base / 'skills/loop').symlink_to('loop')
+        with self.assertRaises(OSError):
+            skill.step_out(base / 'skills/loop/../x')
 
 
 def clean_environment(**values):
@@ -791,15 +838,42 @@ class SettingsAndDataDirectoryTests(unittest.TestCase):
             self.assertEqual(skill.data_directory(), self.new.resolve())
         self.assertNotIn('Keeping', errors.getvalue())
 
-    def test_command_line_moves_the_directory_under_a_temporary_home(self):
+    def test_reading_commands_never_move_the_directory_and_writing_ones_do(self):
         (self.old / 'output').mkdir(parents=True)
+        skill.atomic_json(self.old / 'model-rules.json', {'hint': False, 'autopilot': True})
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('ASI_', 'AISAD_'))}
-        environment['HOME'] = str(self.home)
-        run = subprocess.run([sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'), 'version'],
-                             capture_output=True, text=True, env=environment)
+        environment.update(HOME=str(self.home), CLAUDE_CONFIG_DIR=str(self.home / 'claude'))
+        launch = lambda *args: subprocess.run([sys.executable, '-I', str(ROOT / 'skills/asi/scripts/asi.py'), *args],
+                                              capture_output=True, text=True, env=environment)
+        for args in (['version'], ['rules'], ['rules', 'status'], ['rules', 'show'], ['autopilot'], ['autopilot', 'status'],
+                     ['autopilot', 'show']):
+            with self.subTest(args=args):
+                run = launch(*args)
+                self.assertEqual((run.returncode, run.stderr), (0, ''))
+                self.assertTrue(self.old.is_dir() and not self.old.is_symlink())
+                self.assertFalse(self.new.exists() or self.new.is_symlink())
+        # While the 1.x directory is the only one, reading commands read it.
+        self.assertIn('autopilot: on', launch('autopilot', 'status').stdout)
+        self.assertIn('first-message hint: off; autopilot: on', launch('rules', 'status').stdout)
+        # A command that writes to the data directory moves it once.
+        run = launch('rules', 'off')
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn('Moved local data', run.stderr)
+        self.assertIn('Moved local data from ' + str(self.old), run.stderr)
         self.assertTrue((self.new / 'output').is_dir()); self.assertTrue(self.old.is_symlink())
+        self.assertEqual(skill.read_json(self.new / 'model-rules.json'), {'hint': False, 'autopilot': True})
+        self.assertEqual((launch('autopilot', 'status').stderr, launch('version').stderr), ('', ''))
+
+    def test_reading_without_moving_picks_new_then_old_then_the_new_path(self):
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(move=False), self.new.resolve())
+            self.assertFalse(self.new.parent.exists())                     # nothing is created
+            self.old.mkdir(parents=True)
+            self.assertEqual(skill.data_directory(move=False), self.old.resolve())
+            self.new.mkdir()
+            self.assertEqual(skill.data_directory(move=False), self.new.resolve())
+            self.assertTrue(self.old.is_dir() and not self.old.is_symlink())
+        self.assertEqual(errors.getvalue(), '')
 
 
 class LegacyInstallTests(unittest.TestCase):
@@ -840,6 +914,21 @@ class LegacyInstallTests(unittest.TestCase):
         self.assertEqual(errors, '')
         self.assertEqual([path.name for path in self.skills.iterdir() if not path.name.startswith('.')], ['asi'])
         self.assertEqual([path.name for path in self.skills.iterdir() if '.removed-' in path.name], [])
+
+    def test_the_1x_update_lock_goes_with_the_removed_skill_only(self):
+        lock = self.skills / '.aisad.update.lock'
+        self.legacy()
+        lock.write_bytes(b'')
+        self.run_install()
+        self.assertFalse(self.old.exists())
+        self.assertFalse(lock.exists() or lock.is_symlink())
+        self.assertTrue((self.skills / '.asi.update.lock').exists())        # the new install's own lock stays
+        # A 1.x skill that is kept keeps its lock.
+        self.legacy()
+        (self.old / 'notes.txt').write_text('keep me')
+        _, errors = self.run_install()
+        self.assertIn('Kept the previous AISAD skill', errors)
+        self.assertTrue(self.old.is_dir() and lock.exists())
 
     def test_failed_delete_of_the_1x_skill_is_reported_and_install_succeeds(self):
         self.legacy()
@@ -946,10 +1035,38 @@ class LegacyInstallTests(unittest.TestCase):
         self.run_install('--cli-dir', str(bin_dir))
         self.assertFalse((bin_dir / 'aisad').exists())
 
+    def test_edited_1x_command_is_left_alone_with_one_line(self):
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        old_command = bin_dir / 'aisad'
+        launcher = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 /old/skills/aisad/scripts/aisad.py "$@"\n'
+        edited = (launcher + 'echo done\n',                                                      # a line added
+                  launcher.replace('exec python3', 'exec python3 -X dev'),                       # an option added
+                  launcher.replace('/old/skills/aisad/scripts/aisad.py', '/old/my-aisad.py'),     # another script
+                  launcher.replace('/old/skills', 'old/skills'),                                 # a relative path
+                  launcher.replace('"$@"', '"$@" --json'),
+                  launcher.replace('\n', '\r\n'),
+                  '#!/bin/sh\n# AISAD CLI launcher\n# Alias for the asi command\nexec /usr/local/bin/asi --offline "$@"\n')
+        for text in edited:
+            with self.subTest(text=text):
+                old_command.write_bytes(text.encode())
+                output, errors = self.run_install('--cli-dir', str(bin_dir))
+                self.assertEqual(old_command.read_bytes(), text.encode())
+                self.assertEqual(errors.splitlines(), ['Left the aisad command at ' + str(old_command) +
+                                                       ' as it is: it was changed after the AISAD installer wrote it'])
+                self.assertNotIn('now runs', output)
+        # What 1.x wrote, a path with spaces included, is still made an alias.
+        quoted = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 ' + skill.shlex.quote('/my skills/aisad/scripts/aisad.py') + ' "$@"\n'
+        old_command.write_text(quoted)
+        output, errors = self.run_install('--cli-dir', str(bin_dir))
+        self.assertEqual(errors, '')
+        self.assertIn('# Alias for the asi command', old_command.read_text())
+        self.assertIn('now runs', output)
+
     def test_unwritable_1x_command_is_reported_and_install_still_succeeds(self):
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
-        legacy = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 /old/aisad.py "$@"\n'
+        legacy = '#!/bin/sh\n# AISAD CLI launcher\nexec python3 /old/skills/aisad/scripts/aisad.py "$@"\n'
         (bin_dir / 'aisad').write_text(legacy)
         (bin_dir / 'aisad').chmod(0o444)
         self.addCleanup((bin_dir / 'aisad').chmod, 0o644)

@@ -406,6 +406,17 @@ def parent_thread(source):
             if found:return found
     return None
 
+def codex_model(payload,current,quality):
+    """The model a Codex record names; null, empty or absent keeps the current one.
+
+    Any other shape is counted as an invalid record and ignored, while the rest of the
+    record still applies: skipping a session_meta would lose its whole session.
+    """
+    value=payload.get('model')
+    if value is None or value=='':return current
+    if not isinstance(value,str):quality['invalid_records']+=1;return current
+    return value
+
 def parse_codex(path,include_titles=False):
     q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
     signals=TraceSignals();parent=None;fork_owner=None;fork_live=False
@@ -424,7 +435,7 @@ def parse_codex(path,include_titles=False):
             if next_sid!=sid:
                 model='unknown';effort='unknown';tier='unknown';turn='';signals=TraceSignals()
             sid=next_sid
-            project=project_name(p.get('cwd'));model=p.get('model') or model
+            project=project_name(p.get('cwd'));model=codex_model(p,model,q)
             role='subagent' if 'subagent' in json.dumps(p.get('source',{})).lower() or p.get('agent_path','/root') not in ['/root',None,''] else 'main'
             parent=parent_thread(p.get('source'))
             sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True,parent_session=parent))
@@ -448,7 +459,7 @@ def parse_codex(path,include_titles=False):
                 sessions={sid:fork_owner['session']}
                 model='unknown';effort='unknown';tier='unknown';turn='';fork_live=True
                 observed={sid:True} if signals.observed else {}
-            model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
+            model=codex_model(p,model,q);effort=p.get('effort') or p.get('reasoning_effort') or effort
             tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
             if p.get('cwd'):project=project_name(p['cwd'])
         if typ=='event_msg' and p.get('type')=='thread_settings_applied':
@@ -496,6 +507,10 @@ def parse_claude(path,include_titles=False):
         # Record shapes are untrusted: an unexpected one costs that record, never the file.
         try:
             ts=timestamp(x.get('timestamp'));typ=x.get('type')
+            m=x.get('message')
+            # A model that is not text would end up as a grouping key and fail every report later.
+            if isinstance(m,dict) and m.get('model') is not None and not isinstance(m['model'],str):
+                q['invalid_records']+=1;continue
             if fit:fit.record(x,q)
             if x.get('cwd'):project=project_name(x['cwd'])
             if typ=='result' and isinstance(x.get('total_cost_usd'),(int,float)) and ts is not None:
@@ -939,21 +954,27 @@ def fit_effort_ratio(used,target):
 def fit_unit(kind,pairs):
     """Fold the (request, facts) pairs of one turn or run: cost, dominant model and effort, tool profile."""
     by_model=collections.defaultdict(float);by_effort=collections.defaultdict(float);count=collections.Counter()
+    # The same model can be recorded under more than one ID (dated or not); the unit names the ID that
+    # carried most of its cost, in the form the usage rows keep, so the dashboard's model filter finds it.
+    recorded=collections.defaultdict(float);recorded_calls=collections.Counter()
     files={};totals=collections.Counter();cost=0.;unpriced=0;max_context=0
     for row,facts in pairs:
         value=row['cost']
         if value is None:unpriced+=1;value=0.
         cost+=value
         model=canonical_model(row['model']);by_model[model]+=value;count[model]+=1
+        recorded[(model,row['model'])]+=value;recorded_calls[(model,row['model'])]+=1
         effort=row.get('effort') if isinstance(row.get('effort'),str) and row.get('effort')!='unknown' else facts.get('effort') or 'unknown'
         by_effort[effort if isinstance(effort,str) else 'unknown']+=value
         for key in ('tools','agents','workflow','web','ui'):totals[key]+=facts.get(key,0)
         for item in facts.get('files',[]):files[item[0]]=item[1]
         max_context=max(max_context,row['input'])
     first=pairs[0][0];last=pairs[-1][0]
+    top=max(by_model,key=lambda m:(by_model[m],count[m]))
+    model=max((key for key in recorded if key[0]==top),key=lambda key:(recorded[key],recorded_calls[key]))[1]
     return dict(kind=kind,session=first['session'],project=first['project'],date=first['date'],ts=first['ts'],end=last['ts'],
                 calls=len(pairs),cost=cost,unpriced=unpriced,
-                model=max(by_model,key=lambda m:(by_model[m],count[m])),by_model=dict(by_model),
+                model=model,by_model=dict(by_model),
                 effort=max(by_effort,key=by_effort.get),by_effort=dict(by_effort),max_context=max_context,
                 n_tools=totals['tools'],n_files=len(files),docs_only=bool(files) and all(files.values()),
                 n_agents=totals['agents'],workflow=totals['workflow']>0,n_web=totals['web'],n_ui=totals['ui'],
@@ -1010,21 +1031,29 @@ def fit_judge(u,needed=None,reprice=None):
     `needed` is the session-level tier for a main-thread turn (fit_session_tier);
     the turn counts as over-provisioned only against that. `reprice(unit, tier)`
     gives the unit's priced requests on that tier (None when it has no price).
+    A unit is `over` on model only when the guide's model is cheaper for its requests
+    (or has no price, so no saving is counted); otherwise it is judged on effort alone.
+    The two savings never add up to more than the unit's cost.
     """
     cls,signals=fit_classify(u);r=fit_rec(cls)
-    used_tier=fit_tier(u['model']);used_effort=u['effort'] if u['effort'] in FIT_EFFORTS else None
+    used_tier=fit_tier(canonical_model(u['model']));used_effort=u['effort'] if u['effort'] in FIT_EFFORTS else None
     target=needed if needed and fit_rank(needed)>fit_rank(r['tier']) else r['tier']
     held=target!=r['tier'] and fit_rank(used_tier)>fit_rank(r['tier'])
     d_model=fit_rank(used_tier)-fit_rank(target) if used_tier else 0
     if d_model<0 and fit_rank(used_tier)>=fit_rank(r['tier']):d_model=0  # The turn was covered; another turn set the bar.
-    effort_over=used_effort is not None and fit_erank(used_effort)>fit_erank(r['effort_max'])
-    effort_under=used_effort is not None and d_model<=0 and fit_erank(used_effort)<fit_erank(r['effort'])
     cost=u['cost'];at_model=cost
     if d_model>0:
         alternative=reprice(u,target) if reprice else (u.get('alt') or {}).get(target)
-        if alternative is not None:at_model=alternative
+        if alternative is not None:
+            if alternative<cost:at_model=alternative
+            # The guide's model costs as much or more for these requests, as Haiku can above its
+            # long-prompt threshold: a smaller model saves nothing here, so only effort is judged.
+            else:d_model=0;held=False
+    effort_over=used_effort is not None and fit_erank(used_effort)>fit_erank(r['effort_max'])
+    effort_under=used_effort is not None and d_model<=0 and fit_erank(used_effort)<fit_erank(r['effort'])
     save_model=max(cost-at_model,0.)
     save_effort=at_model*(1-fit_effort_ratio(used_effort,r['effort_max'])) if effort_over else 0.
+    save_effort=min(max(save_effort,0.),max(cost-save_model,0.))
     if d_model>0:verdict='over'
     elif d_model<0:verdict='under'
     elif effort_over:verdict='effort-over'
@@ -1034,7 +1063,7 @@ def fit_judge(u,needed=None,reprice=None):
     out=dict(u)
     out.update({'class':cls,'signals':signals,'rec_tier':r['tier'],'rec_effort':r['effort'],'rec_effort_max':r['effort_max'],
                 'why':r['why'],'used_tier':used_tier,'verdict':verdict,'effort_over':effort_over,
-                'save_model':save_model,'save_effort':max(save_effort,0.)})
+                'save_model':save_model,'save_effort':save_effort})
     return out
 
 # Everything _price_request reads from a request row.
@@ -1079,10 +1108,12 @@ def fit_events(pairs):
             before,before_effort=previous
             tag=dict(session=row['session'],project=row['project'],date=row['date'],ts=int(row['ts']))
             rewritten=row['cached']<.2*context;compacted=context<.6*before['input'];gap=row['ts']-before['ts']
+            # Compared by canonical ID (a dated and an undated ID are one model); reported as
+            # recorded, the form the usage rows and the dashboard's model filter use.
             if model!=canonical_model(before['model']):
-                events['switches'].append(dict(tag,**{'from':canonical_model(before['model']),'to':model,'tokens':row['write'],'cost':write}))
+                events['switches'].append(dict(tag,**{'from':before['model'],'to':row['model'],'tokens':row['write'],'cost':write}))
             elif rewritten and not compacted and gap>300:
-                events['cold'].append(dict(tag,gap_min=round(gap/60),model=model,tokens=row['write'],cost=write))
+                events['cold'].append(dict(tag,gap_min=round(gap/60),model=row['model'],tokens=row['write'],cost=write))
             elif effort!=before_effort and effort and before_effort:
                 events['effort_changes'].append(dict(tag,**{'from':before_effort,'to':effort,'read_share':round(row['cached']/context,3)}))
         previous=(row,effort)
@@ -1142,7 +1173,11 @@ def fit_analyze(pairs,sessions,catalog,include_titles=False):
     units=sorted(turns+agents,key=lambda u:(u['ts'],u['session'],u['n'] or 0))
     for unit in units:
         entry=index.get(unit['main_session'])
-        if entry is not None:entry['units'].append(unit)
+        if entry is None:
+            # Subagent runs whose main transcript is gone still make a session `fit --session` can show.
+            entry=index[unit['main_session']]=blank(unit['main_session'],{})
+            entry['project']=unit['project']
+        entry['units'].append(unit)
     events['daily']=[{k:round(v,4) if isinstance(v,float) else v for k,v in day.items()}
                      for day in sorted(daily.values(),key=lambda d:(d['date'],d['project']))]
     return dict(units=units,events=events,sessions=index)
@@ -1182,16 +1217,23 @@ def fit_example(u,include_titles,tz):
                 **{'class':u['class']},signals=u['signals'],calls=u['calls'],cost=round(u['cost'],2),
                 save_model=round(u['save_model'],2),save_effort=round(u['save_effort'],2))
 
-def fit_summary(analysis,start=None,end=None,session=None,examples=8,include_titles=False,tz=None):
+def fit_summary(analysis,start=None,end=None,session=None,examples=8,include_titles=False,tz=None,project=None,role=None):
     """Totals, classes, findings with their largest examples, and sessions for a window or one main session.
 
     `start` / `end` are report-timezone dates; a unit counts when it starts
-    inside, an event or a request when it happens inside.
+    inside, an event or a request when it happens inside. `project` keeps one
+    project; `role` main keeps the turns and subagent the subagent runs (events
+    are main-thread calls, so they go with main); review matches nothing.
     """
+    kind={'main':'turn','subagent':'agent'}.get(role) if role else None
+    here=lambda item:not project or item['project']==project
     inside=lambda date:date is not None and (start is None or date>=start) and (end is None or date<=end)
     scope=analysis['sessions'][session] if session else analysis
-    ev=dict(scope['events'],daily=list(scope['events']['daily'].values()) if session else scope['events']['daily'])
-    units=[u for u in scope['units'] if inside(u['date'])]
+    main_events=role in (None,'main')
+    ev={name:[e for e in scope['events'][name] if here(e)] if main_events else [] for name in ('switches','cold','effort_changes')}
+    daily=list(scope['events']['daily'].values()) if session else scope['events']['daily']
+    ev['daily']=[day for day in daily if here(day)] if main_events else []
+    units=[u for u in scope['units'] if inside(u['date']) and here(u) and (not role or u['kind']==kind)]
     total=sum(u['cost'] for u in units)
     by_model=collections.defaultdict(float);by_effort=collections.defaultdict(float)
     days=collections.defaultdict(lambda:collections.defaultdict(float))
@@ -1199,7 +1241,7 @@ def fit_summary(analysis,start=None,end=None,session=None,examples=8,include_tit
         for m,v in u['by_model'].items():by_model[m]+=v
         for e,v in u['by_effort'].items():by_effort[e]+=v
         for row in u['requests']:
-            if row['cost'] is not None:days[row['date']][fit_tier(row['model']) or 'other']+=row['cost']
+            if row['cost'] is not None:days[row['date']][fit_tier(canonical_model(row['model'])) or 'other']+=row['cost']
     classes={}
     for cid in FIT_CLASSES:
         r=fit_rec(cid)
@@ -1356,6 +1398,7 @@ def fit_session_text(summary,session,timezone,tz,include_titles=False):
                    f"{u['rec_tier']+'/'+u['rec_effort']:<14} {u['verdict']:<12} {', '.join(save) or '-'}")
         what=u.get('title') if (include_titles or not u['n']) and u.get('title') else ''
         out.append(f"     {what[:110]+'   ' if what else ''}[{u['signals']}]")
+    if not t['turns']:out.append('  (none here: no main-thread calls in this view, or the main transcript is missing)')
     groups={}
     for u in units:
         if u['kind']!='agent':continue
@@ -1402,12 +1445,16 @@ def fit_window(snapshot,args):
 def fit_command(snapshot,args):
     """(JSON result, text) for `fit`: the period summary, or one session turn by turn with --session."""
     analysis=snapshot['fit_analysis'];tz=report_timezone(args.timezone);timezone=snapshot['timezone']
+    filters=dict(project=args.project,role=args.role)
+    matching=''.join(f' --{key} {value}' for key,value in filters.items() if value)
+    matching=' matching'+matching if matching else ''
     base=dict(schema_version=FIT_SCHEMA,version=VERSION,generated=snapshot['generated'],timezone=timezone,
-              price_as_of=snapshot['price_as_of'],guide=fit_guide(),note=FIT_NOTE)
+              price_as_of=snapshot['price_as_of'],filters=filters,guide=fit_guide(),note=FIT_NOTE)
     if args.session:
         entry=fit_find_session(analysis,args.session)
         if not entry['units']:raise SystemExit(f"fit: session {entry['session']} has no recorded model calls yet")
-        summary=fit_summary(analysis,session=entry['session'],include_titles=args.include_titles,tz=tz)
+        summary=fit_summary(analysis,session=entry['session'],include_titles=args.include_titles,tz=tz,**filters)
+        if not summary['units']:raise SystemExit(f"fit: session {entry['session']} has no model calls{matching}")
         units=[]
         for u in summary['units']:
             item={k:u.get(k) for k in ('kind','session','n','date','agent_type','class','signals','used_tier','model','effort',
@@ -1418,10 +1465,28 @@ def fit_command(snapshot,args):
         data=dict(base,session=entry['session'],project=entry['project'],**{k:v for k,v in summary.items() if k!='units'},units=units)
         return fit_round(data),fit_session_text(summary,entry['session'],timezone,tz,args.include_titles)
     start,end=fit_window(snapshot,args)
-    summary=fit_summary(analysis,start,end,include_titles=args.include_titles,tz=tz)
-    if not summary['units']:raise SystemExit(f'fit: no Claude Code model calls between {start} and {end}')
+    summary=fit_summary(analysis,start,end,include_titles=args.include_titles,tz=tz,**filters)
+    if not summary['units']:raise SystemExit(f'fit: no Claude Code model calls between {start} and {end}{matching}')
     data=dict(base,**{k:v for k,v in summary.items() if k!='units'})
     return fit_round(data),fit_overview_text(summary,timezone)
+
+def fit_filter_error(args):
+    """The one-line refusal for usage filters that fit or suggest cannot apply, else None.
+
+    fit applies --project and --role; it covers Claude Code only, so --provider may name
+    Claude and nothing else, and --model and --pool do not apply. suggest is about one
+    session and takes none of them.
+    """
+    given=[flag for flag,value in (('--provider',args.provider),('--model',args.model),('--project',args.project),
+                                   ('--role',args.role),('--pool',args.pool)) if value]
+    verb=lambda flags:' and '.join(flags)+(' does' if len(flags)==1 else ' do')
+    if args.command=='suggest':
+        return f'suggest: {verb(given)} not apply; it reports on one session (pass --session ID)' if given else None
+    if args.provider and args.provider.lower() not in ('claude','anthropic'):
+        return f'fit: model fit covers Claude Code only; --provider {args.provider} does not apply'
+    rejected=[flag for flag in given if flag in ('--model','--pool')]
+    if rejected:return f'fit: {verb(rejected)} not apply to model fit; narrow it with --project or --role'
+    return None
 
 def fit_settings(args):
     """Model and effort defaults from Claude Code's settings.json; malformed parts are dropped."""
@@ -1865,6 +1930,10 @@ class ParseCache:
                        (key,fingerprint,encode(body),encode(result.get('events',[]))))
     def parse(self,provider,path,titles,stats,want_events=True):
         st=path.stat();fp=f'{PARSER_VERSION}:{int(titles)}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}'
+        if provider!='Codex' and 'subagents' in path.parts:
+            # Model fit reads the run's agent-<id>.meta.json, which can be written after the transcript.
+            try:meta=path.with_name(path.stem+'.meta.json').stat();fp+=f':{meta.st_size}:{meta.st_mtime_ns}'
+            except OSError:fp+=':-'
         key=str(path)
         cached=self.lookup(key,want_events)
         if cached and cached[0]==fp:
@@ -4241,6 +4310,9 @@ def main(argv=None):
               f"{result['status']}: {result['models']} models, rates as of {result['as_of']} ({result.get('basis','models_dev_rates')}). {result['path']}")
         return
     if args.refresh:raise SystemExit('--refresh belongs to the prices command; other commands never reach the network')
+    if args.command in ('fit','suggest'):
+        refusal=fit_filter_error(args)
+        if refusal:raise SystemExit(refusal)
     if args.command=='chart':
         color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))
         interactive=args.interactive or (not args.snapshot and not args.json and sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get('TERM')!='dumb')

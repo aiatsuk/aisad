@@ -322,6 +322,19 @@ const rows = [
       await page.click('#reset');
       await fitTotals(page, await fitWindow(page));
     });
+    await check('model fit: a dated model ID from the model filter finds its units', template, async page => {
+      const dated = 'claude-haiku-4-5-20251001';
+      assert(template.rows.some(r => r.model === dated), 'the demo rows keep the dated ID');
+      assert(fit.units.some(u => u.model === dated), 'units name the model as the rows do');
+      await page.click('#tab-fit');
+      await page.click('#filter-toggle');
+      assert((await page.locator('#model option').allTextContents()).includes(dated));
+      await page.selectOption('#model', dated);
+      await fitTotals(page, await fitWindow(page, u => u.model === dated));
+      assert.match(await page.locator('#fit-scope').textContent(), new RegExp('Model filter: .*' + dated));
+      await page.selectOption('#period', 'all');
+      await fitTotals(page, await fitWindow(page, u => u.model === dated));
+    });
     await check('model fit: a provider without Claude and an invalid range show the empty state', template, async page => {
       await page.click('#tab-fit');
       await page.selectOption('#provider', 'Codex');

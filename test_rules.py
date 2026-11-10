@@ -223,6 +223,67 @@ class RulesTest(Tmp):
         self.assertEqual((self.dir / 'CLAUDE.md').read_text(), 'file, not a folder')
 
 
+class RulesFileEdgeTest(Tmp):
+    """Read-only and unreadable files, and marker text that is not a marker."""
+
+    def test_read_only_file_is_refused_and_nothing_changes(self):
+        md = self.dir / 'CLAUDE.md'
+        md.write_text('# Mine\n')
+        md.chmod(0o444)
+        self.addCleanup(md.chmod, 0o644)
+        for args in (('rules', 'on'), ('autopilot', 'on')):
+            with self.subTest(args=args):
+                r = self.asi(*args)
+                self.assertEqual(r.returncode, 1)
+                self.assertEqual(r.stderr.splitlines(), ['Error: ' + str(md) + ': the file is not writable (mode 0444); left untouched'])
+                self.assertEqual(md.read_text(), '# Mine\n')
+                self.assertEqual(md.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(skill.load_rules(self.data), OFF)
+        # Nothing to change means nothing to refuse.
+        self.assertEqual(self.asi('rules', 'off').stdout, 'No change needed in ' + str(md) + '\n')
+
+    def test_status_says_when_the_file_cannot_be_read(self):
+        md = self.dir / 'CLAUDE.md'
+        md.write_bytes(b'caf\xe9\n' + skill.rules_block(ON).encode())
+        unreadable = 'the file could not be read (not valid UTF-8)'
+        r = self.asi('rules', 'status')
+        self.assertEqual((r.returncode, r.stdout.splitlines()[1]), (0, 'block in ' + str(md) + ': ' + unreadable))
+        r = self.asi('autopilot', 'status')
+        self.assertEqual(r.stdout, 'autopilot: off (rules block in ' + str(md) + ': ' + unreadable + ')\n')
+        md.unlink()
+        md.mkdir()
+        self.assertIn(': the file could not be read (Is a directory)', self.asi('rules', 'status').stdout)
+        md.rmdir()
+        self.assertIn('hint absent, autopilot absent', self.asi('rules', 'status').stdout)   # a missing file is still absent
+
+    def test_marker_text_inside_other_lines_is_ordinary_text(self):
+        prose = ('# Notes\n\nASI keeps its block between `<!-- asi:begin -->` and `<!-- asi:end -->`; the prototype '
+                 'used `<!-- air:begin -->` and `<!-- air:end -->`.\nSpread over lines: <!-- asi:begin -->\nnot a block\n'
+                 '<!-- asi:end --> and <!-- air:end --> stay.\n')
+        on = skill.render_rules(prose, HINT)
+        self.assertEqual(on, prose + '\n' + skill.rules_block(HINT))
+        self.assertEqual(skill.render_rules(on, ON), prose + '\n' + skill.rules_block(ON))
+        self.assertEqual(skill.render_rules(on, OFF), prose)
+        # With a real block in the file only the block changes.
+        both = prose + '\n' + skill.rules_block(HINT) + '\n# After\n'
+        self.assertEqual(skill.render_rules(both, OFF), prose + '\n# After\n')
+        self.assertEqual(skill.render_rules(both, ON), prose + '\n' + skill.rules_block(ON) + '\n# After\n')
+        air = prose + '\n' + AIR_BLOCK + '\n# After\n'
+        self.assertEqual(skill.render_rules(air, HINT), prose + '\n' + skill.rules_block(HINT) + '\n# After\n')
+        # Spaces and tabs around a marker on its own line are allowed.
+        self.assertEqual(skill.render_rules('top\n\n  ' + skill.RULES_BEGIN + ' \nold\n\t' + skill.RULES_END + '\n\nbottom\n', OFF),
+                         'top\n\nbottom\n')
+        # Through the command, byte for byte, with CRLF line endings.
+        md = self.dir / 'CLAUDE.md'
+        md.write_bytes(prose.replace('\n', '\r\n').encode())
+        self.assertIn('hint absent, autopilot absent', self.asi('rules', 'status').stdout)
+        self.assertEqual(self.asi('rules', 'on').returncode, 0)
+        self.assertTrue(md.read_bytes().startswith(prose.replace('\n', '\r\n').encode()))
+        self.assertIn('hint present', self.asi('rules', 'status').stdout)
+        self.assertEqual(self.asi('rules', 'off').returncode, 0)
+        self.assertEqual(md.read_bytes(), prose.replace('\n', '\r\n').encode())
+
+
 class AirBlockTest(Tmp):
     """A block left by the AIR prototype is taken over, never duplicated."""
 

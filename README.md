@@ -240,7 +240,7 @@ asi fit --session <id or prefix> # one session, turn by turn
 asi suggest                      # what fits the session you are in, and what a switch costs now
 ```
 
-`fit` takes the usual period flags (`--days`, `--from`, `--to`, `--all-time`); the provider, model, project and role filters of `usage` do not apply to it. `--json` prints one JSON object; `--include-titles` adds the shortened, redacted prompt to examples. A session prefix must be unique. An unknown session, a session without model calls and an empty period are reported as errors with a non-zero exit. `fit --session` always covers the whole session; the period flags apply to the summary. `suggest` uses `--session`, then `CLAUDE_SESSION_ID`, then the newest session of the current folder.
+`fit` takes the usual period flags (`--days`, `--from`, `--to`, `--all-time`), `--project`, and `--role main` (turns) or `--role subagent` (subagent runs). Cache events are main-thread calls, so they show only without `--role` or with `main`; `--role review` matches nothing, like an empty period. Model fit covers Claude Code only: `fit` refuses a `--provider` other than Claude, and `--model` and `--pool`, with a one-line error; `suggest` is about one session and refuses all five filters. `--json` prints one JSON object; `--include-titles` adds the shortened, redacted prompt to examples. A session prefix must be unique. An unknown session, a session without model calls and an empty period are reported as errors with a non-zero exit. `fit --session` always covers the whole session (narrowed by `--project` and `--role` when given), including subagent runs whose main transcript is gone; the period flags apply to the summary. `suggest` uses `--session`, then `CLAUDE_SESSION_ID`, then the newest session of the current folder.
 
 Example summary (synthetic numbers):
 
@@ -488,7 +488,7 @@ In a new turn, invoke `$asi usage` in Codex or `/asi usage` in Claude Code. Ask 
 - “Show the largest recorded context and tool payloads by session.”
 - “Inspect this session’s recorded events and tool calls.”
 
-`--target claude` also links four sub-skills next to the skill: `/asi-suggest`, `/asi-analyze`, `/asi-autopilot` and `/asi-ultraanalyze` (see [Model fit](#model-fit)). A Codex install gets none. The installer does not write to `CLAUDE.md` and does not switch the first-message hint or autopilot on.
+`--target claude` also links four sub-skills next to the skill: `/asi-suggest`, `/asi-analyze`, `/asi-autopilot` and `/asi-ultraanalyze` (see [Model fit](#model-fit)). Anything else already at one of those paths is kept: the installer prints one line for each sub-skill it skipped and a count, and still exits 0 because ASI itself is installed. A Codex install gets none. The installer does not write to `CLAUDE.md` and does not switch the first-message hint or autopilot on.
 
 The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/asi/SKILL.md](skills/asi/SKILL.md).
 
@@ -505,7 +505,7 @@ ASI was named AISAD (AI Session Analysis Dashboard) up to 1.5.2. A 1.x installat
 
 - The skill moves to `skills/asi`. An unmodified 1.x `skills/aisad` next to it is removed; one with local changes, or one the installer cannot verify, stays where it is and the installer prints one line about it.
 - With `--cli-dir`, an `aisad` command that the 1.x installer wrote there now runs `asi`.
-- The first `asi` command moves `~/.local/share/aisad` to `~/.local/share/asi` (budget, reports, forecast and update state), unless a data directory is configured. If the move fails, it keeps using the old directory and says so on stderr. The menu bar app never moves data: it uses `~/.local/share/asi` if that exists, otherwise `~/.local/share/aisad` if that exists.
+- The first `asi` command that writes to the data directory moves `~/.local/share/aisad` to `~/.local/share/asi` (budget, reports, forecast and update state), unless a data directory is configured. Commands that only read (`version`, `rules status|show`, `autopilot status|show`) never move it: they use the new directory if it exists, otherwise the old one. If the move fails, it keeps using the old directory and says so on stderr. The menu bar app never moves data: it uses `~/.local/share/asi` if that exists, otherwise `~/.local/share/aisad` if that exists.
 - `ASI_*` environment variables replace `AISAD_*`. An `AISAD_*` variable still applies when its `ASI_*` twin is unset or empty.
 - Dashboards, the terminal chart and the menu bar app also follow shared updates written by 1.x, and a dashboard theme saved by 1.x still applies.
 - `asi menubar` opens `ASI.app` or `ASIMenuBar.app`, then a 1.x `AISAD.app` or `AISADMenuBar.app`. The rebuilt app has the bundle ID `com.aiatsuk.asi.menubar`, so macOS treats it as a new app: allow it in the menu bar again, and the remembered chart range starts at Week.

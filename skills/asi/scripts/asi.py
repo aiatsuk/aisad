@@ -313,6 +313,11 @@ def remove_legacy_install(destination):
                 trash = old.parent / ('.' + old.name + '.removed-' + uuid.uuid4().hex)
                 old.rename(trash)
                 print('Removed the previous AISAD skill at ' + str(old))
+                # Its update lock has nothing left to guard. Unlinking it while held is safe.
+                try:
+                    (old.parent / ('.' + old.name + '.update.lock')).unlink()
+                except OSError:
+                    pass
                 try:
                     shutil.rmtree(trash)
                 except OSError as error:
@@ -323,17 +328,39 @@ def remove_legacy_install(destination):
     print('Kept the previous AISAD skill at ' + str(old) + ' (' + problem + '); remove it yourself when no longer needed', file=sys.stderr)
 
 
+def written_by_installer(text):
+    """Whether an `aisad` command holds exactly what an installer wrote: the 1.x launcher
+    (`exec python3 <skills>/aisad/scripts/aisad.py "$@"`, the only shape 1.x wrote) or the
+    alias below. Any edit makes it the user's own."""
+    for pattern, ending in ((r'exec python3 (.+) "\$@"', '/aisad/scripts/aisad.py'),
+                            (r'# Alias for the asi command\nexec (.+) "\$@"', '/asi')):
+        match = re.fullmatch('#!/bin/sh\n' + re.escape(LEGACY_CLI_MARKER) + '\n' + pattern + '\n', text)
+        if not match:
+            continue
+        try:
+            words = shlex.split(match[1])
+        except ValueError:
+            return False
+        return (len(words) == 1 and shlex.quote(words[0]) == match[1] and words[0].startswith('/')
+                and words[0].endswith(ending))
+    return False
+
+
 def alias_legacy_cli(cli_path):
     """Make a 1.x `aisad` command written by this installer run the new `asi` command."""
     old = cli_path.parent / LEGACY_NAME
     if old.is_symlink() or not old.is_file():
         return
     try:
-        text = old.read_text()
+        with open(str(old), encoding='utf-8', newline='') as handle:
+            text = handle.read()  # as written: line endings are part of what the installer wrote
     except (OSError, ValueError):
         return
     if text.splitlines()[1:2] != [LEGACY_CLI_MARKER]:
         return  # Not ours: an unrelated command is left alone.
+    if not written_by_installer(text):
+        print('Left the aisad command at ' + str(old) + ' as it is: it was changed after the AISAD installer wrote it', file=sys.stderr)
+        return
     body = '#!/bin/sh\n' + LEGACY_CLI_MARKER + '\n# Alias for the asi command\nexec ' + shlex.quote(str(cli_path)) + ' "$@"\n'
     try:
         if text != body:
@@ -349,15 +376,33 @@ def claude_directory():
     return Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser().absolute()
 
 
+def step_out(path, depth=0):
+    """An absolute path with each '..' applied as the system applies it, following only the
+    links a '..' has to leave. Every other link stays a link in the result."""
+    if depth > 40:
+        raise OSError('Too many levels of symbolic links: ' + str(path))
+    current = Path(path.parts[0])
+    for part in path.parts[1:]:
+        if part != '..':
+            current = current / part
+            continue
+        # '..' leaves where a link points, not the folder that holds the link.
+        while current.is_symlink():
+            depth += 1
+            current = step_out(Path(os.path.join(str(current.parent), os.readlink(str(current)))), depth)
+        current = current.parent
+    return current
+
+
 def skill_root(script=None):
     """The installed skill directory of this launcher.
 
     A sub-skill runs it through its own link, as skills/asi-suggest/../../scripts/asi.py.
-    There '..' has to follow the link, so such a path is resolved; any other path is kept
-    as given, so a symlinked skill directory is still seen (and refused) by updates."""
+    There '..' has to follow that link; nothing else is resolved, so a symlinked skill
+    directory is still seen (and refused) by updates on that route too."""
     path = Path(script or __file__).absolute()
     if '..' in path.parts:
-        path = Path(os.path.realpath(str(path)))
+        path = step_out(path)
     return path.parents[1]
 
 
@@ -532,20 +577,39 @@ def rules_block(state):
     return RULES_BEGIN + '\n' + '\n'.join(parts).rstrip() + '\n' + RULES_END + '\n'
 
 
-def marked_block(text, begin, end, origin=''):
-    """The (start, stop) of the one block between these markers, None when there is none."""
-    found = text.count(begin), text.count(end)
-    if found[0] != found[1] or found[0] > 1:
-        raise RulesError("found %d '%s' and %d '%s' markers%s; fix the file by hand first" % (found[0], begin, found[1], end, origin))
-    if not found[0]:
+MARKER = re.compile(r'<!-- (?:asi|air):(?:begin|end) -->')
+# A line that holds markers and nothing else, spaces and tabs aside.
+MARKER_LINE = re.compile(r'^[ \t]*(?:<!-- (?:asi|air):(?:begin|end) -->[ \t]*)+(?=\r?\n|\Z)', re.M)
+
+
+def marker_lines(text):
+    """Every ASI and AIR marker that stands alone on its line: {marker: [(line start, line end)]}.
+
+    Marker text with other text on its line (prose, a backticked mention) is ordinary text.
+    A line of nothing but two or more markers is neither, so it is refused."""
+    found = {marker: [] for marker in (RULES_BEGIN, RULES_END, AIR_BEGIN, AIR_END)}
+    for match in MARKER_LINE.finditer(text):
+        markers = MARKER.findall(match.group())
+        if len(markers) > 1:
+            raise RulesError('one line holds the markers %s; fix the file by hand first' % ' '.join(markers))
+        found[markers[0]].append((match.start(), match.end()))
+    return found
+
+
+def marked_block(found, begin, end, origin=''):
+    """The (start, stop) of the one block between these marker lines, None when there is none."""
+    starts, stops = found[begin], found[end]
+    if len(starts) != len(stops) or len(starts) > 1:
+        raise RulesError("found %d '%s' and %d '%s' markers%s; fix the file by hand first" % (len(starts), begin, len(stops), end, origin))
+    if not starts:
         return None
-    if text.index(end) < text.index(begin):
+    if stops[0][0] < starts[0][0]:
         raise RulesError('the end marker comes before the begin marker%s; fix the file by hand first' % origin)
-    return text.index(begin), text.index(end) + len(end)
+    return starts[0][0], stops[0][1]
 
 
-def replace_block(text, begin, end, new, nl):
-    head, tail = text[:text.index(begin)], text[text.index(end) + len(end):]
+def replace_block(text, span, new, nl):
+    head, tail = text[:span[0]], text[span[1]:]
     if tail.startswith(nl):
         tail = tail[len(nl):]
     if not new:
@@ -561,19 +625,22 @@ def render_rules(text, state):
 
     Text outside the markers is kept byte for byte, apart from the blank lines that separate
     it from the block. The file's own line ending (LF or CRLF) is used. A block left by the
-    AIR prototype is replaced in place, or dropped when an ASI block exists as well."""
-    ours = marked_block(text, RULES_BEGIN, RULES_END)
-    air = marked_block(text, AIR_BEGIN, AIR_END, ' (left by the earlier AIR tool)')
+    AIR prototype is replaced in place, or dropped when an ASI block exists as well. A marker
+    counts only alone on its line; marker text inside other lines is kept as it is."""
+    found = marker_lines(text)
+    ours = marked_block(found, RULES_BEGIN, RULES_END)
+    air = marked_block(found, AIR_BEGIN, AIR_END, ' (left by the earlier AIR tool)')
     if ours and air and ours[0] < air[1] and air[0] < ours[1]:
         raise RulesError('the ASI and AIR blocks overlap; fix the file by hand first')
     nl = '\r\n' if '\r\n' in text else '\n'
     new = rules_block(state).replace('\n', nl)
     if air:
         if not ours:
-            return replace_block(text, AIR_BEGIN, AIR_END, new, nl)
-        text = replace_block(text, AIR_BEGIN, AIR_END, '', nl)
+            return replace_block(text, air, new, nl)
+        text = replace_block(text, air, '', nl)
+        ours = marked_block(marker_lines(text), RULES_BEGIN, RULES_END)
     if ours:
-        return replace_block(text, RULES_BEGIN, RULES_END, new, nl)
+        return replace_block(text, ours, new, nl)
     if not new:
         return text
     if not text.strip():
@@ -600,21 +667,32 @@ def apply_rules(state):
     new = render_rules(old, state)
     if new == old:
         return path, False
+    # The new text replaces the file through a rename, which a read-only mode would not stop.
+    if target.exists() and not os.access(str(target), os.W_OK):
+        raise RulesError('the file is not writable (mode %04o); left untouched' % (target.stat().st_mode & 0o7777))
     target.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomically(target, new)
     return path, True
 
 
-def rules_installed(key):
-    """Whether the block on disk carries the hint or the autopilot section."""
+def rules_on_disk():
+    """({'hint': bool, 'autopilot': bool} for the block in CLAUDE.md, None), or (None, why the file
+    could not be read). A missing file has no block."""
     try:
-        text = claude_md().read_text(encoding='utf-8')
-    except (OSError, ValueError):
-        return False
-    if RULES_BEGIN not in text or RULES_END not in text or text.index(RULES_END) < text.index(RULES_BEGIN):
-        return False
-    body = text[text.index(RULES_BEGIN):text.index(RULES_END)]
-    return ('ASI autopilot: on' in body) if key == 'autopilot' else ('ASI: model and effort' in body)
+        with open(str(claude_md()), encoding='utf-8', newline='') as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return dict.fromkeys(DEFAULT_RULES, False), None
+    except UnicodeDecodeError:
+        return None, 'not valid UTF-8'
+    except OSError as error:
+        return None, error.strerror or str(error)
+    try:
+        block = marked_block(marker_lines(text), RULES_BEGIN, RULES_END)
+    except RulesError:
+        block = None
+    body = text[block[0]:block[1]] if block else ''
+    return {'hint': 'ASI: model and effort' in body, 'autopilot': 'ASI autopilot: on' in body}, None
 
 
 def set_rules(data, state):
@@ -641,13 +719,17 @@ def set_rules(data, state):
 
 def rules_command(data, command, mode):
     state = load_rules(data)
-    present = lambda key: 'present' if rules_installed(key) else 'absent'
+    if mode == 'status':
+        found, problem = rules_on_disk()
+        unreadable = 'the file could not be read (' + str(problem) + ')'
+        present = lambda key: 'present' if found[key] else 'absent'
     if command == 'autopilot':
         if mode == 'show':
             print(AUTOPILOT)
             return 0
         if mode == 'status':
-            print('autopilot: ' + ('on' if state['autopilot'] else 'off') + ' (rules block in ' + str(claude_md()) + ': ' + present('autopilot') + ')')
+            print('autopilot: ' + ('on' if state['autopilot'] else 'off') + ' (rules block in ' + str(claude_md()) + ': '
+                  + (present('autopilot') if found else unreadable) + ')')
             return 0
         state['autopilot'] = mode == 'on'
         if set_rules(data, state):
@@ -661,7 +743,7 @@ def rules_command(data, command, mode):
         return 0
     if mode == 'status':
         print('first-message hint: ' + ('on' if state['hint'] else 'off') + '; autopilot: ' + ('on' if state['autopilot'] else 'off'))
-        print('block in ' + str(claude_md()) + ': hint ' + present('hint') + ', autopilot ' + present('autopilot'))
+        print('block in ' + str(claude_md()) + ': ' + ('hint ' + present('hint') + ', autopilot ' + present('autopilot') if found else unreadable))
         return 0
     if mode == 'show':
         print(rules_block(state) or '(nothing switched on)')
@@ -671,20 +753,23 @@ def rules_command(data, command, mode):
     return set_rules(data, state)
 
 
-def data_directory(value=None):
+def data_directory(value=None, move=True):
     chosen = value or setting('DATA_DIR')
-    return Path(chosen).expanduser().resolve() if chosen else default_data_directory()
+    return Path(chosen).expanduser().resolve() if chosen else default_data_directory(move=move)
 
 
-def default_data_directory(home=None):
+def default_data_directory(home=None, move=True):
     """~/.local/share/asi; a 1.x ~/.local/share/aisad moves there once.
 
     The old path stays behind as a link to the new one, so a status line script or a
     1.x app that still reads it keeps working. A failed move keeps the old directory
     in use, so reports, budget and update state stay where they are until the move
-    can succeed."""
+    can succeed. With move=False (commands that only read) nothing moves or is created:
+    the new directory if it exists, else the old one if it exists, else the new path."""
     share = (home or Path.home()) / '.local/share'
     new, old = share / 'asi', share / LEGACY_NAME
+    if not move:
+        return old.resolve() if not new.exists() and not new.is_symlink() and old.is_dir() else new.resolve()
     if not new.exists() and not new.is_symlink() and old.is_dir():
         if old.is_symlink():
             return old.resolve()  # Someone pointed the old path elsewhere on purpose.
@@ -922,12 +1007,18 @@ def main(argv=None):
             cli_path.chmod(0o755)
             print('Installed terminal command at ' + str(cli_path))
             alias_legacy_cli(cli_path)
-        return 1 if kept else 0
+        if kept:
+            # ASI itself is installed; only those slash commands are missing.
+            print(str(kept) + (' sub-skill was' if kept == 1 else ' sub-skills were') + ' not linked (see above); '
+                  'ASI itself is installed', file=sys.stderr)
+        return 0
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
     if args.command == 'menubar' and not forwarded:
         return launch_menubar()
-    data = data_directory(args.data_dir)
+    # Commands that only read never move the 1.x data directory; every other one may write to it.
+    read_only = args.command == 'version' or (args.command in ('rules', 'autopilot') and args.mode in ('status', 'show'))
+    data = data_directory(args.data_dir, move=not read_only)
     if data == root.resolve() or root.resolve() in data.parents:
         raise UpdateError('Choose a data directory outside the installed skill')
     if args.command in ('rules', 'autopilot'):

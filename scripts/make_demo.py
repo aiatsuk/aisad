@@ -192,6 +192,12 @@ def fit_examples(profile, start):
     docs.prompt('Update the README install section and the changelog')
     for step in range(7):
         docs.reply(sonnet, 'medium', 22000 + step * 2000, [edit('README.md' if step % 2 else 'CHANGELOG.md')])
+    # A run recorded under a dated model ID, as Claude Code writes some of them.
+    links = agent(docs, 'links')
+    links.prompt('Find broken links in the docs')
+    for step in range(4):
+        links.reply('claude-haiku-4-5-20251001', 'medium', 12000 + step * 1500, [read(f'docs/page{step}.md')])
+    links.save({'agentType': 'Explore', 'description': 'Find broken links in the docs'})
     docs.save()
     research = main('data-pipeline', 'fit-warehouse-research', 27, 9)
     research.prompt('Compare warehouse vendors on pricing and limits')

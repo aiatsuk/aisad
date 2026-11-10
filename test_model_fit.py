@@ -254,6 +254,42 @@ class CaptureTests(FitCase):
         self.assertNotIn('failed_files', snap['quality'])
         self.assertEqual(sum(u['calls'] for u in snap['fit_analysis']['units']), len(snap['requests']))
 
+    def test_a_model_that_is_not_text_costs_one_record(self):
+        records = [human('q'), assistant('ok'), assistant('d1', model={'x': 1}), assistant('d2', model=7),
+                   assistant('d3', model=['claude-opus-5-5'], ts='2026-11-01T10:01:00.000Z')]
+        parsed = app.parse_claude(self.session(records))
+        self.assertEqual([r['id'] for r in parsed['requests']], ['cl:ok'])
+        self.assertEqual(parsed['quality']['invalid_records'], 3)
+        # The Codex parser had the same hole: a model that is not text in session_meta or turn_context.
+        usage = lambda total: {'type': 'event_msg', 'timestamp': f'2026-11-01T01:0{total}:00Z', 'payload': {
+            'type': 'token_count', 'info': {'last_token_usage': {'input_tokens': 10, 'output_tokens': 1},
+                                            'total_token_usage': {'input_tokens': 10 * total, 'output_tokens': total,
+                                                                  'total_tokens': 11 * total}}}}
+        write_jsonl(self.home / '.codex/sessions/rollout.jsonl', [
+            {'type': 'session_meta', 'payload': {'id': 'one', 'cwd': '/work/a', 'model': {'x': 1}}},
+            {'type': 'turn_context', 'payload': {'model': 'gpt-5.6-sol'}}, usage(1),
+            {'type': 'turn_context', 'payload': {'model': ['gpt-6-astra']}}, usage(2),
+            {'type': 'turn_context', 'payload': {'model': None}}, usage(3)])
+        snap = self.snapshot('--all-time')
+        self.assertEqual([r['model'] for r in snap['requests'] if r['provider'] == 'Codex'], ['gpt-5.6-sol'] * 3)
+        self.assertEqual(snap['quality']['invalid_records'], 3 + 2)
+        self.assertEqual([u['session'] for u in snap['model_fit']['units']], ['Claude:s1'])
+        # Every report still runs on this profile.
+        for command in ('usage', 'fit', 'dashboard'):
+            result = self.cli(command, '--json', *(['--all-time'] if command != 'dashboard' else []))
+            self.assertEqual(result.returncode, 0, (command, result.stderr[-300:]))
+
+    def test_a_meta_file_written_after_the_transcript_is_read(self):
+        main = self.session([human('go'), assistant('m1')])
+        path = self.agent(main, 'late', [human('look'), assistant('s1', model='claude-haiku-5-5')])
+        agent = lambda snap: next(u for u in snap['fit_analysis']['units'] if u['kind'] == 'agent')
+        self.assertEqual(agent(self.snapshot('--all-time'))['agent_type'], 'unknown')
+        path.with_name('agent-late.meta.json').write_text(json.dumps({'agentType': 'Explore', 'model': 'haiku'}))
+        later = self.snapshot('--all-time')
+        self.assertEqual((agent(later)['agent_type'], agent(later)['explicit_model']), ('Explore', True))
+        self.assertEqual(later['scan']['parsed_files'], 1)                  # only that run is read again
+        self.assertEqual(self.snapshot('--all-time')['scan'].get('parsed_files', 0), 0)
+
     def test_subagent_meta_and_explicit_model(self):
         main = self.session([human('go'),
                              assistant('m1', tools=[('Agent', {'subagent_type': 'Explore', 'model': 'haiku'}),
@@ -424,6 +460,37 @@ class JudgeTests(unittest.TestCase):
         j = app.fit_judge(unit(calls=20, effort='medium'), reprice=lambda u, tier: None)
         self.assertEqual((j['verdict'], j['save_model']), ('over', 0.0))
 
+    def test_a_guide_model_that_costs_more_is_judged_on_effort_alone(self):
+        dear = {'haiku': 12.0, 'sonnet': 11.0, 'opus': 10.0, 'fable': 20.0}   # Haiku above its long-prompt threshold
+        explore = dict(kind='agent', agent_type='Explore', calls=5)          # lookup -> haiku / medium
+        j = app.fit_judge(unit(alt=dear, effort='xhigh', **explore))
+        self.assertEqual((j['verdict'], j['save_model']), ('effort-over', 0.0))
+        self.assertAlmostEqual(j['save_effort'], 10.0 * (1 - 0.70 / 2.5))
+        self.assertEqual(app.fit_judge(unit(alt=dear, effort='medium', **explore))['verdict'], 'fits')
+        self.assertEqual(app.fit_judge(unit(alt=dear, effort='low', **explore))['verdict'], 'effort-under')
+        # The same cost is not cheaper either; repricing takes the same path.
+        self.assertEqual(app.fit_judge(unit(calls=20, effort='xhigh'), reprice=lambda u, tier: 10.0)['verdict'], 'effort-over')
+        # A turn held by its session: a dearer session model is not a reason for "session" either.
+        small = unit(calls=2, n_tools=1, cost=1.0, effort='medium', model='claude-fable-5-2', alt={'opus': 1.5})
+        self.assertEqual(app.fit_judge(small, 'opus')['verdict'], 'fits')
+        cheaper = app.fit_judge(unit(calls=2, n_tools=1, cost=1.0, effort='medium', model='claude-fable-5-2', alt={'opus': .5}), 'opus')
+        self.assertEqual((cheaper['verdict'], cheaper['save_model']), ('over', .5))
+
+    def test_savings_never_exceed_the_cost_or_go_negative(self):
+        shapes = (dict(calls=20), dict(calls=2, n_tools=1), dict(n_files=12, calls=90), dict(calls=60),
+                  dict(kind='agent', agent_type='Explore', calls=5), dict(kind='agent', agent_type='Plan', calls=8))
+        for alternative in (None, 0.0, 2.0, 9.99, 10.0, 15.0, 400.0):
+            for effort in app.FIT_EFFORTS + ('unknown',):
+                for shape in shapes:
+                    for needed in (None, 'opus', 'fable'):
+                        j = app.fit_judge(unit(effort=effort, **shape), needed, reprice=lambda u, tier: alternative)
+                        case = (alternative, effort, shape, needed, j['verdict'], j['save_model'], j['save_effort'])
+                        self.assertGreaterEqual(j['save_model'], 0.0, case)
+                        self.assertGreaterEqual(j['save_effort'], 0.0, case)
+                        self.assertLessEqual(j['save_model'] + j['save_effort'], j['cost'] + 1e-9, case)
+                        if j['verdict'] == 'over' and alternative is not None:
+                            self.assertLess(alternative, j['cost'], case)
+
     def test_session_level_model_for_main_turns(self):
         small = unit(calls=2, n_tools=1, cost=1.0, effort='medium')     # chat -> sonnet
         hard = unit(calls=60, cost=9.0)                                 # everyday -> opus
@@ -482,6 +549,28 @@ class EventTests(FitCase):
         ids = [i['id'] for i in data['insights']]
         self.assertIn('switches', ids)
         self.assertIn('cold-cache', ids)
+
+    def test_units_and_events_name_models_as_the_usage_rows_do(self):
+        dated, plain = 'claude-haiku-4-5-20251001', 'claude-haiku-4-5'
+        big = dict(read=100_000, cw=0)
+        main = self.session([human('q'),
+                             assistant('m1', **big),
+                             assistant('m2', ts='2026-11-01T10:01:00.000Z', model=dated, read=0, cw=100_000),
+                             assistant('m3', ts='2026-11-01T10:02:00.000Z', model=plain, **big),    # same model: no switch
+                             assistant('m4', ts='2026-11-01T12:02:00.000Z', model=dated, read=0, cw=100_000)])
+        self.agent(main, 'a1', [human('look'), assistant('s1', model=dated, effort='medium', ts='2026-11-01T10:00:30.000Z')],
+                   meta={'agentType': 'Explore'})
+        snap = self.snapshot('--all-time')
+        fit = snap['model_fit']
+        recorded = {r['model'] for r in snap['rows']}
+        self.assertIn(dated, recorded)
+        self.assertTrue(all(u['model'] in recorded for u in fit['units']))
+        self.assertEqual(sorted((u['kind'], u['model'], u['tier']) for u in fit['units']),
+                         [('agent', dated, 'haiku'), ('turn', dated, 'haiku')])
+        self.assertEqual([(e['from'], e['to']) for e in fit['events']['switches']], [('claude-opus-5-5', dated)])
+        self.assertEqual([e['model'] for e in fit['events']['cold']], [dated])
+        self.assertEqual([d['haiku_long_calls'] for d in fit['events']['daily']], [3])     # tier from the canonical ID
+        self.assertEqual({u['model'] for u in self.fit_json('--session', 's1')['units']}, {dated})
 
     def test_subagent_calls_are_not_main_thread_events(self):
         main = self.session([human('q'), assistant('m1', read=250_000)])
@@ -578,6 +667,59 @@ class CommandTests(FitCase):
         self.assertIn('subagent run', self.refusal('fit', '--session', 'Claude:parent/agent-x1'))
         self.assertIn('unique prefix', self.refusal('fit', '--session', 'Claude:'))
         self.assertIn('Session Claude:dup-1', self.run_main('fit', '--session', 'dup-1'))
+
+    def test_fit_applies_project_and_role_and_refuses_the_other_filters(self):
+        self.bundle()
+        self.session([human('elsewhere'), assistant('o1', read=100_000, cwd='/work/other-proj'),
+                      assistant('o2', ts='2026-11-01T10:01:00.000Z', model='claude-fable-5-2', read=0, cw=100_000,
+                                cw1h=100_000, cwd='/work/other-proj')], name='other', project='-work-other-proj')
+        ids = lambda data: [item['id'] for item in data['insights']]
+        everything = self.fit_json('--all-time')
+        other = self.fit_json('--all-time', '--project', 'other-proj')
+        self.assertEqual((other['totals']['sessions'], other['totals']['units']), (1, 1))
+        self.assertEqual(other['filters'], {'project': 'other-proj', 'role': None})
+        self.assertIn('switches', ids(other))
+        self.assertNotIn('switches', ids(self.fit_json('--all-time', '--project', 'demo-proj')))
+        main = self.fit_json('--all-time', '--role', 'main')
+        agents = self.fit_json('--all-time', '--role', 'subagent')
+        self.assertEqual((main['totals']['turns'], main['totals']['agents']), (everything['totals']['turns'], 0))
+        self.assertEqual((agents['totals']['turns'], agents['totals']['agents']), (0, everything['totals']['agents']))
+        self.assertAlmostEqual(main['totals']['cost'] + agents['totals']['cost'], everything['totals']['cost'])
+        self.assertIn('switches', ids(main))
+        self.assertNotIn('switches', ids(agents))                       # events are main-thread calls
+        self.assertEqual({u['kind'] for u in self.fit_json('--session', 's1', '--role', 'subagent')['units']}, {'agent'})
+        self.assertIn('Session Claude:s1', self.run_main('fit', '--session', 's1', '--project', 'demo-proj'))
+        self.assertEqual(self.fit_json('--all-time', '--provider', 'Anthropic')['totals'], everything['totals'])
+        # Nothing matches: the same clear refusal as an empty period.
+        self.assertIn('no Claude Code model calls between', self.refusal('fit', '--all-time', '--role', 'review'))
+        self.assertIn('matching --project nowhere', self.refusal('fit', '--all-time', '--project', 'nowhere'))
+        self.assertIn('has no model calls matching --project nowhere', self.refusal('fit', '--session', 's1', '--project', 'nowhere'))
+        for args, text in ((['fit', '--provider', 'codex'], 'fit: model fit covers Claude Code only; --provider codex does not apply'),
+                           (['fit', '--model', 'claude-opus-5-5'], 'fit: --model does not apply'),
+                           (['fit', '--pool', 'managed'], 'fit: --pool does not apply'),
+                           (['fit', '--model', 'x', '--pool', 'managed', '--role', 'main'], 'fit: --model and --pool do not apply'),
+                           (['suggest', '--provider', 'claude'], 'suggest: --provider does not apply'),
+                           (['suggest', '--model', 'x'], 'suggest: --model does not apply'),
+                           (['suggest', '--project', 'demo-proj'], 'suggest: --project does not apply'),
+                           (['suggest', '--role', 'main', '--pool', 'interactive'], 'suggest: --role and --pool do not apply')):
+            with self.subTest(args=args):
+                result = self.cli(*args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(len(result.stderr.strip().splitlines()), 1, result.stderr)
+                self.assertIn(text, result.stderr)
+                self.assertEqual(result.stdout, '')
+
+    def test_fit_session_shows_runs_whose_main_transcript_is_missing(self):
+        ghost = self.projects / '-work-demo-proj' / 'ghost.jsonl'                 # never written
+        self.agent(ghost, 'a1', [human('look'), assistant('s1', model='claude-haiku-5-5')], meta={'agentType': 'Explore'})
+        self.session([human('q'), assistant('m1')], name='present')
+        data = self.fit_json('--session', 'ghost')
+        self.assertEqual((data['session'], data['project']), ('Claude:ghost', 'demo-proj'))
+        self.assertEqual([(u['kind'], u['session']) for u in data['units']], [('agent', 'Claude:ghost/agent-a1')])
+        text = self.run_main('fit', '--session', 'Claude:ghost')
+        self.assertIn('Subagents (grouped)', text)
+        self.assertIn('the main transcript is missing', text)
+        self.assertIn('subagent run', self.refusal('fit', '--session', 'Claude:ghost/agent-a1'))
 
     def test_fit_empty_period(self):
         self.session([human('q'), assistant('m1')])
