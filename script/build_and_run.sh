@@ -11,7 +11,7 @@ if [[ "$MODE" == "--snapshot" && -z "${2:-}" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="AISADMenuBar"
+APP_NAME="ASIMenuBar"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 if [[ "$MODE" != "--build-only" && "$MODE" != "--snapshot" ]]; then
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
@@ -36,8 +36,8 @@ version = next(ast.literal_eval(node.value) for node in module.body
                if isinstance(node, ast.Assign)
                and any(isinstance(target, ast.Name) and target.id == 'VERSION' for target in node.targets))
 with open(sys.argv[1], 'wb') as target:
-    plistlib.dump(dict(CFBundleExecutable='AISADMenuBar', CFBundleIdentifier='com.aiatsuk.aisad.menubar',
-                      CFBundleName='AISAD', CFBundleDisplayName='AISAD', CFBundlePackageType='APPL',
+    plistlib.dump(dict(CFBundleExecutable='ASIMenuBar', CFBundleIdentifier='com.aiatsuk.asi.menubar',
+                      CFBundleName='ASI', CFBundleDisplayName='ASI', CFBundlePackageType='APPL',
                       CFBundleShortVersionString=version, CFBundleVersion=version,
                       LSMinimumSystemVersion='14.0', LSUIElement=True, NSPrincipalClass='NSApplication'),
                  target)
@@ -53,7 +53,7 @@ case "$MODE" in
     /usr/bin/open -n "$APP_BUNDLE"
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
-    echo "AISAD menu bar process is running." ;;
+    echo "ASI menu bar process is running." ;;
   --snapshot)
     /usr/bin/open -n "$APP_BUNDLE" --args --snapshot "$2" "${@:3}"
     echo "Rendering native light/dark snapshots in $2" ;;

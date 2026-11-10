@@ -47,7 +47,7 @@ class FakeResponse(io.BytesIO):
 
 class PriceRefreshTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='aisad prices ')
+        self.temp = tempfile.TemporaryDirectory(prefix='asi prices ')
         self.addCleanup(self.temp.cleanup)
         self.output = Path(self.temp.name) / 'report'
 

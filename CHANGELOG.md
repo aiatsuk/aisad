@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0 — 2026-11-10
+
+- Rename AISAD to ASI: the skill is `skills/asi`, the launcher `scripts/asi.py`, the terminal command `asi`, the release archive `asi-skill-vX.Y.Z.zip`, the menu bar app `ASIMenuBar.app` (bundle ID `com.aiatsuk.asi.menubar`), environment variables `ASI_*` and the data directory `~/.local/share/asi`.
+- AISAD 1.x installations cannot update themselves to ASI; they keep working at their version. Run the ASI installer once. It removes an unmodified 1.x `skills/aisad` next to the new skill, keeps one with local changes and says so, and makes a 1.x `aisad` command from `--cli-dir` run `asi`.
+- The first `asi` command that writes to the data directory moves `~/.local/share/aisad` to `~/.local/share/asi`; if the move fails it keeps using the old directory and says so. Commands that only read (`version`, `rules status|show`, `autopilot status|show`) never move it. The menu bar app uses the new directory if it exists, else the old one, and never moves data.
+- `AISAD_*` environment variables still apply when the `ASI_*` variable is unset. Shared live updates and the saved dashboard theme written by 1.x are still read. `asi menubar` also opens a 1.x `AISAD.app`.
+- Add model fit for Claude Code. `asi fit` compares the model and effort that ran in each main-thread turn and subagent run with Anthropic's guide "Which Claude model should you build with?" and prints a period summary with findings and rough savings; `asi fit --session <id>` shows one session turn by turn (`--json` and `--include-titles` work on both); `asi suggest` shows what fits the session you are in and what a model switch would cost now. Savings are rough upper bounds on API-equivalent estimates. Codex sessions are not judged.
+- The dashboard gets a fifth tab, "Model fit": spend per day by model, spend by task class with rough savings, the model used per class, effort, findings with examples, and the most expensive sessions.
+- `fit` applies `--project` and `--role` (`main` for turns, `subagent` for subagent runs). It refuses `--model`, `--pool` and a `--provider` other than Claude, and `suggest` refuses all five filters, with a one-line error and a non-zero exit, instead of ignoring them.
+- Four Claude Code sub-skills ship inside the skill and are linked next to it by `install --target claude`: `/asi-suggest`, `/asi-analyze`, `/asi-autopilot` and `/asi-ultraanalyze`. A Codex install gets none. When something else already sits at one of those paths, the installer keeps it, prints one line per skipped sub-skill and a count, and exits 0, since ASI itself is installed.
+- New opt-in commands `asi rules on|off|status|show` and `asi autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in `~/.claude/CLAUDE.md`: a first-message model hint, and rules for choosing a model and effort for each subagent. They touch nothing outside the markers and install no hooks. Installing does not switch them on. Autopilot never changes the main session's model.
+- Add [ADR 0005](docs/agent/adr/0005-model-fit.md): model fit is allowed as a second exception to the no-recommendations rule of ADR 0002.
+- The Claude Code transcript parser is more tolerant: a record with an unexpected shape now costs that one record, counted in `quality.invalid_records`, instead of the whole file.
+- Menu bar app users: quit the 1.x app and build the 2.0 one. macOS treats it as a new app, so the menu bar permission is asked again and the saved chart range resets. A 1.x app left running does not follow 2.0 live updates and, sharing the same output folder through the link at the old path, makes both sides re-read the whole history in turn.
+- The first ASI run after this update reparses every Claude Code transcript once (the parser version changed). On a large history this can take a few minutes; later runs use the cache again.
+
 ## 1.5.2 — 2026-11-10
 
 - Price Claude Fable 5.2 requests. The built-in table had no rate for the model, so its requests were reported as unpriced. The published rate per million tokens is $8 input, $0.20 cache read, $10 five-minute cache write and $40 output.

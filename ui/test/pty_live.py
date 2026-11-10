@@ -4,7 +4,7 @@ from pathlib import Path
 from pty_motion import ROOT,Screen,fixture
 
 def check():
-    with tempfile.TemporaryDirectory(prefix='aisad-live-') as directory:
+    with tempfile.TemporaryDirectory(prefix='asi-live-') as directory:
         root=Path(directory);stale=fixture();stale['initial_view']='graph';stale['stale']=True
         stale['refresh']=True;fresh=copy.deepcopy(stale);del fresh['stale']
         month=fresh['months'][-1]['report'];month['monthly_budget']['known_cost_usd']=4321.5
@@ -12,8 +12,8 @@ def check():
         source=root/'dataset.json';source.write_text(json.dumps(stale))
         master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',30,110,0,0))
         env={**os.environ,'TERM':'xterm-256color','FORCE_COLOR':'3'}
-        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
-        process=subprocess.Popen([os.environ.get('AISAD_TEST_BUN','bun'),str(ROOT/'ui/dist/aisad-ui.mjs'),str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
+        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','ASI_REDUCED_MOTION','AISAD_REDUCED_MOTION','INK_SCREEN_READER'):env.pop(name,None)
+        process=subprocess.Popen([os.environ.get('ASI_TEST_BUN','bun'),str(ROOT/'ui/dist/asi-ui.mjs'),str(source),str(root/'state.json')],stdin=slave,stdout=slave,stderr=slave,env=env)
         screen=Screen(110,30);wire=b'';frames=[]
         def read(seconds):
             nonlocal wire

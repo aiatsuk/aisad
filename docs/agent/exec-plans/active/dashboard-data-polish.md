@@ -10,7 +10,7 @@ Verify current dashboard data, period/filter calculations and session details; f
 
 ## Relevant context
 
-agent_usage.py is the collector and standalone HTML renderer. Shared output is ~/.local/share/aisad/output. Prior native-menu work is uncommitted and must be preserved. Product Design audit skill selected for a fresh flow audit.
+agent_usage.py is the collector and standalone HTML renderer. Shared output is ~/.local/share/asi/output. Prior native-menu work is uncommitted and must be preserved. Product Design audit skill selected for a fresh flow audit.
 
 ## Constraints
 

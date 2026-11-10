@@ -4,7 +4,7 @@ from pathlib import Path
 from pty_motion import ROOT,Screen
 
 def check():
-    with tempfile.TemporaryDirectory(prefix='aisad-shared-pty-') as directory:
+    with tempfile.TemporaryDirectory(prefix='asi-shared-pty-') as directory:
         root=Path(directory);home=root/'home';output=root/'output'
         trace=home/'.claude/projects/synthetic/session.jsonl'
         trace.parent.mkdir(parents=True)
@@ -16,8 +16,8 @@ def check():
         trace.write_text(observation(1))
         env={**os.environ,'HOME':str(home),'CODEX_HOME':str(home/'.codex'),
              'CLAUDE_CONFIG_DIR':str(home/'.claude'),'XDG_CONFIG_HOME':str(home/'.config'),
-             'TERM':'xterm-256color','FORCE_COLOR':'3','AISAD_REDUCED_MOTION':'1'}
-        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','INK_SCREEN_READER','AISAD_TERMINAL_UI'):env.pop(name,None)
+             'TERM':'xterm-256color','FORCE_COLOR':'3','ASI_REDUCED_MOTION':'1'}
+        for name in ('CI','CONTINUOUS_INTEGRATION','NO_COLOR','INK_SCREEN_READER','ASI_TERMINAL_UI','AISAD_TERMINAL_UI'):env.pop(name,None)
         master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',30,110,0,0))
         command=[sys.executable,'-B',str(ROOT/'agent_usage.py')]
         process=subprocess.Popen(command+['chart','--interactive','--output',str(output)],

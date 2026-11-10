@@ -82,6 +82,8 @@ export class Morph {
   }
 }
 export const braille = (mask:number):string => mask ? String.fromCharCode(0x2800+mask) : ' ';
+// ASI_<name>, else the 1.x AISAD_<name>; an empty value counts as unset.
+export const setting = (env:Record<string,string|undefined>,name:string):string|undefined => env['ASI_'+name]||env['AISAD_'+name]||undefined;
 export function motionEnabled(options:{ascii:boolean;color:boolean},env:Record<string,string|undefined>,screenReader=false):boolean {
-  return !screenReader&&!options.ascii&&options.color&&env.AISAD_REDUCED_MOTION!=='1'&&!env.CI&&env.TERM!=='dumb'&&env.INK_SCREEN_READER!=='1';
+  return !screenReader&&!options.ascii&&options.color&&setting(env,'REDUCED_MOTION')!=='1'&&!env.CI&&env.TERM!=='dumb'&&env.INK_SCREEN_READER!=='1';
 }

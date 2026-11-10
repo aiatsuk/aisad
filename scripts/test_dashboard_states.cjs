@@ -39,7 +39,7 @@ async function report(overrides={}, preferences={}) {
     });
     return nodes.get(id);
   };
-  const tabs=['overview','sessions','context','cache'].map(name=>{
+  const tabs=['overview','sessions','context','cache','fit'].map(name=>{
     const n=node('tab-'+name);n.dataset.tab=name;n.attributes['aria-controls']='view-'+name;return n;
   });
   node('snapshot').textContent=JSON.stringify({...snapshot,...overrides});
@@ -58,7 +58,7 @@ async function report(overrides={}, preferences={}) {
     setTimeout:()=>1,clearTimeout(){},addEventListener:(name,fn)=>{lifecycle[name]=fn;},
     matchMedia:()=>({matches:!!preferences.darkSystem}),
     localStorage:{
-      getItem(){if(preferences.storageDenied)throw Error('Storage denied');return preferences.storedTheme;},
+      getItem(key){if(preferences.storageDenied)throw Error('Storage denied');return (preferences.stored||{})[key]??null;},
       setItem(key,value){if(preferences.storageDenied)throw Error('Storage denied');saved.push([key,value]);},
     },
   });
@@ -99,11 +99,12 @@ async function report(overrides={}, preferences={}) {
   r.api.showTab('cache');
   assert.equal(r.node('view-cache').hidden,false);
   assert.equal(r.node('view-overview').hidden,true);
+  assert.equal(r.node('view-fit').hidden,true);
   r.api.openSession('Claude:events');
   assert.equal(r.node('session-dialog').open,true);
   assert.match(r.node('session-timeline').innerHTML,/No usage observations/);
   assert.match(r.node('events-table').innerHTML,/No recorded events/);
-  assert.match(r.node('footer').textContent,/Open Dashboard in AISAD/);
+  assert.match(r.node('footer').textContent,/Open Dashboard in ASI/);
   assert.match(r.node('subtitle').textContent,/UTC/);
 
   // Exercise actual local-script callbacks, including asynchronous compressed
@@ -116,10 +117,10 @@ async function report(overrides={}, preferences={}) {
     generated:'2026-10-22T10:00:00Z',evidence_generated:'2026-10-22T09:00:00Z',
     rows:rows.map(r=>({...r,cost:r.cost*2,cost_high:r.cost_high*2})),
     request_stats:snapshot.request_stats.map(r=>({...r,cost:r.cost*2,cost_high:r.cost_high*2}))};
-  live.context.aisadLiveRevision({revision:rev(3)});
+  live.context.asiLiveRevision({revision:rev(3)});
   assert.match(live.scripts[1].src,/^usage-live-data[.]js/);
   const {gzipSync}=require('node:zlib');
-  await live.context.aisadLiveData(rev(3),{encoding:'gzip-base64',
+  await live.context.asiLiveData(rev(3),{encoding:'gzip-base64',
     data:gzipSync(JSON.stringify(updated)).toString('base64')});
   live.scripts[1].onload();
   assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
@@ -128,19 +129,38 @@ async function report(overrides={}, preferences={}) {
   assert.equal(live.node('view-cache').hidden,false);
   assert.match(live.node('footer').textContent,/Shared local data/);
   assert.equal(live.api.applyLiveSnapshot({...updated,sync_revision:rev(2),rows:[]}),false);
-  await live.context.aisadLiveData(rev(4),{encoding:'gzip-base64',data:'broken'});
+  await live.context.asiLiveData(rev(4),{encoding:'gzip-base64',data:'broken'});
   assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
   // A prepared payload cannot be accepted before its commit marker.
-  await live.context.aisadLiveData(rev(9),{...updated,sync_revision:rev(9),rows:[]});
+  await live.context.asiLiveData(rev(9),{...updated,sync_revision:rev(9),rows:[]});
   assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
   const beforeVisible=live.scripts.length;
   live.context.document.hidden=false;live.lifecycle['document:visibilitychange']();
   assert.equal(live.scripts.length,beforeVisible+1);
-  const callback=live.context.aisadLiveData;
+  // A 1.x (AISAD) writer in the same output folder calls the old global names.
+  assert.equal(live.context.aisadLiveRevision,live.context.asiLiveRevision);
+  assert.equal(live.context.aisadLiveData,live.context.asiLiveData);
+  const legacyUpdate={...updated,sync_revision:rev(5),
+    rows:rows.map(r=>({...r,cost:r.cost*3,cost_high:r.cost_high*3})),
+    request_stats:snapshot.request_stats.map(r=>({...r,cost:r.cost*3,cost_high:r.cost_high*3}))};
+  const beforeLegacy=live.scripts.length;
+  live.context.aisadLiveRevision({revision:rev(5)});
+  assert.equal(live.scripts.length,beforeLegacy+1);
+  assert.match(live.scripts[beforeLegacy].src,/^usage-live-data[.]js/);
+  await live.context.aisadLiveData(rev(5),{encoding:'gzip-base64',
+    data:gzipSync(JSON.stringify(legacyUpdate)).toString('base64')});
+  live.scripts[beforeLegacy].onload();
+  assert.match(live.node('cards').innerHTML,/[$]30[.]00/);
+  // A stale 1.x revision is ignored.
+  live.context.aisadLiveRevision({revision:rev(4)});
+  assert.equal(live.scripts.length,beforeLegacy+1);
+  const callback=live.context.asiLiveData;
   live.lifecycle.pagehide();
+  assert.equal(live.context.asiLiveData,undefined);
   assert.equal(live.context.aisadLiveData,undefined);
-  await callback(rev(4),{...updated,sync_revision:rev(4),rows:[]});
-  assert.match(live.node('cards').innerHTML,/[$]20[.]00/);
+  assert.equal(live.context.aisadLiveRevision,undefined);
+  await callback(rev(6),{...updated,sync_revision:rev(6),rows:[]});
+  assert.match(live.node('cards').innerHTML,/[$]30[.]00/);
 
   // Compare real shipped JS with independently computed canonical Python windows.
   // This executes no browser and reads only the synthetic values supplied on stdin.
@@ -152,7 +172,7 @@ async function report(overrides={}, preferences={}) {
     }));
     const day=generated.slice(0,10);
     const summary=JSON.parse(execFileSync('python3',['-B','-c',
-      "import json,sys; import agent_usage as a; s=json.load(sys.stdin); print(json.dumps(a.menubar_report(s,a.parser().parse_args(['menubar','--output','/nonexistent/aisad-synthetic','--timezone',s['timezone']]))))"
+      "import json,sys; import agent_usage as a; s=json.load(sys.stdin); print(json.dumps(a.menubar_report(s,a.parser().parse_args(['menubar','--output','/nonexistent/asi-synthetic','--timezone',s['timezone']]))))"
     ],{cwd:path.join(__dirname,'..'),input:JSON.stringify({
       generated,timezone,as_of_date:day,request_stats:raw,
     }),encoding:'utf8'}));
@@ -206,9 +226,16 @@ async function report(overrides={}, preferences={}) {
   assert.equal(dark.context.document.documentElement.dataset.theme,'dark');
   dark.node('theme').onclick();
   assert.equal(dark.context.document.documentElement.dataset.theme,'light');
-  assert.deepEqual(dark.saved,[['aisad-theme','light']]);
-  const light=await report({}, {darkSystem:true,storedTheme:'light'});
+  assert.deepEqual(dark.saved,[['asi-theme','light']]);
+  const light=await report({}, {darkSystem:true,stored:{'asi-theme':'light'}});
   assert.equal(light.context.document.documentElement.dataset.theme,'light');
+  // A theme saved by 1.x (AISAD) still applies; the new key wins and is the only one written.
+  const legacy=await report({}, {darkSystem:true,stored:{'aisad-theme':'light'}});
+  assert.equal(legacy.context.document.documentElement.dataset.theme,'light');
+  legacy.node('theme').onclick();
+  assert.deepEqual(legacy.saved,[['asi-theme','dark']]);
+  const both=await report({}, {darkSystem:false,stored:{'asi-theme':'dark','aisad-theme':'light'}});
+  assert.equal(both.context.document.documentElement.dataset.theme,'dark');
   const restricted=await report({}, {darkSystem:true,storageDenied:true});
   assert.equal(restricted.context.document.documentElement.dataset.theme,'dark');
   restricted.node('theme').onclick(); // Storage restrictions must not break the report.

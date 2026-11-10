@@ -6,7 +6,7 @@ import {Dashboard} from './app.js';
 import {parseDataset,type Dataset} from './types.js';
 import {mergeDataset,watchDataset} from './live.js';
 const [input,output]=process.argv.slice(2);
-if(!input||!output||!process.stdin.isTTY||!process.stdout.isTTY) throw new Error('AISAD UI requires dataset/state paths and a terminal');
+if(!input||!output||!process.stdin.isTTY||!process.stdout.isTTY) throw new Error('ASI UI requires dataset/state paths and a terminal');
 const source:string=input;
 const dataset=parseDataset(JSON.parse(readFileSync(source,'utf8')) as unknown);
 let current=dataset,stop=():void=>{};

@@ -9,7 +9,8 @@ import re
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_FILES = ('SKILL.md', 'agents/openai.yaml', 'scripts/aisad.py')
+SKILL_FILES = ('SKILL.md', 'agents/openai.yaml', 'scripts/asi.py', 'subskills/asi-analyze/SKILL.md',
+               'subskills/asi-autopilot/SKILL.md', 'subskills/asi-suggest/SKILL.md', 'subskills/asi-ultraanalyze/SKILL.md')
 
 
 def version_from_source(source):
@@ -32,7 +33,7 @@ def build(root, output, tag=None, with_ui=False):
         raise ValueError('Release tag must match agent_usage.py VERSION: v' + version)
     payloads = {}
     for name in SKILL_FILES:
-        path = root / 'skills/aisad' / name
+        path = root / 'skills/asi' / name
         if path.is_symlink():
             raise ValueError('Release source must not be a symlink: ' + name)
         payloads[name] = path.read_bytes()
@@ -42,19 +43,19 @@ def build(root, output, tag=None, with_ui=False):
         expected=['build.ts','package.json','tsconfig.json','bun.lock']+['src/'+path.name for path in sorted((root/'ui/src').glob('*')) if path.is_file()]
         if meta.get('schema_version')!=1 or set(meta.get('inputs',{}))!=set(expected) or any(sha256((root/'ui'/name).read_bytes())!=meta['inputs'][name] for name in expected):
             raise ValueError('Terminal UI sources changed; rebuild before --with-ui')
-        for name in ('aisad-ui.mjs','THIRD_PARTY_NOTICES.txt'):
+        for name in ('asi-ui.mjs','THIRD_PARTY_NOTICES.txt'):
             path=root/'ui/dist'/name
             if path.is_symlink() or not path.is_file():raise ValueError('Build the terminal UI before --with-ui: '+name)
             payloads['runtime/ui/'+name]=path.read_bytes()
-    manifest = dict(schema=1, repository='aiatsuk/aisad', version=version,
+    manifest = dict(schema=1, repository='aiatsuk/asi', version=version,
                     files={name: sha256(data) for name, data in sorted(payloads.items())})
     payloads['manifest.json'] = (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode('utf-8')
     output.mkdir(parents=True, exist_ok=True)
     (output / 'agent_usage.py').write_bytes(source)
-    archive_path = output / ('aisad-skill-v' + version + '.zip')
+    archive_path = output / ('asi-skill-v' + version + '.zip')
     with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, data in sorted(payloads.items()):
-            info = zipfile.ZipInfo('aisad/' + name, date_time=(1980, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo('asi/' + name, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             info.compress_type = zipfile.ZIP_DEFLATED
@@ -71,7 +72,7 @@ def main():
     cli.add_argument('--with-ui',action='store_true',help='Include the built, optional Bun/Ink terminal UI')
     args = cli.parse_args()
     version, files = build(ROOT, Path(args.output).expanduser().resolve(), args.tag,with_ui=args.with_ui)
-    print('Built AISAD ' + version)
+    print('Built ASI ' + version)
     for path in files:
         print(path)
 

@@ -93,17 +93,17 @@ class ProviderQuotaTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "CLI process groups require POSIX")
     def test_cancellation_reaps_owned_cli_processes(self):
-        with tempfile.TemporaryDirectory(prefix="AISAD quota test ") as directory:
+        with tempfile.TemporaryDirectory(prefix="ASI quota test ") as directory:
             folder = Path(directory)
             source = "#!" + sys.executable + "\n" + (
                 "import os,sys,time\nfrom pathlib import Path\n"
-                "Path(os.environ['AISAD_TEST_PIDS'],Path(sys.argv[0]).name+'.pid').write_text(str(os.getpid()))\n"
+                "Path(os.environ['ASI_TEST_PIDS'],Path(sys.argv[0]).name+'.pid').write_text(str(os.getpid()))\n"
                 "time.sleep(20)\n")
             for name in ["codex", "grok"]:
                 executable = folder/name
                 executable.write_text(source)
                 executable.chmod(0o700)
-            environment = dict(os.environ, PATH=directory, AISAD_TEST_PIDS=directory)
+            environment = dict(os.environ, PATH=directory, ASI_TEST_PIDS=directory)
             process = subprocess.Popen([sys.executable, str(Path(app.__file__).resolve()),
                 "--providers", "codex", "grok"], env=environment,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)

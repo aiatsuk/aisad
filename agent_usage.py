@@ -32,8 +32,8 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.5.2'
-PARSER_VERSION = 9
+VERSION = '2.0.0'
+PARSER_VERSION = 10
 PRICE_DATE = '2026-10-22'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
 # A versioned offline price snapshot, not provider invoices or guaranteed historical rates.
@@ -104,7 +104,7 @@ def models_dev_fetch(etag=None,url=MODELS_DEV_URL,timeout=30):
     local copy is still current. The only outbound request this collector ever
     makes, and only when a price refresh is asked for explicitly.
     """
-    request=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'aisad/'+VERSION})
+    request=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'asi/'+VERSION})
     if etag:request.add_header('If-None-Match',etag)
     try:
         with urllib.request.urlopen(request,timeout=timeout) as response:
@@ -406,6 +406,17 @@ def parent_thread(source):
             if found:return found
     return None
 
+def codex_model(payload,current,quality):
+    """The model a Codex record names; null, empty or absent keeps the current one.
+
+    Any other shape is counted as an invalid record and ignored, while the rest of the
+    record still applies: skipping a session_meta would lose its whole session.
+    """
+    value=payload.get('model')
+    if value is None or value=='':return current
+    if not isinstance(value,str):quality['invalid_records']+=1;return current
+    return value
+
 def parse_codex(path,include_titles=False):
     q=collections.Counter();sessions={};requests=[];seen={};sid=None;model='unknown';effort='unknown';tier='unknown';project='unknown';role='main';turn=''
     signals=TraceSignals();parent=None;fork_owner=None;fork_live=False
@@ -424,7 +435,7 @@ def parse_codex(path,include_titles=False):
             if next_sid!=sid:
                 model='unknown';effort='unknown';tier='unknown';turn='';signals=TraceSignals()
             sid=next_sid
-            project=project_name(p.get('cwd'));model=p.get('model') or model
+            project=project_name(p.get('cwd'));model=codex_model(p,model,q)
             role='subagent' if 'subagent' in json.dumps(p.get('source',{})).lower() or p.get('agent_path','/root') not in ['/root',None,''] else 'main'
             parent=parent_thread(p.get('source'))
             sessions.setdefault(sid,dict(id='Codex:'+sid,provider='Codex',role=role,project=project,title=sid[:12],trace=True,parent_session=parent))
@@ -448,7 +459,7 @@ def parse_codex(path,include_titles=False):
                 sessions={sid:fork_owner['session']}
                 model='unknown';effort='unknown';tier='unknown';turn='';fork_live=True
                 observed={sid:True} if signals.observed else {}
-            model=p.get('model',model);effort=p.get('effort') or p.get('reasoning_effort') or effort
+            model=codex_model(p,model,q);effort=p.get('effort') or p.get('reasoning_effort') or effort
             tier=p.get('service_tier') or tier;turn=p.get('turn_id') or turn
             if p.get('cwd'):project=project_name(p['cwd'])
         if typ=='event_msg' and p.get('type')=='thread_settings_applied':
@@ -490,53 +501,68 @@ def parse_claude(path,include_titles=False):
     sid=(path.parent.parent.name+'/'+path.stem) if sub else path.parent.name if path.name=='audit.jsonl' else path.stem
     skey='Claude:'+sid;project='unknown';role='subagent' if sub else 'main';title=sid[:12]
     evidence=Evidence(path,'Claude')
+    # Model fit reads Claude Code transcripts only, not Cowork audit traces.
+    fit=FitCapture(path,sub,include_titles) if path.name!='audit.jsonl' else None
     for x,line,offset in read_jsonl(path,q,locations=True):
-        ts=timestamp(x.get('timestamp'));typ=x.get('type')
-        if x.get('cwd'):project=project_name(x['cwd'])
-        if typ=='result' and isinstance(x.get('total_cost_usd'),(int,float)) and ts is not None:
-            # Keep result reports separate: SDK scopes include children and may be cumulative across turns.
-            reports.append(dict(id=str(x.get('uuid') or hashlib.sha256(json.dumps(x,sort_keys=True).encode()).hexdigest()),
-                                session=skey,ts=ts,reported_usd=x['total_cost_usd']))
-        m=x.get('message') or {}
-        if not isinstance(m,dict):continue
-        content=m.get('content')
-        if isinstance(content,list):
-            signals.observed=True
-            tool_result=False
-            for item in content:
-                if not isinstance(item,dict):continue
-                if item.get('type')=='tool_use':signals.call(item.get('id'),item.get('name'))
-                if item.get('type')=='tool_result':
-                    tool_result=True;signals.result(item.get('tool_use_id'),item.get('content',''),item.get('is_error',False))
-            if typ=='user' and not tool_result and not x.get('isMeta'):
-                signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
-        elif isinstance(content,str) and typ=='user' and not x.get('isMeta'):
-            signals.observed=True;signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
-        event_id=evidence.capture(x,line,offset,skey,turn,m.get('model'))
-        # A session with only user/tool/lifecycle events is still observable.
-        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
-        if include_titles and typ=='user' and title==sid[:12] and not x.get('isMeta'):
-            content=m.get('content','');texts=content if isinstance(content,str) else ' '.join(a.get('text','') for a in content if isinstance(a,dict))
-            if texts and not texts.startswith(('/', '<local-command','<command-name')):title=title_text(texts)
-        if typ!='assistant' or not m.get('usage') or m.get('model') in [None,'<synthetic>']:continue
-        mid=m.get('id') or x.get('message_id')
-        if not mid:q['missing_message_ids']+=1;continue
-        if ts is None:q['missing_timestamps']+=1;continue
-        u=m['usage']
-        try:usage=normalize_usage(u,'Claude')
-        except (ValueError,TypeError,OverflowError):q['invalid_usage']+=1;continue
-        sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
-        searches=(u.get('server_tool_use') or {}).get('web_search_requests')
-        try: searches=None if searches is None else number(searches)
-        except (ValueError,TypeError): searches=None
-        requests.append(dict(id='cl:'+str(mid),session=skey,provider='Claude',model=m.get('model'),
-                             effort=x.get('effort') or 'unknown',tier=u.get('service_tier') or 'unknown',
-                             speed=u.get('speed') or 'unknown',geo=u.get('inference_geo') or 'unknown',
-                             project=project,role=role,ts=ts,web_searches=searches,turn_id=turn,
-                             parent_session='Claude:'+path.parent.parent.name if sub else None,
-                             trace_stats=signals.take(),event_ids=[event_id] if event_id else [],**usage))
+        # Record shapes are untrusted: an unexpected one costs that record, never the file.
+        try:
+            ts=timestamp(x.get('timestamp'));typ=x.get('type')
+            m=x.get('message')
+            # A model that is not text would end up as a grouping key and fail every report later.
+            if isinstance(m,dict) and m.get('model') is not None and not isinstance(m['model'],str):
+                q['invalid_records']+=1;continue
+            if fit:fit.record(x,q)
+            if x.get('cwd'):project=project_name(x['cwd'])
+            if typ=='result' and isinstance(x.get('total_cost_usd'),(int,float)) and ts is not None:
+                # Keep result reports separate: SDK scopes include children and may be cumulative across turns.
+                reports.append(dict(id=str(x.get('uuid') or hashlib.sha256(json.dumps(x,sort_keys=True).encode()).hexdigest()),
+                                    session=skey,ts=ts,reported_usd=x['total_cost_usd']))
+            m=x.get('message') or {}
+            if not isinstance(m,dict):continue
+            content=m.get('content')
+            if isinstance(content,list):
+                signals.observed=True
+                tool_result=False
+                for item in content:
+                    if not isinstance(item,dict):continue
+                    if item.get('type')=='tool_use':signals.call(item.get('id'),item.get('name'))
+                    if item.get('type')=='tool_result':
+                        tool_result=True;signals.result(item.get('tool_use_id'),item.get('content',''),item.get('is_error',False))
+                if typ=='user' and not tool_result and not x.get('isMeta'):
+                    signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
+            elif isinstance(content,str) and typ=='user' and not x.get('isMeta'):
+                signals.observed=True;signals.pending['user_messages']+=1;turn=x.get('uuid') or (str(ts) if ts is not None else None)
+            event_id=evidence.capture(x,line,offset,skey,turn,m.get('model'))
+            # A session with only user/tool/lifecycle events is still observable.
+            sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
+            if include_titles and typ=='user' and title==sid[:12] and not x.get('isMeta'):
+                content=m.get('content','');texts=content if isinstance(content,str) else ' '.join(a.get('text','') for a in content if isinstance(a,dict))
+                if texts and not texts.startswith(('/', '<local-command','<command-name')):title=title_text(texts)
+            if typ!='assistant' or not m.get('usage') or m.get('model') in [None,'<synthetic>']:continue
+            mid=m.get('id') or x.get('message_id')
+            if not mid:q['missing_message_ids']+=1;continue
+            if ts is None:q['missing_timestamps']+=1;continue
+            u=m['usage']
+            try:usage=normalize_usage(u,'Claude')
+            except (ValueError,TypeError,OverflowError,AttributeError):q['invalid_usage']+=1;continue
+            sessions[skey]=dict(id=skey,provider='Claude',role=role,project=project,title=title,trace=True,parent_session='Claude:'+path.parent.parent.name if sub else None)
+            searches=(u.get('server_tool_use') or {}).get('web_search_requests')
+            try: searches=None if searches is None else number(searches)
+            except (ValueError,TypeError): searches=None
+            request=dict(id='cl:'+str(mid),session=skey,provider='Claude',model=m.get('model'),
+                         effort=x.get('effort') or 'unknown',tier=u.get('service_tier') or 'unknown',
+                         speed=u.get('speed') or 'unknown',geo=u.get('inference_geo') or 'unknown',
+                         project=project,role=role,ts=ts,web_searches=searches,turn_id=turn,
+                         parent_session='Claude:'+path.parent.parent.name if sub else None,
+                         trace_stats=signals.take(),event_ids=[event_id] if event_id else [],**usage)
+            if fit:request['fit']=fit.reply(mid)
+            requests.append(request)
+        except (AttributeError,TypeError,ValueError,KeyError,OverflowError):q['invalid_records']+=1
     for row in requests:row['trace_observed']=signals.observed
-    return dict(sessions=list(sessions.values()),requests=requests,reports=reports,events=evidence.events,quality=dict(q))
+    result=dict(sessions=list(sessions.values()),requests=requests,reports=reports,events=evidence.events,quality=dict(q))
+    if fit:result['fit']=fit.session(skey,q)
+    result['quality']=dict(q)
+    return result
 
 def merge_requests(rows,quality):
     merged={}
@@ -558,6 +584,7 @@ def merge_requests(rows,quality):
         searches=[v for v in [old.get('web_searches'),r.get('web_searches')] if v is not None]
         result['web_searches']=max(searches) if searches else None
         result['event_ids']=sorted(set(old.get('event_ids',[]))|set(r.get('event_ids',[])))
+        if 'fit' in old or 'fit' in r:result['fit']=fit_merge(owner.get('fit'),(r if owner is old else old).get('fit'))
         merged[r['id']]=result
     return list(merged.values())
 
@@ -692,6 +719,907 @@ def telemetry_summary(records):
             else:stats[key]+=value
     return dict(trace_records=sum(r['trace_observed'] for r in records),
                 total_records=len(records),tool_stats=dict(stats))
+
+# =============================================================================
+# Model fit
+#
+# For every main-thread turn and subagent run of Claude Code: the model and
+# effort that ran, next to what Anthropic's guide "Which Claude model should
+# you build with?" (claude.dev, 2026-11-09) suggests for that kind of task.
+# Ported from the tested prototype in ~/pr/air (commit 0622eea).
+#
+# - parse_claude keeps counts, flags and short hashes only (FitCapture); prompt
+#   text survives only as the opt-in redacted title.
+# - Costs are the collector's own priced requests. Alternatives reprice the
+#   same requests through the same price rules, so there is one price table.
+#   Requests the collector cannot price are counted, never guessed.
+# - A main thread keeps one cache, so its model is judged per session; a
+#   subagent run per run; effort per unit, because changing it keeps the cache.
+# =============================================================================
+
+FIT_SCHEMA = 1
+FIT_TIERS = ('haiku','sonnet','opus','fable')  # weakest to strongest
+FIT_EFFORTS = ('low','medium','high','xhigh','max')
+FIT_MODELS = {'haiku':'claude-haiku-5-5','sonnet':'claude-sonnet-5-5','opus':'claude-opus-5-5','fable':'claude-fable-5-2'}
+FIT_LABELS = {'haiku':'Haiku 5.5','sonnet':'Sonnet 5.5','opus':'Opus 5.5','fable':'Fable 5.2'}
+# Cost per task relative to high, measured on Opus 5.5 in the guide. `max` is
+# not given there; it is treated as xhigh (a lower bound).
+FIT_EFFORT_COST = {'low':.33,'medium':.70,'high':1.0,'xhigh':2.5,'max':2.5}
+# id: label, model tier, starting effort, highest effort the guide suggests
+# before moving up a model, one-line reason.
+FIT_CLASSES = {
+    'extract':('Classification, routing, tagging, extraction','haiku','medium','medium',
+               'Lowest cost and latency; the output is easy to check.'),
+    'lookup':('Search, reading, log digging, summaries, relay steps','haiku','medium','medium',
+              'A wrong answer is cheap to spot, and the reading stays out of the main context.'),
+    'chat':('Chat and quick questions','sonnet','low','medium','Fast replies; little reasoning depth is needed.'),
+    'investigate':('Investigation, review, drafting','sonnet','medium','medium',
+                   'A repeated agent task; Sonnet handles it at half the Opus price.'),
+    'scoped':('Well-scoped coding: bug fix, feature iteration, spec-driven work','sonnet','medium','high',
+              'The scope is clear, so the bigger model adds little.'),
+    'docs':('Everyday documents, slides, spreadsheets','sonnet','medium','high',
+            'Sonnet is enough unless it is a complex model or built from many sources.'),
+    'everyday':('Everyday engineering, debugging, multi-PR feature work','opus','medium','high',
+                "The guide's starting point: best balance of cost and capability."),
+    'vision':('Computer use and screenshot-heavy work','opus','medium','high',
+              'Long loops over screenshots need the stronger model.'),
+    'architect':('Major refactor or migration, architecture planning','fable','medium','high',
+                 'The hardest technical work; mistakes are expensive.'),
+    'lead':('Leading many subagents or a long unattended run','fable','medium','high',
+            'The lead splits work, merges results and must hold a long run together.'),
+    'research':('Deep research, scientific or quantitative analysis','fable','medium','high',
+                'Many sources and open-ended reasoning.'),
+    'unsure':('Not sure yet','opus','medium','high',"The guide's default when the task is unclear."),
+}
+FIT_DOC_EXT = {'.md','.txt','.rst','.docx','.pptx','.xlsx','.csv','.html','.htm','.pdf'}
+FIT_EDIT_TOOLS = {'Edit','Write','NotebookEdit','MultiEdit'}
+FIT_WEB_TOOLS = {'WebSearch','WebFetch'}
+FIT_UI_MARKERS = ('computer-use','computer_use','Claude_Browser','claude-in-chrome','iOS_Simulator','playwright','puppeteer')
+FIT_NOT_HUMAN = ('<system-reminder','<task-notification','<local-command-stdout','<local-command-stderr',
+                 '<local-command-caveat','<side-sessions-event','<ci-monitor-event','<child-session-event','<wake',
+                 '<webhook-payload','<agent-message','[Request interrupted','<bash-stdout','<bash-stderr',
+                 '<user-prompt-submit-hook')
+# Prompt keywords, in English and in Russian as the owner writes both.
+FIT_BIG = re.compile(r'refactor|migrat|architect|redesign|rewrite|overhaul|рефактор|миграц|архитект|перепис|переработ',re.I)
+FIT_HARD = re.compile(r'debug|root cause|flaky|race condition|deadlock|memory leak|performance|perf\b|crash|'
+                      r'отлад|утечк|производительн|падает|зависа',re.I)
+FIT_RELAY = re.compile(r'dispatch|collect|prepare|gate|finish|return|record|relay|review-open|review-close|'
+                       r'summar|search|find|fetch|list|locate|lookup|grep|read\b|explore|scan',re.I)
+FIT_LOOKUP_AGENTS = {'Explore','web-fetch','claude-code-guide','statusline-setup','orchestrate-explorer'}
+FIT_NOTE = ('Costs are API-equivalent estimates from local Claude Code transcripts, not invoices; requests without '
+            'a price are counted and left out of every cost. Classes come from a heuristic over what happened in each '
+            'turn or subagent run (tools, files, calls). Savings reprice the same requests on the guide\'s model '
+            'through the same price rules and apply the guide\'s Opus effort ratios; a smaller model or lower effort '
+            'can need more turns, so treat them as upper bounds.')
+
+def fit_human_text(x):
+    """The text a person typed, or None for tool results, meta, summaries, harness blocks and agents."""
+    if x.get('isMeta') or x.get('isCompactSummary') or x.get('toolUseResult') is not None:return None
+    if x.get('sourceToolAssistantUUID'):return None
+    origin=x.get('origin')
+    if isinstance(origin,dict) and origin.get('kind') not in (None,'human'):return None
+    m=x.get('message');content=m.get('content') if isinstance(m,dict) else None
+    if isinstance(content,list):
+        if any(isinstance(b,dict) and b.get('type')=='tool_result' for b in content):return None
+        content='\n'.join(b['text'] for b in content if isinstance(b,dict) and b.get('type')=='text' and isinstance(b.get('text'),str))
+    if not isinstance(content,str):return None
+    text=content.strip()
+    command=re.search(r'<command-name>(.*?)</command-name>',text,re.S)
+    if command:
+        arguments=re.search(r'<command-args>(.*?)</command-args>',text,re.S)
+        return (command.group(1).strip()+' '+(arguments.group(1).strip() if arguments else '')).strip()
+    # Hook and harness blocks can be prepended to a typed prompt; drop leading ones.
+    while True:
+        block=re.match(r'\s*<(system-reminder|user-prompt-submit-hook)\b.*?</\1>\s*',text,re.S)
+        if not block:break
+        text=text[block.end():]
+    if not text or text.startswith(FIT_NOT_HUMAN):return None
+    return text
+
+def fit_snippet(text,limit):
+    """The whitespace-folded prefix the keyword rules read (the prototype matched its display snippet)."""
+    return ' '.join(str(text or '').split())[:limit]
+
+def fit_text_flags(text):
+    """big: refactor/migration wording; hard: debugging/performance wording."""
+    return {name:1 for name,pattern in (('big',FIT_BIG),('hard',FIT_HARD)) if pattern.search(text)}
+
+def fit_agent_flags(agent_type,description='',phase=''):
+    """plan: a planning agent; review: a reviewer; relay: search/collect/dispatch wording."""
+    label=f'{agent_type} {fit_snippet(description,100)} {phase}'
+    flags={}
+    if agent_type=='Plan':flags['plan']=1
+    if 'review' in label.lower():flags['review']=1
+    if FIT_RELAY.search(label):flags['relay']=1
+    return flags
+
+def fit_folder(name):
+    """Short hash of a Claude project folder name (an encoded path), to find the session of a directory."""
+    return hashlib.sha256(str(name).encode('utf-8','surrogatepass')).hexdigest()[:16]
+
+class FitCapture:
+    """Model-fit facts from one Claude Code transcript, without its text.
+
+    Per reply (shared by every usage block of that reply): the human turn it
+    answers, tool counts, edited files as [short hash, is document] pairs,
+    Agent/Task spawns and the models they passed. Per transcript: human-turn
+    times and keyword flags, and for a subagent its meta sidecar reduced to
+    type, flags and whether a model was chosen. Titles only on request.
+    """
+    def __init__(self,path,subagent,include_titles):
+        self.path=path;self.subagent=subagent;self.titles=include_titles
+        self.human=0;self.turns=[];self.first=None;self.replies={};self.seen=set()
+    def record(self,x,quality):
+        try:self._record(x)
+        except (AttributeError,TypeError,ValueError,KeyError):quality['fit_invalid_records']+=1
+    def _record(self,x):
+        typ=x.get('type')
+        if typ=='user':
+            text=fit_human_text(x)
+            if text is None:return
+            self.human+=1
+            if self.first is None:self.first=text
+            if not self.subagent:
+                turn=dict(ts=timestamp(x.get('timestamp')),**fit_text_flags(fit_snippet(text,180)))
+                if self.titles:turn['title']=title_text(text)
+                self.turns.append(turn)
+            return
+        m=x.get('message')
+        if typ!='assistant' or not isinstance(m,dict):return
+        mid=m.get('id') or x.get('message_id')
+        if not mid:return
+        reply=self.reply(mid)
+        effort=x.get('perTurnEffort')
+        if not x.get('effort') and isinstance(effort,str) and effort:reply['effort']=effort
+        content=m.get('content')
+        for block in content if isinstance(content,list) else []:
+            if not isinstance(block,dict) or block.get('type')!='tool_use' or not isinstance(block.get('name'),str):continue
+            tool_id=block.get('id') if isinstance(block.get('id'),str) else None
+            if tool_id:
+                if (str(mid),tool_id) in self.seen:continue
+                self.seen.add((str(mid),tool_id))
+            name=block['name'];arguments=block.get('input') if isinstance(block.get('input'),dict) else {}
+            reply['tools']=reply.get('tools',0)+1
+            if name in FIT_EDIT_TOOLS:
+                target=arguments.get('file_path') or arguments.get('notebook_path')
+                if isinstance(target,str) and target:
+                    digest=hashlib.sha256(target.encode('utf-8','surrogatepass')).hexdigest()[:12]
+                    files=reply.setdefault('files',[])
+                    if all(item[0]!=digest for item in files):files.append([digest,int(Path(target).suffix.lower() in FIT_DOC_EXT)])
+            elif name in ('Agent','Task'):
+                reply['agents']=reply.get('agents',0)+1
+                model=arguments.get('model')
+                if tool_id and isinstance(model,str) and model:reply.setdefault('spawn_models',{})[tool_id]=model
+            elif name=='Workflow':reply['workflow']=reply.get('workflow',0)+1
+            if name in FIT_WEB_TOOLS:reply['web']=reply.get('web',0)+1
+            if any(marker in name for marker in FIT_UI_MARKERS):reply['ui']=reply.get('ui',0)+1
+    def reply(self,mid):
+        key=str(mid)
+        if key not in self.replies:self.replies[key]={'turn':self.human}
+        return self.replies[key]
+    def session(self,skey,quality):
+        if not self.subagent:
+            return dict(session=skey,kind='main',folder=fit_folder(self.path.parent.name),turns=self.turns)
+        parts=self.path.parts;cut=parts.index('subagents')
+        meta=self.meta(quality)
+        text=lambda key:meta[key] if isinstance(meta.get(key),str) else ''
+        agent_type=text('agentType') or 'unknown';description=text('description')
+        out=dict(session=skey,kind='agent',
+                 # Workflow agents get parent Claude:workflows in the rows; this is the real one.
+                 parent='Claude:'+parts[cut-1],agent_type=agent_type,explicit_model=bool(text('model')),
+                 tool_use_id=text('toolUseId') or None,workflow=int('workflows' in parts[cut:]),
+                 **fit_agent_flags(agent_type,description,text('workflowPhase')),
+                 **fit_text_flags(fit_snippet(self.first,140)+' '+fit_snippet(description,100)))
+        if self.titles:out['title']=title_text(description or self.first or '') or None
+        return out
+    def meta(self,quality):
+        """The sibling agent-<id>.meta.json; missing is normal, malformed is counted."""
+        try:meta=json.loads(self.path.with_name(self.path.stem+'.meta.json').read_text(encoding='utf-8'))
+        except FileNotFoundError:return {}
+        except (OSError,ValueError):quality['fit_unreadable_meta']+=1;return {}
+        if not isinstance(meta,dict):quality['fit_unreadable_meta']+=1;return {}
+        return meta
+
+def fit_merge(owner,other):
+    """Two copies of one reply: the owner's turn, and every tool call either copy saw."""
+    if not isinstance(owner,dict):return None  # The owning trace is not read for model fit.
+    result=dict(owner)
+    if not isinstance(other,dict):return result
+    for key in ('tools','agents','workflow','web','ui'):
+        value=max(owner.get(key,0),other.get(key,0))
+        if value:result[key]=value
+    known={item[0] for item in owner.get('files',[])}
+    extra=[item for item in other.get('files',[]) if item[0] not in known]
+    if extra:result['files']=list(owner.get('files',[]))+extra
+    if other.get('spawn_models'):result['spawn_models']=dict(other['spawn_models'],**owner.get('spawn_models',{}))
+    if not result.get('effort') and other.get('effort'):result['effort']=other['effort']
+    return result
+
+def fit_rec(cls):
+    label,tier,start,top,why=FIT_CLASSES[cls]
+    return {'class':cls,'label':label,'tier':tier,'model':FIT_MODELS[tier],'effort':start,'effort_max':top,'why':why}
+
+def fit_tier(model):
+    model=str(model or '').lower()
+    return next((tier for tier in FIT_TIERS if tier in model),None)
+
+def fit_rank(tier):return FIT_TIERS.index(tier) if tier in FIT_TIERS else -1
+
+def fit_erank(effort):return FIT_EFFORTS.index(effort) if effort in FIT_EFFORTS else -1
+
+def fit_effort_ratio(used,target):
+    """Cost multiplier of moving from `used` effort to `target` (rough, Opus-based)."""
+    return FIT_EFFORT_COST[target]/FIT_EFFORT_COST[used] if used in FIT_EFFORT_COST else 1.0
+
+def fit_unit(kind,pairs):
+    """Fold the (request, facts) pairs of one turn or run: cost, dominant model and effort, tool profile."""
+    by_model=collections.defaultdict(float);by_effort=collections.defaultdict(float);count=collections.Counter()
+    # The same model can be recorded under more than one ID (dated or not); the unit names the ID that
+    # carried most of its cost, in the form the usage rows keep, so the dashboard's model filter finds it.
+    recorded=collections.defaultdict(float);recorded_calls=collections.Counter()
+    files={};totals=collections.Counter();cost=0.;unpriced=0;max_context=0
+    for row,facts in pairs:
+        value=row['cost']
+        if value is None:unpriced+=1;value=0.
+        cost+=value
+        model=canonical_model(row['model']);by_model[model]+=value;count[model]+=1
+        recorded[(model,row['model'])]+=value;recorded_calls[(model,row['model'])]+=1
+        effort=row.get('effort') if isinstance(row.get('effort'),str) and row.get('effort')!='unknown' else facts.get('effort') or 'unknown'
+        by_effort[effort if isinstance(effort,str) else 'unknown']+=value
+        for key in ('tools','agents','workflow','web','ui'):totals[key]+=facts.get(key,0)
+        for item in facts.get('files',[]):files[item[0]]=item[1]
+        max_context=max(max_context,row['input'])
+    first=pairs[0][0];last=pairs[-1][0]
+    top=max(by_model,key=lambda m:(by_model[m],count[m]))
+    model=max((key for key in recorded if key[0]==top),key=lambda key:(recorded[key],recorded_calls[key]))[1]
+    return dict(kind=kind,session=first['session'],project=first['project'],date=first['date'],ts=first['ts'],end=last['ts'],
+                calls=len(pairs),cost=cost,unpriced=unpriced,
+                model=model,by_model=dict(by_model),
+                effort=max(by_effort,key=by_effort.get),by_effort=dict(by_effort),max_context=max_context,
+                n_tools=totals['tools'],n_files=len(files),docs_only=bool(files) and all(files.values()),
+                n_agents=totals['agents'],workflow=totals['workflow']>0,n_web=totals['web'],n_ui=totals['ui'],
+                requests=[row for row,_ in pairs])
+
+def fit_classify(u):
+    """(class id, the signals that decided it), from what happened in a unit and a few prompt keywords."""
+    calls,files,tools=u['calls'],u['n_files'],u['n_tools']
+    big,hard=u.get('big'),u.get('hard')
+    if u['kind']=='agent':
+        if u.get('plan'):return 'architect','planning agent'
+        if files==0:
+            if u.get('review'):return 'investigate','review agent, no edits'
+            if u['n_web']>=8:return 'research',f"{u['n_web']} web calls"
+            # A short run is not lookup by itself; only its type or relay wording make it one.
+            if u.get('agent_type') in FIT_LOOKUP_AGENTS or (u.get('relay') and calls<=15):return 'lookup',f'{calls} calls, no edits'
+            if calls<=40:return 'investigate',f'{calls} calls, no edits'
+            return 'everyday',f'{calls} calls, no edits'
+        if u['docs_only']:return 'docs',f'{files} document file(s)'
+        if files<=3 and calls<=40 and not hard and not big:return 'scoped',f'{files} file(s), {calls} calls'
+        return 'everyday',f'{files} file(s), {calls} calls'
+    if u['n_ui']>=5 and u['n_ui']>=.25*max(tools,1):return 'vision',f"{u['n_ui']} screen or browser actions"
+    if u['workflow'] or u['n_agents']>=5:return 'lead','a workflow run' if u['workflow'] else f"{u['n_agents']} subagents"
+    if files>=10 or (big and (files>=4 or calls>=60)):return 'architect',f'{files} files edited, {calls} calls'
+    if calls>=150:return 'lead',f'{calls} calls without a new prompt'
+    if u['n_web']>=8 and files<=2:return 'research',f"{u['n_web']} web calls"
+    if files==0:
+        if calls<=3 and tools<=2:return 'chat',f'{calls} call(s), no edits'
+        if calls<=40:return 'investigate',f'{calls} calls, no edits'
+        return 'everyday',f'{calls} calls, no edits'
+    if u['docs_only']:
+        if calls>80 or u['n_web']>=5:return 'everyday',f'document built over {calls} calls'
+        return 'docs',f'{files} document file(s)'
+    if files<=3 and calls<=40:
+        if hard or big:return 'everyday','debugging, performance or migration wording'
+        return 'scoped',f'{files} file(s), {calls} calls'
+    return 'everyday',f'{files} files, {calls} calls'
+
+def fit_session_tier(turns):
+    """The strongest model any substantial turn of a session called for.
+
+    A main thread keeps one cache, so its model is a per-session choice: a
+    short turn in a session that also holds hard work is not a reason to switch down.
+    """
+    if not turns:return None
+    total=sum(t['cost'] for t in turns) or 1.
+    judged=[(fit_classify(t)[0],t) for t in turns]
+    heavy=[c for c,t in judged if t['calls']>=10 or t['cost']>=.1*total] or [c for c,_ in judged]
+    return max((FIT_CLASSES[c][1] for c in heavy),key=fit_rank)
+
+def fit_judge(u,needed=None,reprice=None):
+    """A copy of the unit with class, recommendation, verdict and rough savings.
+
+    `needed` is the session-level tier for a main-thread turn (fit_session_tier);
+    the turn counts as over-provisioned only against that. `reprice(unit, tier)`
+    gives the unit's priced requests on that tier (None when it has no price).
+    A unit is `over` on model only when the guide's model is cheaper for its requests
+    (or has no price, so no saving is counted); otherwise it is judged on effort alone.
+    The two savings never add up to more than the unit's cost.
+    """
+    cls,signals=fit_classify(u);r=fit_rec(cls)
+    used_tier=fit_tier(canonical_model(u['model']));used_effort=u['effort'] if u['effort'] in FIT_EFFORTS else None
+    target=needed if needed and fit_rank(needed)>fit_rank(r['tier']) else r['tier']
+    held=target!=r['tier'] and fit_rank(used_tier)>fit_rank(r['tier'])
+    d_model=fit_rank(used_tier)-fit_rank(target) if used_tier else 0
+    if d_model<0 and fit_rank(used_tier)>=fit_rank(r['tier']):d_model=0  # The turn was covered; another turn set the bar.
+    cost=u['cost'];at_model=cost
+    if d_model>0:
+        alternative=reprice(u,target) if reprice else (u.get('alt') or {}).get(target)
+        if alternative is not None:
+            if alternative<cost:at_model=alternative
+            # The guide's model costs as much or more for these requests, as Haiku can above its
+            # long-prompt threshold: a smaller model saves nothing here, so only effort is judged.
+            else:d_model=0;held=False
+    effort_over=used_effort is not None and fit_erank(used_effort)>fit_erank(r['effort_max'])
+    effort_under=used_effort is not None and d_model<=0 and fit_erank(used_effort)<fit_erank(r['effort'])
+    save_model=max(cost-at_model,0.)
+    save_effort=at_model*(1-fit_effort_ratio(used_effort,r['effort_max'])) if effort_over else 0.
+    save_effort=min(max(save_effort,0.),max(cost-save_model,0.))
+    if d_model>0:verdict='over'
+    elif d_model<0:verdict='under'
+    elif effort_over:verdict='effort-over'
+    elif effort_under:verdict='effort-under'
+    elif held:verdict='session'  # A smaller model would do for this turn alone, not for the session.
+    else:verdict='fits'
+    out=dict(u)
+    out.update({'class':cls,'signals':signals,'rec_tier':r['tier'],'rec_effort':r['effort'],'rec_effort_max':r['effort_max'],
+                'why':r['why'],'used_tier':used_tier,'verdict':verdict,'effort_over':effort_over,
+                'save_model':save_model,'save_effort':save_effort})
+    return out
+
+# Everything _price_request reads from a request row.
+FIT_PRICE_FIELDS = ('provider','ts','input','session_max_input','uncached','cached','write','write_5m','write_1h',
+                    'write_unknown','output','tier','speed','geo','web_searches')
+
+def fit_reprice(rows,model,catalog):
+    """The priced requests of a unit repriced on `model` through the collector's rules; None without a price."""
+    total=0.
+    for row in rows:
+        if row['cost'] is None:continue  # Unpriced on its own model: left out on both sides.
+        alternative={key:row[key] for key in FIT_PRICE_FIELDS if key in row}
+        alternative.update(model=model,speed='standard',
+                           tier='standard' if row.get('tier') in ('priority','fast','ultrafast') else row.get('tier'))
+        priced=_price_request(alternative,catalog,model)
+        if priced['cost'] is None:return None
+        total+=priced['cost']
+    return total
+
+FIT_DAILY_KEYS = ('calls','cost','big_calls','big_cost','haiku_long_calls','haiku_long_cost','fast_calls','fast_cost')
+
+def fit_events(pairs):
+    """Main-thread cost events of one session, from its requests in time order.
+
+    Model switches re-write the cache; a full rewrite after an idle gap over
+    five minutes is a cold cache (not after compaction, where the context
+    shrank). `daily` holds per-day counters keyed by date and project.
+    """
+    events=dict(switches=[],cold=[],effort_changes=[]);daily={};previous=None
+    for row,facts in pairs:
+        context=row['input'];value=row['cost'] or 0.
+        write=round(row['cost_parts'][2],4) if row['cost'] is not None and row.get('cost_parts') else None
+        model=canonical_model(row['model'])
+        effort=row.get('effort') if row.get('effort') not in (None,'unknown') else facts.get('effort')
+        day=daily.get((row['date'],row['project']))
+        if day is None:day=daily[(row['date'],row['project'])]=dict(date=row['date'],project=row['project'],**dict.fromkeys(FIT_DAILY_KEYS,0))
+        day['calls']+=1;day['cost']+=value
+        if context>200000:day['big_calls']+=1;day['big_cost']+=value
+        if context>100000 and fit_tier(model)=='haiku':day['haiku_long_calls']+=1;day['haiku_long_cost']+=value
+        if row.get('speed')=='fast':day['fast_calls']+=1;day['fast_cost']+=value
+        if previous is not None and context>20000:
+            before,before_effort=previous
+            tag=dict(session=row['session'],project=row['project'],date=row['date'],ts=int(row['ts']))
+            rewritten=row['cached']<.2*context;compacted=context<.6*before['input'];gap=row['ts']-before['ts']
+            # Compared by canonical ID (a dated and an undated ID are one model); reported as
+            # recorded, the form the usage rows and the dashboard's model filter use.
+            if model!=canonical_model(before['model']):
+                events['switches'].append(dict(tag,**{'from':before['model'],'to':row['model'],'tokens':row['write'],'cost':write}))
+            elif rewritten and not compacted and gap>300:
+                events['cold'].append(dict(tag,gap_min=round(gap/60),model=row['model'],tokens=row['write'],cost=write))
+            elif effort!=before_effort and effort and before_effort:
+                events['effort_changes'].append(dict(tag,**{'from':before_effort,'to':effort,'read_share':round(row['cached']/context,3)}))
+        previous=(row,effort)
+    events['daily']=daily
+    return events
+
+def fit_analyze(pairs,sessions,catalog,include_titles=False):
+    """Judged units, events and a per-session index from priced Claude Code requests.
+
+    pairs: (merged, priced, dated request row, its fit facts).
+    sessions: transcript-level facts by session key, from parse_claude.
+    """
+    spawned={}
+    for _,facts in pairs:spawned.update(facts.get('spawn_models') or {})
+    by_session=collections.defaultdict(list)
+    for row,facts in pairs:by_session[row['session']].append((row,facts))
+    reprice=lambda unit,tier:fit_reprice(unit['requests'],FIT_MODELS[tier],catalog)
+    blank=lambda key,info:dict(session=key,folder=info.get('folder'),prompts=info.get('turns',[]),project=None,units=[],
+                               events=dict(switches=[],cold=[],effort_changes=[],daily={}))
+    index={key:blank(key,info) for key,info in sessions.items() if info.get('kind')=='main'}
+    turns=[];agents=[];daily={};events=dict(switches=[],cold=[],effort_changes=[])
+    for key in sorted(by_session):
+        items=sorted(by_session[key],key=lambda p:(p[0]['ts'],p[0]['id']))
+        info=sessions.get(key) or {}
+        if info.get('kind')=='agent' or (not info and items[0][0]['role']=='subagent'):
+            unit=fit_unit('agent',items)
+            parent=info.get('parent') or items[0][0].get('parent_session') or key
+            tool_use=info.get('tool_use_id')
+            unit.update(main_session=parent,n=None,agent_type=info.get('agent_type','unknown'),
+                        explicit_model=bool(info.get('explicit_model') or (tool_use and spawned.get(tool_use))),
+                        workflow_agent=bool(info.get('workflow')),
+                        **{flag:info.get(flag,0) for flag in ('plan','review','relay','big','hard')})
+            if include_titles and info.get('title'):unit['title']=info['title']
+            agents.append(unit);continue
+        entry=index.setdefault(key,blank(key,info))
+        entry.update(project=items[-1][0]['project'],last=items[-1])
+        prompts=entry['prompts'];groups=collections.defaultdict(list)
+        for row,facts in items:
+            turn=facts.get('turn',0)  # 0: calls before the first prompt of this transcript
+            valid=isinstance(turn,int) and not isinstance(turn,bool) and 0<=turn<=len(prompts)
+            groups[turn if valid else 0].append((row,facts))
+        session_turns=[]
+        for n in sorted(groups):
+            unit=fit_unit('turn',groups[n]);prompt=prompts[n-1] if n else {}
+            unit.update(main_session=key,n=n,agent_type=None,explicit_model=None,big=prompt.get('big',0),hard=prompt.get('hard',0))
+            if n==0:unit['title']='(resumed without a new prompt)' if prompts else '(no prompt recorded)'
+            elif include_titles and prompt.get('title'):unit['title']=prompt['title']
+            session_turns.append(unit)
+        needed=fit_session_tier(session_turns)
+        turns.extend(fit_judge(u,needed,reprice) for u in session_turns)
+        found=fit_events(items);entry['events']=found
+        for name in events:events[name].extend(found[name])
+        for place,day in found['daily'].items():
+            if place not in daily:daily[place]=dict(day);continue
+            for name in FIT_DAILY_KEYS:daily[place][name]+=day[name]
+    agents=[fit_judge(u,None,reprice) for u in agents]
+    units=sorted(turns+agents,key=lambda u:(u['ts'],u['session'],u['n'] or 0))
+    for unit in units:
+        entry=index.get(unit['main_session'])
+        if entry is None:
+            # Subagent runs whose main transcript is gone still make a session `fit --session` can show.
+            entry=index[unit['main_session']]=blank(unit['main_session'],{})
+            entry['project']=unit['project']
+        entry['units'].append(unit)
+    events['daily']=[{k:round(v,4) if isinstance(v,float) else v for k,v in day.items()}
+                     for day in sorted(daily.values(),key=lambda d:(d['date'],d['project']))]
+    return dict(units=units,events=events,sessions=index)
+
+def fit_round(value,digits=4):
+    if isinstance(value,float):return round(value,digits)
+    if isinstance(value,dict):return {k:fit_round(v,digits) for k,v in value.items()}
+    if isinstance(value,list):return [fit_round(v,digits) for v in value]
+    return value
+
+def fit_guide():
+    return [{k:v for k,v in fit_rec(c).items() if k!='model'} for c in FIT_CLASSES]
+
+def fit_snapshot(analysis,include_titles=False):
+    """The dashboard's model_fit: units already judged here, so the page only filters and sums."""
+    units=[]
+    for u in analysis['units']:
+        item={'kind':u['kind'],'session':u['session'],'main_session':u['main_session'],'n':u['n'],
+              'project':u['project'],'date':u['date'],'ts':int(u['ts']),'tier':u['used_tier'],'model':u['model'],
+              'effort':u['effort'],'class':u['class'],'signals':u['signals'],'rec_tier':u['rec_tier'],
+              'rec_effort':u['rec_effort'],'rec_effort_max':u['rec_effort_max'],'verdict':u['verdict'],
+              'effort_over':u['effort_over'],'cost':round(u['cost'],4),'unpriced':u['unpriced'],
+              'save_model':round(u['save_model'],4),'save_effort':round(u['save_effort'],4),'calls':u['calls'],
+              'agent_type':u['agent_type'],'explicit_model':u['explicit_model']}
+        if include_titles:item['title']=u.get('title')
+        units.append(item)
+    # Event values are rounded where they are made; the lists are shared, not copied.
+    return dict(schema=FIT_SCHEMA,guide=fit_guide(),units=units,events=analysis['events'],note=FIT_NOTE)
+
+def fit_example(u,include_titles,tz):
+    if u['kind']=='turn':what=(u.get('title') if (include_titles or not u['n']) and u.get('title') else f"turn {u['n']}")
+    else:what=f"[{u['agent_type']}]"+(' '+u['title'] if include_titles and u.get('title') else '')
+    rec=f"{u['rec_tier']} / {u['rec_effort']}"+(f"→{u['rec_effort_max']}" if u['rec_effort_max']!=u['rec_effort'] else '')
+    return dict(session=u['main_session'],project=u['project'],
+                date=dt.datetime.fromtimestamp(u['ts'],dt.timezone.utc).astimezone(tz).strftime('%Y-%m-%d %H:%M'),
+                kind=u['kind'],what=what,used=f"{u['used_tier'] or u['model']} / {u['effort']}",rec=rec,
+                **{'class':u['class']},signals=u['signals'],calls=u['calls'],cost=round(u['cost'],2),
+                save_model=round(u['save_model'],2),save_effort=round(u['save_effort'],2))
+
+def fit_summary(analysis,start=None,end=None,session=None,examples=8,include_titles=False,tz=None,project=None,role=None):
+    """Totals, classes, findings with their largest examples, and sessions for a window or one main session.
+
+    `start` / `end` are report-timezone dates; a unit counts when it starts
+    inside, an event or a request when it happens inside. `project` keeps one
+    project; `role` main keeps the turns and subagent the subagent runs (events
+    are main-thread calls, so they go with main); review matches nothing.
+    """
+    kind={'main':'turn','subagent':'agent'}.get(role) if role else None
+    here=lambda item:not project or item['project']==project
+    inside=lambda date:date is not None and (start is None or date>=start) and (end is None or date<=end)
+    scope=analysis['sessions'][session] if session else analysis
+    main_events=role in (None,'main')
+    ev={name:[e for e in scope['events'][name] if here(e)] if main_events else [] for name in ('switches','cold','effort_changes')}
+    daily=list(scope['events']['daily'].values()) if session else scope['events']['daily']
+    ev['daily']=[day for day in daily if here(day)] if main_events else []
+    units=[u for u in scope['units'] if inside(u['date']) and here(u) and (not role or u['kind']==kind)]
+    total=sum(u['cost'] for u in units)
+    by_model=collections.defaultdict(float);by_effort=collections.defaultdict(float)
+    days=collections.defaultdict(lambda:collections.defaultdict(float))
+    for u in units:
+        for m,v in u['by_model'].items():by_model[m]+=v
+        for e,v in u['by_effort'].items():by_effort[e]+=v
+        for row in u['requests']:
+            if row['cost'] is not None:days[u['date']][fit_tier(canonical_model(row['model'])) or 'other']+=row['cost']
+    classes={}
+    for cid in FIT_CLASSES:
+        r=fit_rec(cid)
+        classes[cid]=dict({'class':cid},label=r['label'],rec_tier=r['tier'],rec_effort=r['effort'],rec_effort_max=r['effort_max'],
+                          why=r['why'],units=0,cost=0.,by_tier={t:0. for t in FIT_TIERS+('other',)},
+                          save_model=0.,save_effort=0.,over_cost=0.,under_cost=0.)
+    for u in units:
+        c=classes[u['class']];c['units']+=1;c['cost']+=u['cost'];c['by_tier'][u['used_tier'] or 'other']+=u['cost']
+        c['save_model']+=u['save_model'];c['save_effort']+=u['save_effort']
+        if u['verdict']=='over':c['over_cost']+=u['cost']
+        if u['verdict']=='under':c['under_cost']+=u['cost']
+    switches,cold,effort_changes=([e for e in ev[name] if inside(e['date'])] for name in ('switches','cold','effort_changes'))
+    big=dict(calls=0,cost=0.);haiku_long=dict(calls=0,cost=0.);fast=dict(calls=0,cost=0.);main_calls_cost=0.
+    for day in ev['daily']:
+        if not inside(day['date']):continue
+        for name,acc in (('big',big),('haiku_long',haiku_long),('fast',fast)):
+            acc['calls']+=day[name+'_calls'];acc['cost']+=day[name+'_cost']
+        main_calls_cost+=day['cost']
+    sessions={}
+    for u in sorted(units,key=lambda u:u['ts']):
+        s=sessions.setdefault(u['main_session'],dict(session=u['main_session'],project=u['project'],start=u['date'],cost=0.,
+                                                     turns=0,agents=0,tiers=collections.defaultdict(float),save_model=0.,save_effort=0.))
+        s['cost']+=u['cost'];s['save_model']+=u['save_model'];s['save_effort']+=u['save_effort']
+        s['tiers'][u['used_tier'] or 'other']+=u['cost']
+        if u['kind']=='turn':
+            s['turns']+=1
+            if include_titles and 'title' not in s and u['n'] and u.get('title'):s['title']=u['title']
+        else:s['agents']+=1
+    def top(pick,key,n=examples):
+        return [fit_example(u,include_titles,tz) for u in sorted((u for u in units if pick(u)),key=key,reverse=True)[:n]]
+    turns=[u for u in units if u['kind']=='turn'];agents=[u for u in units if u['kind']=='agent']
+    over=[u for u in units if u['verdict']=='over']
+    insights=[]
+    def add(iid,title,metric,detail,found):
+        insights.append(dict(id=iid,title=title,metric=metric,detail=detail,examples=found))
+    if over:
+        add('model-over','Work that a smaller model would have covered',
+            f"${sum(u['cost'] for u in over):,.0f} spent, about ${sum(u['save_model'] for u in over):,.0f} saved at the guide's model ({len(over):,} units)",
+            'Same requests repriced on the recommended model. Main threads are judged per session (the strongest model any '
+            'substantial turn needed), subagents per run. A smaller model can need more turns, so read this as an upper '
+            'bound and try it on one real task first.',
+            top(lambda u:u['verdict']=='over',lambda u:u['save_model']))
+    effort_over=[u for u in units if u['effort_over']]
+    if effort_over:
+        add('effort-over','Effort above what the guide suggests for the task',
+            f"${sum(u['cost'] for u in effort_over):,.0f} ran above the suggested effort; lowering it is worth about "
+            f"${sum(u['save_effort'] for u in effort_over):,.0f}",
+            'The guide measured Opus 5.5 at medium for about 70% of the cost of high (2.5 points lower) and xhigh at 2.5x '
+            'the cost of high (+1.4 points). Past high, it advises trying the next model up at a lower effort instead.',
+            top(lambda u:u['effort_over'],lambda u:u['save_effort']))
+    inherit=[u for u in agents if not u['explicit_model'] and u['verdict']=='over']
+    if inherit:
+        add('agent-inherit',"Subagents that ran on the session's big model with no model passed",
+            f"{len(inherit):,} runs, ${sum(u['cost'] for u in inherit):,.0f}; about ${sum(u['save_model'] for u in inherit):,.0f} saved on the guide's model",
+            "Search, reading and summary subagents are the guide's first place for Haiku or Sonnet: a wrong answer is "
+            'cheap to spot. Pass `model` on the spawn or set it in the agent file.',
+            top(lambda u:u['kind']=='agent' and not u['explicit_model'] and u['verdict']=='over',lambda u:u['save_model']))
+    under=[u for u in units if u['verdict']=='under' and u['cost']>=.05]
+    if under:
+        add('model-under','Work that may have been too hard for the model used',
+            f"{len(under):,} units, ${sum(u['cost'] for u in under):,.0f}",
+            "A quality risk, not a cost: check whether these needed rework. The guide's order is add a self-check, raise "
+            'effort one step, then go one model up at a lower effort.',
+            top(lambda u:u['verdict']=='under' and u['cost']>=.05,lambda u:u['cost']))
+    opus_xhigh=[u for u in units if u['effort'] in ('xhigh','max') and u['used_tier']=='opus']
+    if opus_xhigh:
+        add('opus-xhigh','Opus at xhigh or max',f"${sum(u['cost'] for u in opus_xhigh):,.0f} across {len(opus_xhigh):,} units",
+            "On the guide's benchmark Fable 5.2 at high matched Opus 5.5 at max for about half the cost per task. Where "
+            'Opus at high falls short, test Fable at medium or high before raising Opus further.',
+            top(lambda u:u['effort'] in ('xhigh','max') and u['used_tier']=='opus',lambda u:u['cost'],5))
+    if switches:
+        add('switches','Model switches in the middle of a session',
+            f"{len(switches):,} switches re-wrote {sum(s['tokens'] for s in switches)/1e6:.1f}M tokens of cache, about "
+            f"${sum(s['cost'] or 0 for s in switches):,.0f}",
+            'The first turn on a new model pays the cache-write price for the whole conversation. Switch at the start, '
+            'after /compact, or in a new session with a short written plan.',
+            sorted(switches,key=lambda s:s['cost'] or 0,reverse=True)[:5])
+    if cold:
+        add('cold-cache','Full cache rewrites after an idle gap',
+            f"{len(cold):,} rewrites, {sum(s['tokens'] for s in cold)/1e6:.1f}M tokens, about ${sum(s['cost'] or 0 for s in cold):,.0f}",
+            'Coming back to a large session after the cache expired pays for the whole context again. Compact before a '
+            'break, or start a new session with a short summary.',
+            sorted(cold,key=lambda s:s['cost'] or 0,reverse=True)[:5])
+    if big['calls'] and main_calls_cost:
+        add('big-context','Main-thread calls above 200k tokens of context',
+            f"{big['calls']:,} calls, ${big['cost']:,.0f} ({100*big['cost']/main_calls_cost:.0f}% of main-thread spend)",
+            'Context is re-sent on every turn: on Opus a turn costs about $0.03 in cache reads at 150k and $0.004 at 20k. '
+            "Keep the big model's context lean and push verbose reading to cheaper subagents.",[])
+    if haiku_long['calls']:
+        add('haiku-long','Haiku calls with a prompt above 100k tokens',f"{haiku_long['calls']:,} calls, ${haiku_long['cost']:,.2f}",
+            'Haiku 5.5 bills prompts over 100k at five times its base rate. Keep its prompts short, or compare the cost '
+            'per finished task with Sonnet.',[])
+    if fast['calls']:
+        add('fast-mode','Fast mode',f"{fast['calls']:,} calls, ${fast['cost']:,.2f} (priced at the fast rate)",
+            'Fast mode is the same model at a premium; it fits latency-sensitive interactive work only.',[])
+    if len(effort_changes)>=5:
+        share=sum(e['read_share'] for e in effort_changes)/len(effort_changes)
+        add('effort-changes','Effort changes inside a session',
+            f"{len(effort_changes):,} changes; the next call still read {100*share:.0f}% of its context from cache",
+            'Measured on your own sessions: unlike a model switch, changing effort did not force a full cache rewrite '
+            'when this share is high.',[])
+    listed=sorted(sessions.values(),key=lambda s:s['cost'],reverse=True)
+    for s in listed:s['tiers']=dict(s['tiers'])
+    dates=sorted(u['date'] for u in units)
+    return dict(period={'from':start or (dates[0] if dates else None),'to':end or (dates[-1] if dates else None)},
+                totals=dict(cost=total,units=len(units),turns=len(turns),agents=len(agents),sessions=len(sessions),
+                            main_cost=sum(u['cost'] for u in turns),agent_cost=sum(u['cost'] for u in agents),
+                            save_model=sum(u['save_model'] for u in units),save_effort=sum(u['save_effort'] for u in units),
+                            over_cost=sum(u['cost'] for u in over),requests=sum(u['calls'] for u in units),
+                            unpriced_requests=sum(u['unpriced'] for u in units)),
+                by_model=dict(sorted(by_model.items(),key=lambda kv:-kv[1])),
+                by_effort={e:by_effort[e] for e in sorted(by_effort,key=lambda e:(fit_erank(e)<0,fit_erank(e),e!='unknown',e))},
+                days={d:dict(days[d]) for d in sorted(days)},
+                classes=[c for c in classes.values() if c['units']],insights=insights,sessions=listed[:40],units=units)
+
+def fit_usd(value):
+    if value>=100:return f'${value:,.0f}'
+    return f'${value:,.2f}'
+
+def fit_used(u):return f"{u['used_tier'] or u['model']}/{u['effort']}"
+
+def fit_overview_text(summary,timezone):
+    t=summary['totals'];p=summary['period']
+    out=[f"Model fit, {p['from']} to {p['to']} ({timezone}): {fit_usd(t['cost'])} estimated across {t['sessions']:,} sessions "
+         f"({t['turns']:,} turns, {t['agents']:,} subagent runs). Main threads {fit_usd(t['main_cost'])}, subagents {fit_usd(t['agent_cost'])}.",
+         'By model: '+', '.join(f'{m} {fit_usd(v)}' for m,v in summary['by_model'].items()),
+         'By effort: '+', '.join(f'{e} {fit_usd(v)}' for e,v in summary['by_effort'].items()),
+         '',f"{'class':<12} {'guide':<14} {'units':>6} {'cost':>9} {'save model':>11} {'save effort':>12}"]
+    for c in sorted(summary['classes'],key=lambda c:-c['cost']):
+        out.append(f"{c['class']:<12} {c['rec_tier']+'/'+c['rec_effort']:<14} {c['units']:>6} {fit_usd(c['cost']):>9} "
+                   f"{fit_usd(c['save_model']):>11} {fit_usd(c['save_effort']):>12}")
+    out+=['','Findings']
+    for item in summary['insights']:out.append(f"- {item['title']}: {item['metric']}")
+    if not summary['insights']:out.append('- None in this period.')
+    if t['unpriced_requests']:out.append(f"- {t['unpriced_requests']:,} requests have no price and are left out of every cost here.")
+    out+=['',f"Could save about {fit_usd(t['save_model'])} by model and {fit_usd(t['save_effort'])} by effort of {fit_usd(t['cost'])}.",FIT_NOTE]
+    return '\n'.join(out)
+
+def fit_session_text(summary,session,timezone,tz,include_titles=False):
+    """Turn by turn for the main thread, subagent runs grouped, then the session's findings."""
+    t=summary['totals'];units=summary['units']
+    out=[f"Session {session}: {fit_usd(t['cost'])} estimated ({t['turns']:,} turns, {t['agents']:,} subagent runs), "
+         f"{summary['period']['from']} to {summary['period']['to']} ({timezone})",
+         'Models used: '+', '.join(f'{m} {fit_usd(v)}' for m,v in summary['by_model'].items()),
+         'Effort used: '+', '.join(f'{e} {fit_usd(v)}' for e,v in summary['by_effort'].items()),'','Turns (main thread)',
+         f"{'#':>3}  {'time':<16} {'used':<14} {'calls':>5} {'cost':>8}  {'class':<11} {'guide':<14} {'verdict':<12} could save"]
+    for u in units:
+        if u['kind']!='turn':continue
+        save=[]
+        if u['save_model']>=.01:save.append(fit_usd(u['save_model'])+' model')
+        if u['save_effort']>=.01:save.append(fit_usd(u['save_effort'])+' effort')
+        when=dt.datetime.fromtimestamp(u['ts'],dt.timezone.utc).astimezone(tz).strftime('%Y-%m-%d %H:%M')
+        out.append(f"{u['n']:>3}  {when:<16} {fit_used(u):<14} {u['calls']:>5} {fit_usd(u['cost']):>8}  {u['class']:<11} "
+                   f"{u['rec_tier']+'/'+u['rec_effort']:<14} {u['verdict']:<12} {', '.join(save) or '-'}")
+        what=u.get('title') if (include_titles or not u['n']) and u.get('title') else ''
+        out.append(f"     {what[:110]+'   ' if what else ''}[{u['signals']}]")
+    if not t['turns']:out.append('  (none here: no main-thread calls in this view, or the main transcript is missing)')
+    groups={}
+    for u in units:
+        if u['kind']!='agent':continue
+        g=groups.setdefault((u['agent_type'],fit_used(u),u['class'],u['rec_tier']+'/'+u['rec_effort'],u['verdict']),
+                            dict(runs=0,cost=0.,save=0.,explicit=0))
+        g['runs']+=1;g['cost']+=u['cost'];g['save']+=u['save_model']+u['save_effort'];g['explicit']+=bool(u['explicit_model'])
+    if groups:
+        out+=['','Subagents (grouped)',
+              f"{'type':<24} {'used':<14} {'runs':>4} {'cost':>8}  {'class':<11} {'guide':<14} {'verdict':<12} {'save':>8}  model passed"]
+        for (kind,used,cls,rec,verdict),g in sorted(groups.items(),key=lambda kv:-kv[1]['cost']):
+            out.append(f"{str(kind)[:24]:<24} {used:<14} {g['runs']:>4} {fit_usd(g['cost']):>8}  {cls:<11} {rec:<14} "
+                       f"{verdict:<12} {fit_usd(g['save']):>8}  {g['explicit']}/{g['runs']}")
+    if summary['insights']:
+        out+=['','Findings']+[f"- {item['title']}: {item['metric']}" for item in summary['insights']]
+    if t['unpriced_requests']:out.append(f"- {t['unpriced_requests']:,} requests have no price and are left out of every cost here.")
+    out+=['',f"Could save about {fit_usd(t['save_model'])} by model and {fit_usd(t['save_effort'])} by effort of {fit_usd(t['cost'])}.",FIT_NOTE]
+    return '\n'.join(out)
+
+def fit_find_session(analysis,wanted):
+    """A main session by full ID, bare ID or unique prefix; a clear SystemExit otherwise."""
+    wanted=str(wanted or '').strip();bare=wanted.split(':',1)[1] if wanted.startswith('Claude:') else wanted
+    if not bare:raise SystemExit('fit: pass a session ID or a unique prefix of one')
+    index=analysis['sessions']
+    if 'Claude:'+bare in index:return index['Claude:'+bare]
+    hits=sorted(key for key in index if key.split(':',1)[1].startswith(bare))
+    if len(hits)==1:return index[hits[0]]
+    if hits:
+        raise SystemExit(f'fit: session prefix {wanted!r} matches {len(hits):,} sessions: '+', '.join(h.split(':',1)[1] for h in hits[:5])
+                         +(', ...' if len(hits)>5 else '')+'; pass more of the ID')
+    agent=next((u for u in analysis['units'] if u['kind']=='agent' and u['session'] in (wanted,'Claude:'+bare)),None)
+    if agent:raise SystemExit(f"fit: {wanted} is a subagent run; pass its main session {agent['main_session']}")
+    raise SystemExit(f'fit: no Claude Code session {wanted!r} in the local transcripts')
+
+def fit_window(snapshot,args):
+    """The usage command's period rules: --days ending today, --from/--to, or --all-time."""
+    if args.days<1:raise ValueError('--days must be positive')
+    if args.all_time and (args.date_from or args.date_to):raise ValueError('--all-time cannot be combined with --from or --to')
+    dates=sorted(u['date'] for u in snapshot['model_fit']['units'])
+    end=dt.date.fromisoformat(args.date_to or (dates[-1] if args.all_time and dates else snapshot['as_of_date']))
+    start=dt.date.fromisoformat(args.date_from or (dates[0] if args.all_time and dates else (end-dt.timedelta(days=args.days-1)).isoformat()))
+    if start>end:raise ValueError('--from must be on or before --to')
+    return start.isoformat(),end.isoformat()
+
+def fit_command(snapshot,args):
+    """(JSON result, text) for `fit`: the period summary, or one session turn by turn with --session."""
+    analysis=snapshot['fit_analysis'];tz=report_timezone(args.timezone);timezone=snapshot['timezone']
+    filters=dict(project=args.project,role=args.role)
+    matching=''.join(f' --{key} {value}' for key,value in filters.items() if value)
+    matching=' matching'+matching if matching else ''
+    base=dict(schema_version=FIT_SCHEMA,version=VERSION,generated=snapshot['generated'],timezone=timezone,
+              price_as_of=snapshot['price_as_of'],filters=filters,guide=fit_guide(),note=FIT_NOTE)
+    if args.session:
+        entry=fit_find_session(analysis,args.session)
+        if not entry['units']:raise SystemExit(f"fit: session {entry['session']} has no recorded model calls yet")
+        summary=fit_summary(analysis,session=entry['session'],include_titles=args.include_titles,tz=tz,**filters)
+        if not summary['units']:raise SystemExit(f"fit: session {entry['session']} has no model calls{matching}")
+        units=[]
+        for u in summary['units']:
+            item={k:u.get(k) for k in ('kind','session','n','date','agent_type','class','signals','used_tier','model','effort',
+                                        'rec_tier','rec_effort','rec_effort_max','verdict','calls','unpriced','explicit_model')}
+            item.update(ts=int(u['ts']),cost=round(u['cost'],4),save_model=round(u['save_model'],4),save_effort=round(u['save_effort'],4))
+            if args.include_titles or (u['kind']=='turn' and not u['n']):item['title']=u.get('title')
+            units.append(item)
+        data=dict(base,session=entry['session'],project=entry['project'],**{k:v for k,v in summary.items() if k!='units'},units=units)
+        return fit_round(data),fit_session_text(summary,entry['session'],timezone,tz,args.include_titles)
+    start,end=fit_window(snapshot,args)
+    summary=fit_summary(analysis,start,end,include_titles=args.include_titles,tz=tz,**filters)
+    if not summary['units']:raise SystemExit(f'fit: no Claude Code model calls between {start} and {end}{matching}')
+    data=dict(base,**{k:v for k,v in summary.items() if k!='units'})
+    return fit_round(data),fit_overview_text(summary,timezone)
+
+def fit_filter_error(args):
+    """The one-line refusal for usage filters that fit or suggest cannot apply, else None.
+
+    fit applies --project and --role; it covers Claude Code only, so --provider may name
+    Claude and nothing else, and --model and --pool do not apply. suggest is about one
+    session and takes none of them.
+    """
+    given=[flag for flag,value in (('--provider',args.provider),('--model',args.model),('--project',args.project),
+                                   ('--role',args.role),('--pool',args.pool)) if value]
+    verb=lambda flags:' and '.join(flags)+(' does' if len(flags)==1 else ' do')
+    if args.command=='suggest':
+        return f'suggest: {verb(given)} not apply; it reports on one session (pass --session ID)' if given else None
+    if args.provider and args.provider.lower() not in ('claude','anthropic'):
+        return f'fit: model fit covers Claude Code only; --provider {args.provider} does not apply'
+    rejected=[flag for flag in given if flag in ('--model','--pool')]
+    if rejected:return f'fit: {verb(rejected)} not apply to model fit; narrow it with --project or --role'
+    return None
+
+def fit_settings(args):
+    """Model and effort defaults from Claude Code's settings.json; malformed parts are dropped."""
+    home=Path(args.home).expanduser() if args.home else Path.home()
+    claude=Path(args.claude_dir or (os.environ.get('CLAUDE_CONFIG_DIR') if not args.home else '') or home/'.claude').expanduser()
+    data=read_json_file(claude/'settings.json')
+    if not isinstance(data,dict):return {}
+    out={key:data[key] for key in ('model','effortLevel') if isinstance(data.get(key),str)}
+    per=data.get('modelSettings')
+    if isinstance(per,dict):
+        clean={str(m):{'effortLevel':v['effortLevel']} for m,v in per.items() if isinstance(v,dict) and isinstance(v.get('effortLevel'),str)}
+        if clean:out['modelSettings']=clean
+    return out
+
+def fit_rates(catalog,model,day,context=0):
+    """(input, cache read, 1h cache write) USD per million tokens, or None when the model has no price that day.
+
+    A prompt of `context` tokens above the rule's long-prompt threshold pays the rule's long-input multiplier.
+    """
+    resolved=_dated_rule(catalog,canonical_model(model),day)
+    if isinstance(resolved,str):return None
+    rule,(ip,cp,_wp,one,_op)=resolved
+    mult=1
+    if context and context>rule.get('long_threshold',float('inf')) and rule.get('long_input_multiplier'):
+        mult=float(rule['long_input_multiplier'])
+    return float(ip)*mult,float(cp)*mult,float(one)*mult
+
+def fit_guide_text(catalog,day):
+    lines=['Guide (start here; raise effort one step before moving up a model):']
+    for cid in FIT_CLASSES:
+        r=fit_rec(cid);effort=r['effort']+(f" then {r['effort_max']}" if r['effort_max']!=r['effort'] else '')
+        lines.append(f"  {cid:<12} {r['label']}: {FIT_LABELS[r['tier']]}, {effort}. {r['why']}")
+    money=lambda v:f'${v:.2f}' if v<1 else f'${v:g}'
+    prices=[]
+    for tier in FIT_TIERS:
+        resolved=_dated_rule(catalog,FIT_MODELS[tier],day)
+        if isinstance(resolved,str):prices.append(FIT_LABELS[tier]+' not priced in this catalog');continue
+        rule,(ip,cp,_wp,_one,op)=resolved
+        text=f'{FIT_LABELS[tier]} {money(float(ip))} / {money(float(op))} / {money(float(cp))}'
+        if rule.get('long_threshold') and rule.get('long_input_multiplier'):
+            text+=f" ({rule['long_input_multiplier']:g} times that above a {int(rule['long_threshold'])//1000}k prompt)"
+        prices.append(text)
+    lines+=['Prices per million tokens (input / output / cache read), from the local price catalog: '+', '.join(prices)+'.',
+            'Effort on Opus 5.5 relative to high: medium about 70% of the cost (2.5 points lower), low about a third '
+            '(8 points lower), xhigh 2.5 times the cost (+1.4 points). Past high, try the next model up at lower effort.',
+            'Modes: fast mode (Opus and Fable only, at a premium) for latency-sensitive interactive work; plan mode before '
+            'a large change; Haiku or Sonnet subagents for search, logs and summaries so the main context stays lean; a '
+            'lead with parallel workers only when the work is bigger than one context; where results can be checked '
+            'automatically, run at low and re-run only failures at high.',
+            "Switching model mid-session re-writes the whole cache and a smaller model cannot read the bigger model's "
+            'earlier reasoning: switch at the start, after /compact, or in a new session with a short plan.']
+    return '\n'.join(lines)
+
+def suggest_session(analysis,wanted):
+    """--session, else CLAUDE_SESSION_ID, else the newest session of the current directory."""
+    if wanted and ('${' in wanted or wanted in ('-','current')):wanted=None  # An unsubstituted skill placeholder.
+    wanted=wanted or os.environ.get('CLAUDE_SESSION_ID') or None
+    if wanted:return fit_find_session(analysis,wanted)
+    folder=fit_folder(re.sub(r'[^A-Za-z0-9]','-',os.getcwd()))
+    newest=lambda e:max([e['last'][0]['ts'] if e.get('last') else 0]+[p['ts'] or 0 for p in e['prompts']])
+    found=sorted((e for e in analysis['sessions'].values() if e['folder']==folder),key=newest)
+    if not found:raise SystemExit('suggest: no Claude Code session found for this directory; pass --session ID')
+    return found[-1]
+
+def suggest_command(snapshot,args):
+    """(JSON result, text): facts for choosing a model and effort for one session."""
+    analysis=snapshot['fit_analysis'];catalog=snapshot['fit_catalog']
+    entry=suggest_session(analysis,args.session);cfg=fit_settings(args)
+    day=int(time.time()//86400)
+    current=dict(session=entry['session'],project=entry['project'],settings=cfg)
+    if not entry.get('last'):
+        model=canonical_model(cfg['model']) if cfg.get('model') else None
+        effort=((cfg.get('modelSettings') or {}).get(model or '') or {}).get('effortLevel') or cfg.get('effortLevel')
+        current.update(model=model,tier=fit_tier(model),effort=effort,context_tokens=None,source='settings (no reply recorded yet)')
+    else:
+        row,facts=entry['last'];model=canonical_model(row['model']);tier=fit_tier(model);context=row['input']
+        effort=row.get('effort') if row.get('effort') not in (None,'unknown') else facts.get('effort')
+        rates=fit_rates(catalog,model,int(row['ts']//86400),context)
+        switch={}
+        for other in FIT_TIERS:
+            if other==tier:continue
+            alternative=fit_rates(catalog,FIT_MODELS[other],day,context)
+            # One-time cost of the first call after a switch: the whole context is written to the new
+            # model's cache at the 1-hour rate, which main threads request.
+            switch[other]=round(context*alternative[2]/1e6,2) if alternative else None
+        current.update(model=model,tier=tier,effort=effort,context_tokens=context,source='last recorded reply',
+                       cost_so_far=round(sum(u['cost'] for u in entry['units']),2),
+                       unpriced_requests=sum(u['unpriced'] for u in entry['units']),
+                       cache_read_per_call_usd=round(context*rates[1]/1e6,4) if rates else None,switch_now_usd=switch)
+    turns=[u for u in entry['units'] if u['kind']=='turn']
+    whole=None
+    if turns:
+        fold=dict(kind='turn',calls=sum(t['calls'] for t in turns),n_files=sum(t['n_files'] for t in turns),
+                  n_tools=sum(t['n_tools'] for t in turns),n_agents=sum(t['n_agents'] for t in turns),
+                  workflow=any(t['workflow'] for t in turns),n_web=sum(t['n_web'] for t in turns),
+                  n_ui=sum(t['n_ui'] for t in turns),docs_only=all(t['docs_only'] for t in turns),
+                  big=any(t.get('big') for t in turns),hard=any(t.get('hard') for t in turns))
+        cls,signals=fit_classify(fold);whole=dict(fit_rec(cls),signals=signals)
+    recent=[]
+    for t in turns[-8:]:
+        item={k:t[k] for k in ('n','class','signals','used_tier','model','effort','rec_tier','rec_effort','rec_effort_max','verdict','calls')}
+        item['cost']=round(t['cost'],2)
+        if args.include_titles or not t['n']:item['title']=t.get('title')
+        recent.append(item)
+    data=dict(schema_version=FIT_SCHEMA,version=VERSION,generated=snapshot['generated'],current=current,
+              session_so_far=whole,turns=recent,guide=fit_guide(),note=FIT_NOTE)
+    return data,suggest_text(data,fit_guide_text(catalog,day))
+
+def suggest_text(data,guide):
+    d=data['current'];cfg=d['settings']
+    lines=[f"Session {d['session']}",f"Now: {d.get('model') or 'unknown'} at effort {d.get('effort') or 'unknown'} ({d['source']})"]
+    if d.get('context_tokens'):
+        read=d['cache_read_per_call_usd']
+        lines.append(f"Context: {d['context_tokens']:,} tokens; each further call re-reads it"
+                     +(f' for about ${read:.3f}' if read is not None else ' (no price for this model)')
+                     +f". Spent so far: ${d['cost_so_far']:.2f} (estimate"
+                     +(f", {d['unpriced_requests']:,} requests unpriced" if d['unpriced_requests'] else '')+').')
+        switch=', '.join(f'{t} ${v:.2f}' if v is not None else f'{t} unpriced' for t,v in d['switch_now_usd'].items())
+        lines.append(f'Switching model now re-writes the whole context once: {switch}. After /compact or in a new session '
+                     'it costs a fraction of that.')
+    per=', '.join(f"{m.replace('claude-','')} {v.get('effortLevel')}" for m,v in (cfg.get('modelSettings') or {}).items())
+    lines.append(f"Defaults in settings.json: model {cfg.get('model') or 'not set'}; effort {cfg.get('effortLevel') or 'not set'}"
+                 +(f', overridden per model: {per}' if per else ''))
+    lines.append('\nRecent turns (heuristic class; you know the conversation better):')
+    for t in data['turns']:
+        lines.append(f"  {t['n']:>2}. "+(t.get('title') or f"turn {t['n']}")[:140])
+        lines.append(f"      did: {t['signals']}; used {t['used_tier'] or t['model']}/{t['effort']}; heuristic class {t['class']} -> {t['rec_tier']}/{t['rec_effort']}")
+    if not data['turns']:lines.append('  (no finished turn recorded yet: classify from the conversation itself)')
+    whole=data['session_so_far']
+    if whole:
+        lines.append(f"\nSession so far by the heuristic: {whole['label']} ({whole['signals']}) -> {FIT_LABELS[whole['tier']]}, "
+                     f"effort {whole['effort']}"+(f" then {whole['effort_max']}" if whole['effort_max']!=whole['effort'] else ''))
+    return '\n'.join(lines)+'\n\n'+guide
 
 EVIDENCE_SCHEMA = 1
 MEASUREMENT_BASIS = {
@@ -1008,6 +1936,10 @@ class ParseCache:
                        (key,fingerprint,encode(body),encode(result.get('events',[]))))
     def parse(self,provider,path,titles,stats,want_events=True):
         st=path.stat();fp=f'{PARSER_VERSION}:{int(titles)}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}'
+        if provider!='Codex' and 'subagents' in path.parts:
+            # Model fit reads the run's agent-<id>.meta.json, which can be written after the transcript.
+            try:meta=path.with_name(path.stem+'.meta.json').stat();fp+=f':{meta.st_size}:{meta.st_mtime_ns}'
+            except OSError:fp+=':-'
         key=str(path)
         cached=self.lookup(key,want_events)
         if cached and cached[0]==fp:
@@ -1065,13 +1997,15 @@ def shared_usage_enabled(args):
     return not any(getattr(args,key,None) for key in
         ('home','codex_dir','claude_dir','no_cowork','timezone','prices','managed_session'))
 
-LIVE_PREFIX='globalThis.aisadLiveRevision?.('
+LIVE_PREFIX='globalThis.asiLiveRevision?.('
+LEGACY_LIVE_PREFIX='globalThis.aisadLiveRevision?.('  # Written by 1.x (AISAD); read, never written.
 
 def read_shared_commit(output):
     try:
         text=(Path(output)/'usage-live.js').read_text()
-        if not text.startswith(LIVE_PREFIX) or not text.endswith(');'):return {}
-        value=json.loads(text[len(LIVE_PREFIX):-2])
+        prefix=next((item for item in (LIVE_PREFIX,LEGACY_LIVE_PREFIX) if text.startswith(item)),None)
+        if prefix is None or not text.endswith(');'):return {}
+        value=json.loads(text[len(prefix):-2])
         revision=value.get('revision')
         if value.get('schema_version')!=1 or not isinstance(revision,str) or not re.fullmatch(r'[0-9]{20}',revision):return {}
         return value
@@ -1107,7 +2041,9 @@ def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
             revision=f'{time.time_ns():020d}'
             fields=('version','generated','as_of_date','timezone','price_as_of','price_sources','price_basis',
                     'history_coverage','summary','quality','scan','rows','request_stats','budgets','grok_records',
-                    'unknown_models','titles','measurement_basis','session_details','event_previews','evidence_generated')
+                    'unknown_models','titles','measurement_basis','session_details','event_previews','evidence_generated',
+                    # Open dashboards replace their whole dataset with this one on a live update.
+                    'model_fit')
             data={key:snapshot[key] for key in fields if key in snapshot}
             if not data.get('evidence_generated') and previous:
                 for key in ('session_details','event_previews','evidence_generated'):
@@ -1122,7 +2058,7 @@ def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
             packed=dict(encoding='gzip-base64',data=base64.b64encode(
                 gzip.compress(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode(),mtime=0)).decode())
             atom_write(output/'usage-live-data.js',
-                ('globalThis.aisadLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
+                ('globalThis.asiLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
             if previous and read_json_file(output/SHARED_USAGE).get('revision')==previous['revision']:
                 os.replace(output/SHARED_USAGE,output/'usage-state.previous.json')
             atom_json(output/SHARED_USAGE,value)
@@ -1143,7 +2079,7 @@ def make_snapshot(args, dashboard=True, include_requests=False):
     output=Path(args.output).expanduser().resolve();output.mkdir(parents=True,exist_ok=True)
     catalog=load_prices(args.prices,output)
     q=collections.Counter();stats=collections.Counter();codex,files,roots=discover(args)
-    sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[]
+    sessions=registry(codex,args.include_titles,q);rows=[];reports={};events=[];source_files=[];fit_sessions={}
     evidence=evidence_wanted(args)
     cache=ParseCache(output/'parse-cache.sqlite')
     if not evidence:cache.prefetch()
@@ -1155,6 +2091,7 @@ def make_snapshot(args, dashboard=True, include_requests=False):
             q.update(r['quality']);rows.extend(r['requests'])
             source_files.append(dict(id=evidence_id(str(path.resolve())),path=str(path),size=st.st_size,mtime_ns=st.st_mtime_ns))
             if evidence:events.extend(r.get('events',[]))
+            if isinstance(r.get('fit'),dict):fit_sessions[r['fit']['session']]=r['fit']
             for s in r['sessions']:
                 previous=sessions.get(s['id'],{})
                 # Registry title and role enrich legacy traces; model remains per-request.
@@ -1173,6 +2110,12 @@ def make_snapshot(args, dashboard=True, include_requests=False):
         r.update(price_request(r,catalog))
         moment=dt.datetime.fromtimestamp(r['ts'],dt.timezone.utc).astimezone(tz)
         r['date']=moment.date().isoformat()
+    # Model-fit facts leave the rows here, so every existing output keeps its shape.
+    fit_pairs=[]
+    for r in rows:
+        facts=r.pop('fit',None)
+        if isinstance(facts,dict) and r['provider']=='Claude':fit_pairs.append((r,facts))
+    fit=fit_analyze(fit_pairs,fit_sessions,catalog,args.include_titles)
     request_stats=request_statistics(rows,getattr(args,'managed_session',[]))
     session_details=[];tool_calls=[];turns=[]
     if evidence:
@@ -1224,7 +2167,8 @@ def make_snapshot(args, dashboard=True, include_requests=False):
                   reports=list(reports.values()),request_stats=request_stats,
                   evidence_schema_version=EVIDENCE_SCHEMA,measurement_basis=MEASUREMENT_BASIS,
                   session_details=session_details,
-                  budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)))
+                  budgets=dict(interactive=getattr(args,'budget',None),managed=getattr(args,'managed_budget',None)),
+                  model_fit=fit_snapshot(fit,args.include_titles))
     snapshot['sync_revision']=revision
     snapshot['live_updates']=shared_usage_enabled(args)
     if evidence:snapshot['evidence_generated']=snapshot['generated']
@@ -1245,7 +2189,8 @@ def make_snapshot(args, dashboard=True, include_requests=False):
     if getattr(args,'include_events',False) or args.command in ('collect','sessions','session'):
         snapshot.update(events=events,tool_calls=tool_calls,turns=turns,source_files=source_files)
     publish_shared_usage(snapshot,args,revision)
-    return dict(snapshot,requests=rows) if include_requests else snapshot
+    # The full model-fit analysis keeps request references; it stays in memory for fit and suggest.
+    return dict(snapshot,requests=rows,fit_analysis=fit,fit_catalog=catalog) if include_requests else snapshot
 
 def usage_totals(rows):
     fields={'input_tokens':'input','output_tokens':'output','total_tokens':'total',
@@ -1630,7 +2575,7 @@ def forecast_period(days,first,start,end,quantile):
 def forecast_ledger_read(output):
     path=Path(output)/FORECAST_LEDGER;data=read_json_file(path)
     if data and (not isinstance(data,dict) or data.get('schema_version')!=1):
-        raise ValueError('Unsupported forecast ledger; preserve this file and use a compatible AISAD version: '+str(path))
+        raise ValueError('Unsupported forecast ledger; preserve this file and use a compatible ASI version: '+str(path))
     entries=data.get('entries') if data else {}
     return path,entries if isinstance(entries,dict) else {}
 
@@ -2053,11 +2998,15 @@ def ui_cache_key(args,color):
     options={key:value for key,value in vars(args).items()}
     return hashlib.sha256(json.dumps([VERSION,bool(color),options],sort_keys=True,default=str).encode()).hexdigest()
 
+def setting(name,default=None):
+    """ASI_<name>, else the 1.x AISAD_<name>; an empty value counts as unset."""
+    return next((value for value in (os.environ.get('ASI_'+name),os.environ.get('AISAD_'+name)) if value),default)
+
 def ink_runtime():
-    if os.environ.get('AISAD_TERMINAL_UI')=='python':return None
+    if setting('TERMINAL_UI')=='python':return None
     runtime=shutil.which('bun')
     root=Path(__file__).resolve().parent
-    bundle=next((path for path in (root/'ui/aisad-ui.mjs',root/'ui/dist/aisad-ui.mjs') if path.is_file()),None)
+    bundle=next((path for path in (root/'ui/asi-ui.mjs',root/'ui/dist/asi-ui.mjs') if path.is_file()),None)
     return (runtime,bundle) if runtime and bundle else None
 
 def run_ink(found,source,state,color,poll=None):
@@ -2099,7 +3048,7 @@ def ink_session(found,args,color,dataset,snapshot=None):
     import threading
     output=Path(args.output).expanduser().resolve();key=ui_cache_key(args,color)
     latest=dict(snapshot=snapshot,dataset=dataset,revision='');worker=[None]
-    with tempfile.TemporaryDirectory(prefix='aisad-ui-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='asi-ui-') as temporary:
         directory=Path(temporary);source=directory/'aggregates.json';state=directory/'state.json'
         request=directory/'refresh.request'
         atom_json(source,dict(dataset,refresh=True,**({} if snapshot is not None else {'stale':True})))
@@ -2121,7 +3070,7 @@ def ink_session(found,args,color,dataset,snapshot=None):
             with contextlib.suppress(OSError):publish(latest['dataset'])
         def start():
             if worker[0] is None or not worker[0].is_alive():
-                worker[0]=threading.Thread(target=refresh,name='aisad-refresh',daemon=True);worker[0].start()
+                worker[0]=threading.Thread(target=refresh,name='asi-refresh',daemon=True);worker[0].start()
         signature=[None]
         def follow_shared():
             if not shared_usage_enabled(args):return
@@ -2439,7 +3388,7 @@ def statusline_text(result,color=False):
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
-<title>AISAD · Usage statistics</title><style>
+<title>ASI · Usage statistics</title><style>
 :root{color-scheme:light;--bg:#fff;--card:#fff;--ink:#000;--muted:#6b6b6b;--line:#e2e2e2;--accent:#000;--shade:#f6f6f6;--previous:#afafaf;--green:#0e8345;--green-bg:#eaf6ed;--orange:#9f6402;--red:#de1135;--focus:#276ef1}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#141414;--card:#1f1f1f;--ink:#fff;--muted:#afafaf;--line:#3d3d3d;--accent:#eee;--shade:#292929;--previous:#6b6b6b;--green:#66d19e;--green-bg:#163526;--orange:#ffc043;--red:#ff8f9e;--focus:#a0bff8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px Arial,Helvetica,sans-serif;line-height:1.5}main{max-width:1536px;margin:auto;padding:32px 40px 48px}header{display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line);padding-bottom:22px}.brand{display:flex;gap:20px;align-items:center}.wordmark{font-size:27px;font-weight:800;letter-spacing:-1.3px;border-right:1px solid var(--line);padding-right:20px}.eyebrow{font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);font-weight:600}h1{font-size:25px;line-height:1.2;letter-spacing:-.8px;margin:3px 0 0}h2{font-size:18px;letter-spacing:-.4px;margin:0}h3{font-size:16px;margin:0 0 8px}p{margin:8px 0}.muted,small{color:var(--muted)}small{font-size:12px}.header-tools{display:flex;align-items:center;gap:12px}.badge,.tag{display:inline-flex;align-items:center;gap:6px;border-radius:6px;background:var(--shade);padding:5px 9px;font-size:12px;white-space:nowrap}.badge:before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}button,select,input{font:inherit;color:var(--ink);border:1px solid transparent;background:var(--shade);border-radius:8px;min-height:40px;padding:9px 12px}button{cursor:pointer;font-weight:500}button:hover,select:hover{background:var(--line)}button:disabled{cursor:default;opacity:.4}button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}select{max-width:220px}a{color:inherit;text-underline-offset:3px}label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}label select,label input{color:var(--ink);font-size:13px}.tabs{display:flex;gap:8px;padding:24px 0 20px;overflow:auto}.tabs button{white-space:nowrap;border-radius:30px;padding:9px 18px;background:var(--shade)}.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}.count{font-size:11px;opacity:.65;margin-left:5px}.filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:16px;background:var(--shade);border-radius:12px}.filters select,.filters input,.filters button{background:var(--card);border-color:var(--line)}.filters label{flex:1;min-width:118px}.filters label:first-child{flex:1.1}.filters select,.filters input{width:100%;max-width:none;min-width:0}.filters label.dates{flex:.9}.comparison{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:16px 0 12px}.comparison p{margin:0;font-size:12px;color:var(--muted);max-width:1100px}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card,.panel{border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0;background:var(--card)}.card{padding:20px 18px}.card label{display:block;color:var(--muted);font-size:13px}.value{font-size:29px;letter-spacing:-1.1px;line-height:1.2;font-weight:600;margin:12px 0 8px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.delta{display:block;border-top:1px solid var(--line);padding-top:10px;margin-top:16px;font-size:12px;color:var(--muted)}.usage-strip{display:flex;gap:24px;align-items:center;flex-wrap:wrap;margin:16px 0;font-size:12px;color:var(--muted)}.usage-strip b{color:var(--ink);font-weight:600}.money-note{font-size:11px;color:var(--muted);margin:10px 0 20px}.grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin:16px 0}.grid.equal{grid-template-columns:1fr 1fr}.tools{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.tools h2{margin:0}.tools p{font-size:12px;color:var(--muted)}.wide{margin-top:16px}.panel-intro{color:var(--muted);font-size:12px;margin:6px 0 18px}.barrow{display:grid;grid-template-columns:140px 1fr 90px;align-items:center;gap:12px;margin:14px 0}.barlabel{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bartrack{height:8px;background:var(--shade);border-radius:3px;overflow:hidden}.barfill{height:100%;background:var(--accent);border-radius:3px}.barvalue{text-align:right;font-size:12px;font-variant-numeric:tabular-nums}svg{display:block;width:100%;height:auto;max-height:300px;overflow:visible}.chart-text{fill:var(--muted);font-size:11px}.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:11px;color:var(--muted);margin:10px 0}.dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:var(--accent)}.dot.previous{background:var(--previous)}.table-wrap{overflow:auto;max-height:660px}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{white-space:nowrap;text-align:right;padding:13px 12px;border-bottom:1px solid var(--line);font-size:12px}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--card);color:var(--muted);font-weight:500}td:first-child{max-width:300px;overflow:hidden;text-overflow:ellipsis}th button{padding:0;min-height:0;border-radius:0;background:none;color:var(--muted);font-size:12px}.provider-button,.session-button{background:none;padding:0;min-height:0;color:inherit;border-radius:2px;font:inherit;text-align:left;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:4px}.provider-button:hover,.session-button:hover{background:none;text-decoration-color:var(--ink)}.empty{padding:40px 16px;text-align:center;color:var(--muted)}.empty h3{color:var(--ink)}.pool-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.pool-card+.pool-card{border-left:1px solid var(--line);padding-left:24px}.pool-card strong{font-size:25px;font-weight:600;letter-spacing:-.7px}.pool-track{height:6px;border-radius:3px;background:var(--shade);margin:14px 0 8px;overflow:hidden}.pool-track span{display:block;background:var(--ink);height:100%}.nudge{color:var(--orange);font-size:12px}.mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:16px 0}.mini-grid .value{font-size:26px}.mini-grid .card{background:var(--shade);border:0}.coverage{font-size:12px;color:var(--muted)}details{margin-top:20px}summary{cursor:pointer;font-weight:600}details p,details li{color:var(--muted);overflow-wrap:anywhere;font-size:13px;max-width:1100px}footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:24px;font-size:11px;color:var(--muted)}[hidden]{display:none!important}dialog{width:min(1100px,calc(100% - 32px));max-height:90vh;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);padding:28px}dialog::backdrop{background:#0008}dialog .tools{position:sticky;top:-28px;background:var(--card);padding-top:4px;z-index:2}dialog h2{overflow-wrap:anywhere}#session-caption{overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
@@ -2482,17 +3431,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 .barlabel button{background:none;padding:0;min-height:0;font:inherit;text-align:left;border-radius:2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
 @media(max-width:760px){.calendar-totals{gap:12px}.calendar-total strong{font-size:21px}.calendar-total small{font-size:10px}}
 @media(max-width:420px){.calendar-totals{gap:10px}.calendar-total strong{font-size:18px}.section-heading small{max-width:100%}}
+
+/* Model fit: a colour follows the model tier or the saving it stands for, never its rank. */
+:root{--tier-fable:#2a78d6;--tier-opus:#eb6834;--tier-sonnet:#1baf7a;--tier-haiku:#eda100;--tier-other:#8a8a8a;--fit-kept:#b8b8b8;--fit-save-model:#6250d6;--fit-save-effort:#e87ba4;--fit-shade:0,0,0}
+:root[data-theme="dark"]{--tier-fable:#3987e5;--tier-opus:#d95926;--tier-sonnet:#199e70;--tier-haiku:#c98500;--tier-other:#8f8f8f;--fit-kept:#5e5e5e;--fit-save-model:#9085e9;--fit-save-effort:#d55181;--fit-shade:255,255,255}
+.fit-scope{margin:14px 0 12px;color:var(--muted)}
+#fit-cards .card small{display:block}
+.fit-legend{margin:0 0 12px;gap:6px 18px;font-size:12px}.fit-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.fit-chart{min-height:120px}.fit-chart svg{max-height:none}
+.fit-hit{fill:transparent;outline:none}.fit-hit:hover,.fit-hit:focus{fill:var(--ink);fill-opacity:.06}.fit-hit:focus-visible{stroke:var(--focus);stroke-width:2}
+.fit-table-view{margin-top:14px}.fit-table-view summary{font-weight:500;font-size:12px;color:var(--muted)}
+.fit-bars{display:grid;grid-template-columns:minmax(150px,300px) minmax(0,1fr);gap:14px 18px;align-items:center}
+.fit-name{min-width:0;font-size:13px;line-height:1.35}.fit-name small{display:block;font-size:11px;margin-top:2px}
+.fit-track{display:flex;gap:8px;align-items:center;border-radius:4px;min-width:0;min-height:22px}
+.fit-track:focus{outline:none}.fit-track:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.fit-stack{display:flex;flex:0 1 auto;gap:2px;height:16px;min-width:0}.fit-seg{flex:0 1 auto;height:100%;min-width:2px}.fit-seg:last-child{border-radius:0 3px 3px 0}
+.fit-track:hover .fit-stack,.fit-track:focus .fit-stack{filter:brightness(1.08)}
+.fit-val{flex:none;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+#fit-efforts{grid-template-columns:minmax(90px,150px) minmax(0,1fr)}
+.fit-grid{grid-template-columns:1.5fr 1fr}
+.fit-matrix th i,.fit-key{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+.fit-matrix td.fit-cell{min-width:72px}.fit-matrix td.fit-rec{box-shadow:inset 0 0 0 2px var(--ink)}
+td.fit-wrap,th.fit-wrap{white-space:normal;text-align:left;min-width:180px;max-width:320px;overflow-wrap:anywhere}
+td.fit-left,th.fit-left,th.fit-what{text-align:left}
+.fit-finding td,#fit-sessions td{padding-top:9px;padding-bottom:9px}
+td.fit-what{white-space:normal;text-align:left;min-width:220px;max-width:420px;overflow-wrap:anywhere}
+td.fit-what small{display:block;margin-top:2px;font-size:11px}
+.fit-what .session-button{white-space:normal;overflow-wrap:anywhere;font-size:12px}
+.fit-finding{border-top:1px solid var(--line);padding:18px 0 6px}.fit-finding:first-child{border-top:0;padding-top:2px}
+.fit-finding h3{font-size:14px;margin:0 0 4px}.fit-metric{font-weight:600;margin:2px 0;font-variant-numeric:tabular-nums}
+.fit-detail{color:var(--muted);font-size:12px;margin:4px 0 10px;max-width:90ch}
+.fit-finding .table-wrap{max-height:none}
+.fit-tip{position:fixed;z-index:20;pointer-events:none;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:0 6px 24px #0003;max-width:300px}
+.fit-tip-title{color:var(--muted);margin-bottom:4px}.fit-tip-row{display:flex;gap:14px;justify-content:space-between;align-items:center;white-space:nowrap}.fit-tip-row b{font-weight:600;font-variant-numeric:tabular-nums}
+.fit-tip-row i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+@media(max-width:1150px){.fit-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.fit-bars,#fit-efforts{grid-template-columns:minmax(0,1fr);gap:4px}.fit-track{margin-bottom:12px}td.fit-wrap,th.fit-wrap{min-width:140px}td.fit-what{min-width:170px}}
 </style></head><body><main>
-<header><div class="brand"><span class="wordmark">AISAD</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1><p id="subtitle" class="snapshot-caption"></p></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
+<header><div class="brand"><span class="wordmark">ASI</span><div><div class="eyebrow">Understand your agent spend</div><h1>Usage statistics</h1><p id="subtitle" class="snapshot-caption"></p></div></div><div class="header-tools"><span class="badge">This device only</span><button id="theme" aria-label="Switch to dark theme">Dark theme</button></div></header>
 <section id="saved-summary" class="panel wide">__SAVED_SUMMARY__</section>
 <div id="interactive-dashboard" hidden>
-<p id="demo-notice" class="panel-intro" hidden><strong>Synthetic demo data.</strong> These sample figures are for the README preview. Run AISAD locally to see this device’s usage.</p>
+<p id="demo-notice" class="panel-intro" hidden><strong>Synthetic demo data.</strong> These sample figures are for the README preview. Run ASI locally to see this device’s usage.</p>
 <section id="calendar-spend" class="calendar-spend" aria-label="Calendar spend" hidden>
 <div class="section-heading"><h2>Spend</h2><small>All Claude + Codex usage · not affected by filters</small></div>
 <div id="calendar-totals" class="calendar-totals"></div>
 <div id="monthly-target" class="monthly-target" hidden><div><span id="monthly-target-label"></span><span id="monthly-target-value"></span></div><progress id="monthly-target-bar" max="100" value="0" aria-label="Monthly spending limit"></progress></div>
 </section>
-<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button></nav>
+<nav class="tabs" role="tablist" aria-label="Usage views"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">Charts</button><button id="tab-sessions" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-tab="sessions">Sessions <span class="count" id="session-count"></span></button><button id="tab-context" role="tab" aria-selected="false" aria-controls="view-context" tabindex="-1" data-tab="context">Context</button><button id="tab-cache" role="tab" aria-selected="false" aria-controls="view-cache" tabindex="-1" data-tab="cache">Cache usage</button><button id="tab-fit" role="tab" aria-selected="false" aria-controls="view-fit" tabindex="-1" data-tab="fit">Model fit</button></nav>
 <div class="filters">
 <div class="filter-bar"><label>Period<select id="period"><option value="7">Last 7 days</option><option value="today">Today</option><option value="this-week">This week (Mon–today)</option><option value="this-month">This month</option><option value="last-week">Last week (Mon–Sun)</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Custom dates</option></select></label>
 <div id="custom-dates" class="date-fields" hidden><label>From<input type="date" id="from"></label><label>To<input type="date" id="to"></label></div>
@@ -2510,9 +3495,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions" class="panel" hidden><div class="tools"><h2>Sessions</h2><div><input id="search" type="search" placeholder="Search by ID or title" aria-label="Search the sessions table only"> <select id="session-sort" aria-label="Sort sessions"><option value="cost">Highest cost</option><option value="max_context">Largest input</option><option value="requests">Most requests</option></select></div></div><p class="panel-intro">Open a session to inspect its usage and recorded events within the selected filters. This list also includes event-only sessions; the Charts count includes sessions with usage records.</p><div class="table-wrap"><table id="sessions-table" aria-label="Sessions"></table></div><div class="tools" style="margin-top:16px"><small id="page-info" aria-live="polite"></small><div><button id="prev" aria-label="Previous sessions page">←</button> <button id="next" aria-label="Next sessions page">→</button></div></div></section>
 <section id="view-context" role="tabpanel" aria-labelledby="tab-context" hidden><div class="mini-grid" id="context-cards"></div><section class="panel"><h2>What these traces establish</h2><div id="measurement-basis"></div><p class="panel-intro">Input includes cached tokens. A cache hit changes price, not context size. Compaction does not establish which original blocks survive in the summary.</p></section><div class="grid equal"><section class="panel"><h2>Largest recorded input</h2><p class="panel-intro">Peak input per session, including cached input.</p><div id="context-chart"></div></section><section class="panel"><h2>Tool payload footprint</h2><p class="panel-intro">Result bytes recorded in local logs. Billed tokens and repeated inclusion are unavailable.</p><div id="tool-chart"></div><p class="panel-intro" id="tool-coverage"></p></section></div></section>
 <section id="view-cache" role="tabpanel" aria-labelledby="tab-cache" hidden><div class="cards" id="cache-cards"></div><section class="panel"><h2>Cache by model</h2><p class="panel-intro">Uncached input + cache reads + cache writes equals total input. Costs include priced requests only; unknown cache-write TTLs produce ranges.</p><div class="table-wrap"><table id="cache-table" aria-label="Cache by model"></table></div></section></section>
+<section id="view-fit" role="tabpanel" aria-labelledby="tab-fit" hidden>
+<div id="fit-empty" class="panel empty" hidden><h3 id="fit-empty-title"></h3><p id="fit-empty-text"></p></div>
+<div id="fit-content">
+<p id="fit-scope" class="panel-intro fit-scope"></p>
+<div class="cards" id="fit-cards"></div>
+<section class="panel wide"><div class="tools"><h2>Estimated spend per day by model</h2><small>Hover or focus a day for its values</small></div><div class="legend fit-legend" id="fit-days-legend"></div><div id="fit-days" class="fit-chart"></div><details class="fit-table-view"><summary>Table view</summary><div class="table-wrap" id="fit-days-table"></div></details></section>
+<section class="panel wide"><h2>Spend by task class</h2><p class="panel-intro">Each bar is what a class cost. The coloured parts are the rough saving from the guide’s model and from its effort level (upper bounds).</p><div class="legend fit-legend" id="fit-classes-legend"></div><div class="fit-bars" id="fit-classes"></div><details class="fit-table-view"><summary>Table view</summary><div class="table-wrap" id="fit-classes-table"></div></details></section>
+<div class="grid fit-grid"><section class="panel"><h2>Model used per task class</h2><p class="panel-intro">Estimated spend by the model that did the work; darker cells cost more. The outlined cell is the model the guide starts the class on.</p><div class="table-wrap" id="fit-matrix"></div></section><section class="panel"><h2>Spend by effort</h2><p class="panel-intro">Each turn or subagent run counts under the effort that carried most of its cost.</p><div class="fit-bars" id="fit-efforts"></div></section></div>
+<section class="panel wide"><h2>Findings</h2><p class="panel-intro">Each with its largest examples. Select an example to open its session.</p><div id="fit-findings"></div></section>
+<section class="panel wide"><div class="tools"><h2>Most expensive sessions</h2><small id="fit-sessions-caption"></small></div><div id="fit-sessions"></div></section>
+<p id="fit-note" class="money-note"></p>
+</div></section>
 <details class="pricing-details" id="grok-usage" hidden><summary id="grok-title">Grok reported usage</summary><p id="grok-note"></p></details>
 <footer><span id="footer"></span><details class="method-details"><summary>About the data</summary><div id="method"></div><p class="coverage" id="coverage"></p></details></footer></div></main>
 <dialog id="session-dialog" aria-labelledby="session-title"><div class="tools"><div><div class="eyebrow">Session detail</div><h2 id="session-title"></h2></div><button id="close-session" aria-label="Close session detail">Close ×</button></div><p class="panel-intro" id="session-caption"></p><div class="mini-grid" id="session-cards"></div><div id="session-lifecycle" class="panel-intro"></div><h3>Input per usage observation</h3><div id="session-timeline"></div><section id="observation-detail" class="panel" hidden></section><h3 style="margin-top:24px">Recorded events</h3><p id="events-note" class="panel-intro"></p><div class="table-wrap"><table id="events-table" aria-label="Recorded events"></table></div></dialog>
+<div id="fit-tip" class="fit-tip" aria-hidden="true" hidden></div>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';
 async function loadSnapshot(node){
@@ -2532,7 +3530,7 @@ const shiftDate=(date,days)=>{const value=new Date(date+'T00:00:00Z');value.setU
 const shortDate=date=>new Date(date+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
 const rangeLabel=range=>range?range.from+' – '+range.to:'';
 const providerLabel=name=>({'Codex':'OpenAI · Codex','Claude':'Anthropic · Claude'}[name]||name);
-let page=0,modelSort='cost',ascending=false,activeSession=null;
+let page=0,modelSort='cost',ascending=false,activeSession=null,activeTab='overview';
 let allDates=[...D.rows,...(D.grok_records||[]),...(D.session_details||[]).flatMap(s=>(s.observed_dates||[]).map(date=>({date})))].map(r=>r.date).filter(Boolean).sort();
 let today=D.as_of_date||D.generated.slice(0,10),first=allDates[0]||shiftDate(today,-6),last=allDates[allDates.length-1]||today;
 function setPeriod(value){
@@ -2693,6 +3691,9 @@ function sessionsTable(rs){
 }
 function showTab(name){
     for(const button of document.querySelectorAll('[data-tab]')){const active=button.dataset.tab===name;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.getAttribute('aria-controls')).hidden=!active}
+    activeTab=name;
+    // The Model fit view measures its chart width, so it renders only while shown.
+    if(name==='fit')renderFit();else fitHideTip();
 }
 function openSession(id){
     activeSession=id;
@@ -2786,6 +3787,251 @@ function renderSpendSummary(){
         $('monthly-target').dataset.level=month.used_percent>=100?'critical':month.used_percent>=80?'warning':'normal';
     }
 }
+// Model fit tab. Python judges every turn and subagent run (D.model_fit); this view
+// only filters and sums. Text from the data goes in through textContent, never markup.
+const FIT_TIERS=['fable','opus','sonnet','haiku','other'];
+const FIT_TIER_NAMES={fable:'Fable',opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',other:'Other'};
+const FIT_EFFORTS=['low','medium','high','xhigh','max'];
+const FIT_EXAMPLES=8,FIT_SESSIONS=25;
+let fitView=null;
+const fitTier=tier=>FIT_TIERS.includes(tier)?tier:'other';
+const fitTierName=(tier,model)=>FIT_TIERS.includes(tier)&&tier!=='other'?FIT_TIER_NAMES[tier]:String(model||'unknown');
+const fitSum=(items,key)=>items.reduce((total,item)=>total+(Number(item[key])||0),0);
+const fitCount=(n,one,many)=>integer(n)+' '+(n===1?one:many);
+const fitShortModel=model=>String(model||'unknown').replace(/^claude-/,'');
+const fitGuideText=(tier,effort,top)=>`${FIT_TIER_NAMES[fitTier(tier)]} · ${effort}${top&&top!==effort?' to '+top:''}`;
+function fitEl(tag,attrs,...kids){
+    const node=['svg','rect','path','line','text'].includes(tag)?document.createElementNS('http://www.w3.org/2000/svg',tag):document.createElement(tag);
+    for(const [key,value] of Object.entries(attrs||{})){
+        if(value==null||value===false)continue;
+        if(key==='text')node.textContent=String(value);else node.setAttribute(key,String(value));
+    }
+    for(const kid of kids)if(kid!=null&&kid!==false)node.append(kid);
+    return node;
+}
+const fitSwatch=color=>fitEl('i',{style:'background:'+color,'aria-hidden':'true'});
+function fitHideTip(){const tip=$('fit-tip');if(tip)tip.hidden=true}
+function fitShowTip(event,title,rows){
+    const tip=$('fit-tip');
+    tip.replaceChildren(fitEl('div',{class:'fit-tip-title',text:title}),...rows.map(([color,name,value])=>fitEl('div',{class:'fit-tip-row'},fitEl('span',{},color?fitSwatch(color):null,name),fitEl('b',{text:value}))));
+    // Measure at the origin so a tip near the right edge is not squeezed before it moves.
+    tip.style.left='0px';tip.style.top='0px';tip.hidden=false;
+    const box=event.currentTarget.getBoundingClientRect(),pointer=event.type==='pointermove';
+    const x=pointer?event.clientX:box.left+box.width/2,y=pointer?event.clientY:box.top;
+    const w=tip.offsetWidth,h=tip.offsetHeight;
+    tip.style.left=Math.max(8,Math.min(x+14,innerWidth-w-8))+'px';
+    tip.style.top=Math.max(8,Math.min(y-h-10<8?y+16:y-h-10,innerHeight-h-8))+'px';
+}
+// Hover and keyboard focus show the same readout; screen readers get it as the label.
+function fitReadout(node,title,rows){
+    node.setAttribute('tabindex','0');
+    node.setAttribute('aria-label',title+': '+rows.map(([,name,value])=>name+' '+value).join(', '));
+    const show=event=>fitShowTip(event,title,rows);
+    node.addEventListener('pointermove',show);node.addEventListener('focus',show);
+    node.addEventListener('pointerleave',fitHideTip);node.addEventListener('blur',fitHideTip);
+    return node;
+}
+function fitTable(label,head,rows){
+    const table=fitEl('table',{'aria-label':label});
+    table.append(fitEl('thead',{},fitEl('tr',{},...head.map(([name,style])=>fitEl('th',{class:style,text:name})))));
+    table.append(fitEl('tbody',{},...rows.map(row=>fitEl('tr',{},...row.map((cell,i)=>cell instanceof Node?fitEl('td',{class:head[i][1]},cell):fitEl('td',{class:head[i][1],text:cell}))))));
+    return fitEl('div',{class:'table-wrap'},table);
+}
+function fitTicks(max){
+    if(!(max>0))return [0,1];
+    const raw=max/4,scale=Math.pow(10,Math.floor(Math.log10(raw))),step=[1,2,2.5,5,10].map(f=>f*scale).find(s=>s>=raw);
+    const ticks=[];for(let i=0;i*step<max+step*.999;i++)ticks.push(+(i*step).toFixed(10));
+    return ticks;
+}
+const fitTick=v=>v>=1000?'$'+(+(v/1000).toFixed(1))+'K':'$'+(+v.toFixed(2)).toLocaleString('en-US');
+function fitSelection(){
+    const fit=D.model_fit,range=selectedRange();
+    if(!fit||!Array.isArray(fit.units)||!fit.events||typeof fit.events!=='object')return {empty:['Model fit is not in this report','This report was saved by an older collector. Run asi dashboard again to add it.']};
+    const provider=$('provider').value,model=$('model').value,project=$('project').value,role=$('role').value,pool=$('pool').value;
+    if(provider&&provider!=='Claude')return {empty:['Model fit covers Claude Code only','Set Provider to All or to Anthropic · Claude to see it.']};
+    if(role==='review')return {empty:['Model fit has no auto-review runs','Auto-review is a Codex role. Model fit covers Claude Code main threads and subagents.']};
+    if(!range)return {empty:['Choose a valid date range','The start date must be on or before the end date.']};
+    // Pool is a session property of the usage rows; a unit or event takes its session's pool.
+    const pools=new Map();if(pool)for(const r of D.rows)pools.set(r.session,r.pool||'interactive');
+    const inside=x=>Boolean(x)&&x.date>=range.from&&x.date<=range.to&&(!project||x.project===project)&&(!pool||(pools.get(x.session)||'interactive')===pool);
+    const units=fit.units.filter(u=>inside(u)&&(!role||u.kind===(role==='main'?'turn':'agent'))&&(!model||u.model===model));
+    if(!units.length)return {empty:['No Claude Code work matches these filters',model?`No turn or subagent run that started in these dates spent most of its cost on ${model}.`:'No main-thread turn or subagent run started in these dates with these filters.']};
+    const events=fit.events,main=role!=='subagent',list=name=>main&&Array.isArray(events[name])?events[name].filter(inside):[];
+    const notes=[];
+    if(model)notes.push(`Model filter: turns and subagent runs that spent most of their cost on ${model}. Effort changes are hidden: they are not split by model.`);
+    if(model||pool)notes.push('Counts of large contexts, long Haiku prompts and fast mode are hidden: they are not split by '+[model&&'model',pool&&'pool'].filter(Boolean).join(' or ')+'.');
+    if(pool)notes.push('Pool comes from the usage records of the same session.');
+    const view={range,units,notes,note:fit.note,guide:new Map((Array.isArray(fit.guide)?fit.guide:[]).map(g=>[g.class,g])),
+        switches:list('switches').filter(e=>!model||e.from===model||e.to===model),
+        cold:list('cold').filter(e=>!model||e.model===model),
+        effortChanges:model?[]:list('effort_changes'),
+        daily:model||pool||!main||!Array.isArray(events.daily)?[]:events.daily.filter(d=>d&&d.date>=range.from&&d.date<=range.to&&(!project||d.project===project))};
+    const classes=new Map();
+    for(const u of units){
+        let c=classes.get(u.class);
+        if(!c){const g=view.guide.get(u.class)||{};c={id:String(u.class),label:String(g.label||u.class),tier:g.tier||u.rec_tier,effort:g.effort||u.rec_effort,top:g.effort_max||u.rec_effort_max,units:0,cost:0,save_model:0,save_effort:0,tiers:{}};classes.set(u.class,c)}
+        const cost=Number(u.cost)||0;c.units++;c.cost+=cost;c.save_model+=Number(u.save_model)||0;c.save_effort+=Number(u.save_effort)||0;c.tiers[fitTier(u.tier)]=(c.tiers[fitTier(u.tier)]||0)+cost;
+    }
+    view.classes=[...classes.values()].sort((a,b)=>b.cost-a.cost);
+    return view;
+}
+function fitDays(view){
+    const root=$('fit-days'),byDate=new Map();
+    for(const u of view.units){const day=byDate.get(u.date)||{},tier=fitTier(u.tier);day[tier]=(day[tier]||0)+(Number(u.cost)||0);byDate.set(u.date,day)}
+    const days=[];
+    for(let i=0;i<view.range.days;i++){const date=shiftDate(view.range.from,i),tiers=byDate.get(date)||{};days.push({date,tiers,total:FIT_TIERS.reduce((n,t)=>n+(tiers[t]||0),0)})}
+    const present=FIT_TIERS.filter(t=>days.some(d=>d.tiers[t]>0)),spent=days.filter(d=>d.total>0);
+    $('fit-days-legend').replaceChildren(...present.map(t=>fitEl('span',{},fitSwatch(`var(--tier-${t})`),FIT_TIER_NAMES[t])));
+    $('fit-days-table').replaceChildren(fitTable('Estimated spend per day by model',[['Day'],...present.map(t=>[FIT_TIER_NAMES[t]]),['Total']],
+        spent.map(d=>[d.date,...present.map(t=>d.tiers[t]?usd(d.tiers[t]):'—'),usd(d.total)])));
+    if(!spent.length){root.replaceChildren(fitEl('div',{class:'empty',text:'No priced spend in these dates.'}));return}
+    const W=Math.max(280,Math.floor(root.clientWidth||720)),H=W<520?200:240,m={l:50,r:6,t:10,b:26};
+    const ticks=fitTicks(Math.max(...days.map(d=>d.total))),top=ticks[ticks.length-1];
+    const pw=W-m.l-m.r,ph=H-m.t-m.b,band=pw/days.length,bw=Math.min(24,band>6?band-4:band*.7),y=v=>m.t+ph-v/top*ph;
+    const svg=fitEl('svg',{viewBox:`0 0 ${W} ${H}`,width:W,height:H,role:'img','aria-label':'Estimated spend per day by model'});
+    for(const v of ticks)svg.append(fitEl('line',{x1:m.l,x2:W-m.r,y1:y(v),y2:y(v),stroke:'var(--line)','stroke-width':1}),fitEl('text',{x:m.l-6,y:y(v)+4,'text-anchor':'end',class:'chart-text',text:fitTick(v)}));
+    const every=Math.max(1,Math.ceil(days.length/Math.max(1,Math.floor(pw/58))));
+    days.forEach((d,i)=>{
+        const x=m.l+i*band+(band-bw)/2,segments=present.filter(t=>d.tiers[t]>0);let below=0;
+        // Stacked in the fixed tier order, 2px apart, rounded only at the top.
+        segments.forEach((t,k)=>{
+            const value=d.tiers[t],head=y(below+value),h=Math.max(y(below)-(k?2:0)-head,.5),r=k===segments.length-1?Math.min(3,bw/2,h):0;
+            svg.append(fitEl('path',{fill:`var(--tier-${t})`,'data-tier':t,d:`M${x},${head+h}V${head+r}Q${x},${head} ${x+r},${head}H${x+bw-r}Q${x+bw},${head} ${x+bw},${head+r}V${head+h}Z`}));
+            below+=value;
+        });
+        if(i%every===0){const centre=x+bw/2,edge=centre>W-24;svg.append(fitEl('text',{x:edge?W-1:Math.max(centre,m.l+16),y:H-8,'text-anchor':edge?'end':'middle',class:'chart-text',text:shortDate(d.date)}))}
+        if(d.total>0)svg.append(fitReadout(fitEl('rect',{class:'fit-hit','data-date':d.date,role:'img',x:m.l+i*band,y:m.t,width:band,height:ph}),d.date,
+            [[null,'Total',usd(d.total)],...segments.slice().reverse().map(t=>[`var(--tier-${t})`,FIT_TIER_NAMES[t],usd(d.tiers[t])])]));
+    });
+    root.replaceChildren(svg);
+}
+function fitClasses(view){
+    $('fit-classes-legend').replaceChildren(...[['var(--fit-kept)','Cost at the guide’s setup'],['var(--fit-save-model)','Rough saving from the guide’s model'],['var(--fit-save-effort)','Rough saving from the guide’s effort']].map(([color,name])=>fitEl('span',{},fitSwatch(color),name)));
+    const max=Math.max(...view.classes.map(c=>c.cost),1e-9),kept=c=>Math.max(c.cost-c.save_model-c.save_effort,0);
+    $('fit-classes').replaceChildren(...view.classes.flatMap(c=>{
+        const parts=[[kept(c),'var(--fit-kept)'],[c.save_model,'var(--fit-save-model)'],[c.save_effort,'var(--fit-save-effort)']].filter(([v])=>v>0);
+        const stack=fitEl('div',{class:'fit-stack',style:`width:${(84*c.cost/max).toFixed(3)}%`},...parts.map(([v,color])=>fitEl('span',{class:'fit-seg',style:`width:${(100*v/c.cost).toFixed(3)}%;background:${color}`})));
+        return [fitEl('div',{class:'fit-name'},fitEl('span',{text:c.label}),fitEl('small',{text:`Guide: ${fitGuideText(c.tier,c.effort,c.top)} · ${fitCount(c.units,'turn or run','turns and runs')}`})),
+            fitReadout(fitEl('div',{class:'fit-track','data-class':c.id,'data-cost':c.cost},stack,fitEl('span',{class:'fit-val',text:usd(c.cost)})),c.label,
+                [[null,'Spent',usd(c.cost)],['var(--fit-kept)','At the guide’s setup',usd(kept(c))],['var(--fit-save-model)','Rough saving, model',usd(c.save_model)],['var(--fit-save-effort)','Rough saving, effort',usd(c.save_effort)]])];
+    }));
+    $('fit-classes-table').replaceChildren(fitTable('Spend by task class',[['Task class','fit-wrap'],['Guide','fit-left'],['Turns and runs'],['Spent'],['At the guide’s setup'],['Rough saving, model'],['Rough saving, effort']],
+        view.classes.map(c=>[c.label,fitGuideText(c.tier,c.effort,c.top),integer(c.units),usd(c.cost),usd(kept(c)),usd(c.save_model),usd(c.save_effort)])));
+}
+function fitMatrix(view){
+    const columns=FIT_TIERS.filter(t=>t!=='other'||view.classes.some(c=>c.tiers.other>0));
+    const max=Math.max(...view.classes.flatMap(c=>columns.map(t=>c.tiers[t]||0)),1e-9);
+    const head=fitEl('tr',{},fitEl('th',{class:'fit-wrap',text:'Task class'}),...columns.map(t=>fitEl('th',{},fitSwatch(`var(--tier-${t})`),FIT_TIER_NAMES[t])),fitEl('th',{text:'Total'}));
+    const rows=view.classes.map(c=>fitEl('tr',{'data-class':c.id},fitEl('td',{class:'fit-wrap',text:c.label}),...columns.map(t=>{
+        const value=c.tiers[t]||0,shade=value>0?.05+.3*Math.sqrt(value/max):0,guide=t===fitTier(c.tier);
+        return fitEl('td',{class:'fit-cell'+(guide?' fit-rec':''),style:`background:rgba(var(--fit-shade),${shade.toFixed(3)})`,title:guide?'The guide starts this class on '+FIT_TIER_NAMES[t]:null,text:value>0?usd(value):''});
+    }),fitEl('td',{text:usd(c.cost)})));
+    $('fit-matrix').replaceChildren(fitEl('table',{class:'fit-matrix','aria-label':'Estimated spend by task class and model'},fitEl('thead',{},head),fitEl('tbody',{},...rows)));
+}
+function fitEfforts(view){
+    const spend=new Map();for(const u of view.units){const e=String(u.effort||'unknown');spend.set(e,(spend.get(e)||0)+(Number(u.cost)||0))}
+    const rank=e=>FIT_EFFORTS.includes(e)?FIT_EFFORTS.indexOf(e):e==='unknown'?99:50;
+    const rows=[...spend].sort((a,b)=>rank(a[0])-rank(b[0])||a[0].localeCompare(b[0]));
+    const total=rows.reduce((n,[,v])=>n+v,0),max=Math.max(...rows.map(([,v])=>v),1e-9);
+    $('fit-efforts').replaceChildren(...rows.flatMap(([effort,value])=>{
+        const label=effort==='unknown'?'Not recorded':effort,share=total?Math.round(100*value/total)+'%':'—';
+        return [fitEl('div',{class:'fit-name'},fitEl('span',{text:label}),fitEl('small',{text:share+' of spend'})),
+            fitReadout(fitEl('div',{class:'fit-track','data-effort':effort},fitEl('div',{class:'fit-stack',style:`width:${(84*value/max).toFixed(3)}%`},value>0?fitEl('span',{class:'fit-seg',style:'width:100%;background:var(--accent)'}):null),fitEl('span',{class:'fit-val',text:usd(value)})),
+                'Effort: '+label,[[null,'Spent',usd(value)],[null,'Share',share]])];
+    }));
+}
+function fitUnitExamples(items){
+    return fitTable('Largest examples',[['Date'],['What it was','fit-what'],['Used','fit-left'],['Guide','fit-left'],['Estimated cost'],['Rough saving']],items.map(u=>{
+        const what=u.title||(u.kind==='turn'?(u.n?'Turn '+u.n:'Before the first prompt'):'Subagent'+(u.agent_type&&u.agent_type!=='unknown'?' · '+u.agent_type:''));
+        const save=(Number(u.save_model)||0)+(Number(u.save_effort)||0);
+        return [String(u.date),fitEl('span',{},fitEl('button',{class:'session-button','data-session':u.session,text:what}),fitEl('small',{text:`${u.signals} · ${u.project}`})),
+            `${fitTierName(u.tier,u.model)} · ${u.effort}`,fitGuideText(u.rec_tier,u.rec_effort,u.rec_effort_max),usd(u.cost),save>0?usd(save):'—'];
+    }));
+}
+function fitEventExamples(items,kind){
+    return fitTable('Largest examples',[['Date'],['Session','fit-what'],['What happened','fit-left'],['Cache tokens written'],['Estimated cost']],items.map(e=>[String(e.date),
+        fitEl('button',{class:'session-button','data-session':e.session,text:sessionLabel(e.session)}),
+        kind==='switches'?`${fitShortModel(e.from)} → ${fitShortModel(e.to)}`:`Idle ${integer(e.gap_min)} min · ${fitShortModel(e.model)}`,
+        compact(e.tokens),e.cost==null?'No price':usd(e.cost)]));
+}
+// The findings of `asi fit`, as filters and sums over the units and events in view.
+function fitFindings(view){
+    const {units}=view,findings=[],top=(items,key)=>items.slice().sort((a,b)=>(Number(b[key])||0)-(Number(a[key])||0)).slice(0,FIT_EXAMPLES);
+    const add=(id,title,metric,detail,examples=[],kind='units')=>findings.push({id,title,metric,detail,examples,kind});
+    const over=units.filter(u=>u.verdict==='over');
+    if(over.length)add('model-over','Work that a smaller model would have covered',`${usd(fitSum(over,'cost'))} spent; about ${usd(fitSum(over,'save_model'))} saved at the guide’s model (${fitCount(over.length,'turn or run','turns and runs')}). Rough, upper bound.`,
+        'Same requests repriced on the guide’s model; main threads are judged per session, subagents per run. A smaller model can need more turns, so try it on one real task first.',top(over,'save_model'));
+    const effortOver=units.filter(u=>u.effort_over);
+    if(effortOver.length)add('effort-over','Effort above what the guide suggests for the task',`${usd(fitSum(effortOver,'cost'))} ran above the suggested effort; lowering it is worth about ${usd(fitSum(effortOver,'save_effort'))}. Rough, upper bound.`,
+        'The guide measured Opus 5.5 at medium for about 70% of the cost of high, and xhigh at 2.5 times the cost of high. Past high, it advises trying the next model up at a lower effort instead.',top(effortOver,'save_effort'));
+    const inherit=units.filter(u=>u.kind==='agent'&&!u.explicit_model&&u.verdict==='over');
+    if(inherit.length)add('agent-inherit','Subagents that ran on the session’s big model with no model passed',`${fitCount(inherit.length,'run','runs')}, ${usd(fitSum(inherit,'cost'))}; about ${usd(fitSum(inherit,'save_model'))} saved on the guide’s model. Rough, upper bound.`,
+        'Search, reading and summary subagents are the guide’s first place for Haiku or Sonnet: a wrong answer is cheap to spot. Pass a model on the spawn or set it in the agent file.',top(inherit,'save_model'));
+    const under=units.filter(u=>u.verdict==='under'&&(Number(u.cost)||0)>=.05);
+    if(under.length)add('model-under','Work that may have been too hard for the model used',`${fitCount(under.length,'turn or run','turns and runs')}, ${usd(fitSum(under,'cost'))}`,
+        'A quality risk, not a cost: check whether these needed rework. The guide’s order is add a self-check, raise effort one step, then go one model up at a lower effort.',top(under,'cost'));
+    const opusHigh=units.filter(u=>u.tier==='opus'&&['xhigh','max'].includes(u.effort));
+    if(opusHigh.length)add('opus-xhigh','Opus at xhigh or max',`${usd(fitSum(opusHigh,'cost'))} across ${fitCount(opusHigh.length,'turn or run','turns and runs')}`,
+        'In the guide’s tests Fable 5.2 at high matched Opus 5.5 at max for about half the cost per task. Where Opus at high falls short, try Fable at medium or high before raising Opus further.',top(opusHigh,'cost'));
+    if(view.switches.length)add('switches','Model switches in the middle of a session',`${fitCount(view.switches.length,'switch','switches')} re-wrote ${compact(fitSum(view.switches,'tokens'))} tokens of cache, about ${usd(fitSum(view.switches,'cost'))}`,
+        'The first turn on a new model pays the cache-write price for the whole conversation. Switch at the start, after /compact, or in a new session with a short written plan.',top(view.switches,'cost'),'switches');
+    if(view.cold.length)add('cold-cache','Full cache rewrites after an idle gap',`${fitCount(view.cold.length,'rewrite','rewrites')}, ${compact(fitSum(view.cold,'tokens'))} tokens, about ${usd(fitSum(view.cold,'cost'))}`,
+        'Coming back to a large session after the cache expired pays for the whole context again. Compact before a break, or start a new session with a short summary.',top(view.cold,'cost'),'cold');
+    const day=key=>fitSum(view.daily,key),mainCost=day('cost');
+    if(day('big_calls')&&mainCost)add('big-context','Main-thread calls above 200k tokens of context',`${fitCount(day('big_calls'),'call','calls')}, ${usd(day('big_cost'))} (${Math.round(100*day('big_cost')/mainCost)}% of main-thread spend)`,
+        'Context is sent again on every turn. Keep the big model’s context lean and push long reading to cheaper subagents.');
+    if(day('haiku_long_calls'))add('haiku-long','Haiku calls with a prompt above 100k tokens',`${fitCount(day('haiku_long_calls'),'call','calls')}, ${usd(day('haiku_long_cost'))}`,
+        'Haiku 5.5 bills prompts over 100k at five times its base rate. Keep its prompts short, or compare the cost per finished task with Sonnet.');
+    if(day('fast_calls'))add('fast-mode','Fast mode',`${fitCount(day('fast_calls'),'call','calls')}, ${usd(day('fast_cost'))} (priced at the fast rate)`,
+        'Fast mode is the same model at a higher price; it fits latency-sensitive interactive work only.');
+    if(view.effortChanges.length>=5)add('effort-changes','Effort changes inside a session',`${fitCount(view.effortChanges.length,'change','changes')}; the next call still read ${Math.round(100*fitSum(view.effortChanges,'read_share')/view.effortChanges.length)}% of its context from cache`,
+        'Measured on your own sessions: unlike a model switch, changing effort did not force a full cache rewrite when this share is high.');
+    $('fit-findings').replaceChildren(...(findings.length?findings.map(f=>{
+        const box=fitEl('article',{class:'fit-finding','data-finding':f.id},fitEl('h3',{text:f.title}),fitEl('p',{class:'fit-metric',text:f.metric}),fitEl('p',{class:'fit-detail',text:f.detail}));
+        if(f.examples.length)box.append(f.kind==='units'?fitUnitExamples(f.examples):fitEventExamples(f.examples,f.kind));
+        return box;
+    }):[fitEl('p',{class:'empty',text:'Nothing stood out in these dates.'})]));
+}
+function fitSessions(view){
+    const sessions=new Map();
+    for(const u of view.units){
+        let s=sessions.get(u.main_session);
+        if(!s){s={id:String(u.main_session),project:u.project,start:u.date,cost:0,save:0,turns:0,agents:0,tiers:{}};sessions.set(u.main_session,s)}
+        const cost=Number(u.cost)||0,tier=fitTier(u.tier);
+        s.cost+=cost;s.save+=(Number(u.save_model)||0)+(Number(u.save_effort)||0);s.tiers[tier]=(s.tiers[tier]||0)+cost;
+        if(u.kind==='turn')s.turns++;else s.agents++;
+        if(u.date<s.start)s.start=u.date;
+    }
+    const all=[...sessions.values()].sort((a,b)=>b.cost-a.cost),shown=all.slice(0,FIT_SESSIONS);
+    $('fit-sessions-caption').textContent=(all.length>shown.length?`Top ${shown.length} of ${integer(all.length)} sessions`:fitCount(all.length,'session','sessions'))+' · select one to open it';
+    $('fit-sessions').replaceChildren(fitTable('Most expensive sessions',[['Started'],['Session','fit-what'],['Project','fit-left'],['Models','fit-left'],['Turns'],['Subagent runs'],['Estimated cost'],['Rough saving']],
+        shown.map(s=>[String(s.start),fitEl('button',{class:'session-button','data-session':s.id,text:sessionLabel(s.id)}),String(s.project),
+            FIT_TIERS.filter(t=>s.tiers[t]>0).sort((a,b)=>s.tiers[b]-s.tiers[a]).map(t=>FIT_TIER_NAMES[t]+' '+usd(s.tiers[t])).join(', '),
+            integer(s.turns),integer(s.agents),usd(s.cost),s.save>0?usd(s.save):'—'])));
+}
+function renderFit(){
+    fitHideTip();
+    const view=fitSelection();fitView=view.empty?null:view;
+    $('fit-empty').hidden=!view.empty;$('fit-content').hidden=Boolean(view.empty);
+    if(view.empty){$('fit-empty-title').textContent=view.empty[0];$('fit-empty-text').textContent=view.empty[1];return}
+    const {units,range}=view,turns=units.filter(u=>u.kind==='turn'),agents=units.filter(u=>u.kind==='agent');
+    const over=units.filter(u=>u.verdict==='over'),effortOver=units.filter(u=>u.effort_over);
+    const total=fitSum(units,'cost'),agentCost=fitSum(agents,'cost'),overCost=fitSum(over,'cost'),effortSave=fitSum(units,'save_effort'),unpriced=fitSum(units,'unpriced');
+    $('fit-scope').textContent=`Claude Code only · ${fitCount(units.length,'turn or subagent run','turns and subagent runs')} that started ${range.from} – ${range.to}. Each counts once, on its start day, under the model and effort that carried most of its cost. Costs are estimated API prices, not a bill.`+(view.notes.length?' '+view.notes.join(' '):'');
+    const tiles=[
+        ['fit-spend','Estimated spend',total,usd(total),`${fitCount(new Set(units.map(u=>u.main_session)).size,'session','sessions')} · ${fitCount(turns.length,'turn','turns')} · ${fitCount(agents.length,'subagent run','subagent runs')}`],
+        ['fit-agents','Run by subagents',agentCost,total?Math.round(100*agentCost/total)+'%':'—',`${usd(agentCost)} in ${fitCount(agents.length,'run','runs')}`],
+        ['fit-over','Bigger model than the guide suggests',overCost,usd(overCost),`About ${usd(fitSum(over,'save_model'))} saved on the guide’s model · rough, upper bound`],
+        ['fit-effort','Rough saving from effort',effortSave,usd(effortSave),`${usd(fitSum(effortOver,'cost'))} ran above the guide’s effort · upper bound`],
+    ];
+    $('fit-cards').replaceChildren(...tiles.map(([id,label,raw,value,note])=>fitEl('div',{class:'card',id,'data-value':raw},fitEl('label',{text:label}),fitEl('div',{class:'value',text:value}),fitEl('small',{text:note}))));
+    fitDays(view);fitClasses(view);fitMatrix(view);fitEfforts(view);fitFindings(view);fitSessions(view);
+    $('fit-note').textContent=String(view.note||'')+(unpriced?` ${fitCount(unpriced,'request','requests')} without a price ${unpriced===1?'is':'are'} left out of every cost and saving here.`:'');
+}
+if(typeof ResizeObserver==='function'){
+    let fitWidth=0;
+    new ResizeObserver(entries=>{const width=Math.round(entries[0].contentRect.width);if(width&&Math.abs(width-fitWidth)>1){fitWidth=width;if(activeTab==='fit'&&fitView)fitDays(fitView)}}).observe($('fit-days'));
+}
 function render(){
     const range=selectedRange(),rs=D.rows.filter(r=>chosen(r,range)),ar=selectedRecords(),d=telemetry(ar),a=aggregate(rs);
     const {previous,priorRecords,priorRows,matchedRows,matched,missingTimes,calendar}=comparisonData(range,rs),b=aggregate(priorRows);
@@ -2812,6 +4058,7 @@ function render(){
     const metric=$('chartmetric').value;daily(rs,priorRows,metric,range,previous);bars('models-chart',groups(rs,'model').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);bars('projects-chart',groups(rs,'project').sort((a,b)=>b[metric]-a[metric]).slice(0,8),metric);providersTable(rs,priorRows,previous,matchedRows,missingTimes);
     bars('parts',['Uncached input','Cache reads','Cache writes','Output','Web search'].map((name,i)=>({name,cost:a.parts[i],cost_high:a.parts[i]+(i===2?Math.max(0,a.cost_high-a.cost):0),requests:a.requests,unpriced:a.unpriced})));
     modelsTable(rs);sessionsTable(rs);renderTokenBreakdown(a);renderStatistics(rs,ar,a,d);renderPricingGaps(ar,a,previous?b:null,previous?priorRecords:[]);
+    if(activeTab==='fit')renderFit();
 }
 for(const field of ['from','to','provider','model','project','role','pool','chartmetric','session-sort'])$(field).addEventListener('change',()=>{if(field==='from'||field==='to')$('period').value='custom';page=0;render()});
 $('period').addEventListener('change',()=>{setPeriod($('period').value);page=0;render()});$('search').addEventListener('input',()=>{page=0;render()});$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};
@@ -2861,18 +4108,18 @@ function applyTheme(dark){
     $('theme').setAttribute('aria-label','Switch to '+(dark?'light':'dark')+' theme');
 }
 let savedTheme;
-try{savedTheme=localStorage.getItem('aisad-theme')}catch{}
+try{savedTheme=localStorage.getItem('asi-theme')??localStorage.getItem('aisad-theme')}catch{}
 applyTheme(savedTheme==='dark'||(savedTheme!=='light'&&globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches));
 $('theme').onclick=()=>{
     applyTheme(document.documentElement.dataset.theme!=='dark');
-    try{localStorage.setItem('aisad-theme',document.documentElement.dataset.theme)}catch{}
+    try{localStorage.setItem('asi-theme',document.documentElement.dataset.theme)}catch{}
 };
 function updatePricingNotice(){
 $('method').innerHTML=`<p>Local Claude and Codex traces. Duplicate usage records are removed. Missing traces cannot be recovered; chat contents stay on this device.</p><p>API-equivalent prices as of ${esc(D.price_as_of)}, not subscription charges. Unknown prices stay unknown; cache-write uncertainty is shown as a range. Input includes cached tokens.</p><p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI pricing</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noreferrer">Claude pricing</a></p>`;
 }
 updatePricingNotice();
 renderSpendSummary();
-$('footer').textContent=`AISAD ${D.version} · Saved snapshot · Open Dashboard in AISAD or rerun aisad dashboard to update`;render();
+$('footer').textContent=`ASI ${D.version} · Saved snapshot · Open Dashboard in ASI or rerun asi dashboard to update`;render();
 $('interactive-dashboard').hidden=false;$('saved-summary').hidden=true;
 // Release the serialized copy after the interactive report is ready.
 $('snapshot').textContent='';
@@ -2889,12 +4136,12 @@ function applyLiveSnapshot(next){
     updateSnapshotHeader();updatePricingNotice();setPeriod(period);
     renderSpendSummary();render();
     if(activeSession&&$('session-dialog').open)openSession(activeSession);
-    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    $('footer').textContent='ASI '+D.version+' · Shared local data · Updates from CLI and menu bar';
     return true;
 }
 function startLiveUpdates(){
     if(!D.live_updates||globalThis.location?.protocol!=='file:')return;
-    $('footer').textContent='AISAD '+D.version+' · Shared local data · Updates from CLI and menu bar';
+    $('footer').textContent='ASI '+D.version+' · Shared local data · Updates from CLI and menu bar';
     let stopped=false,timer,loading=false,requested='';
     const scripts=new Set();
     function script(name,done){
@@ -2902,12 +4149,13 @@ function startLiveUpdates(){
         tag.src=name+'?t='+Date.now();tag.onload=tag.onerror=()=>{tag.remove();scripts.delete(tag);done?.()};
         document.head.append(tag);
     }
-    globalThis.aisadLiveRevision=manifest=>{
+    // 1.x (AISAD) writers call the aisad names; both reach the same handlers.
+    globalThis.asiLiveRevision=globalThis.aisadLiveRevision=manifest=>{
         const revision=manifest?.revision;
         if(stopped||loading||!/^[0-9]{20}$/.test(revision)||revision<=(D.sync_revision||''))return;
         loading=true;requested=revision;script('usage-live-data.js',()=>{loading=false});
     };
-    globalThis.aisadLiveData=async(revision,packed)=>{
+    globalThis.asiLiveData=globalThis.aisadLiveData=async(revision,packed)=>{
         try{
             const next=await loadSnapshot({textContent:JSON.stringify(packed)});
             if(!stopped&&revision===requested&&next.sync_revision===revision)applyLiveSnapshot(next);
@@ -2921,7 +4169,7 @@ function startLiveUpdates(){
     function stop(){
         stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);
         for(const tag of scripts)tag.remove();scripts.clear();
-        delete globalThis.aisadLiveRevision;delete globalThis.aisadLiveData;
+        delete globalThis.asiLiveRevision;delete globalThis.asiLiveData;delete globalThis.aisadLiveRevision;delete globalThis.aisadLiveData;
     }
     function visible(){if(!document.hidden){clearTimeout(timer);poll()}}
     document.addEventListener('visibilitychange',visible);
@@ -2931,7 +4179,7 @@ function startLiveUpdates(){
 startLiveUpdates();
 // Dashboard initialization complete.
 })().catch(error=>{
-    console.error('AISAD report could not initialize',error);
+    console.error('ASI report could not initialize',error);
     document.getElementById('startup-note').textContent='Interactive charts could not load. The saved totals below remain available. Try reopening this file in an up-to-date browser.';
 });
 </script></body></html>'''
@@ -2976,7 +4224,7 @@ def render_html(snapshot):
 
 def parser():
     p=argparse.ArgumentParser(description='Local Codex / Claude dashboard. Python 3.9+, no SSH, API keys, uploads or pip packages.')
-    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session','prices','chart','budget','forecast','menubar'],default='dashboard',help='Offline dashboard, terminal chart, budget settings, usage, session evidence or prices; analyze aliases usage')
+    p.add_argument('command',nargs='?',choices=['dashboard','usage','analyze','statusline','collect','sessions','session','prices','chart','budget','forecast','menubar','fit','suggest'],default='dashboard',help='Offline dashboard, terminal chart, budget settings, usage, session evidence, prices, or model fit (fit, suggest); analyze aliases usage')
     p.add_argument('--json',action='store_true',help='Emit one JSON object to stdout')
     p.add_argument('--days',type=int,default=7,help='Usage: number of calendar days, default 7')
     p.add_argument('--all-time',action='store_true',help='Usage: include all recorded dates, without a comparison')
@@ -3003,7 +4251,7 @@ def parser():
     mode.add_argument('--snapshot',action='store_true',help='Chart: print once, even in a terminal')
     p.add_argument('--ascii',dest='ascii_only',action='store_true',help='Chart: use ASCII instead of Unicode line drawing')
     p.add_argument('--managed-budget',type=float,help='Optional separate managed-agent budget in USD')
-    p.add_argument('--session',help='Session detail or one-shot status: provider-prefixed session ID')
+    p.add_argument('--session',help='Session detail or one-shot status: provider-prefixed session ID; fit and suggest also take a unique prefix')
     p.add_argument('--stdin',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--color',action='store_true',help='Status line/chart: force ANSI colors even when stdout is piped')
     p.add_argument('--no-color',action='store_true',help='Status line/chart: disable ANSI colors')
@@ -3032,7 +4280,7 @@ def parser():
 def main(argv=None):
     args=parser().parse_args(argv)
     if args.watch is not None or args.stdin:
-        raise SystemExit('AISAD runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
+        raise SystemExit('ASI runs on demand. Rerun usage, collect, sessions, session or dashboard when needed; watching and status hooks are no longer supported.')
     for value in [args.budget,args.managed_budget,args.monthly_budget]:
         if value is not None and (not math.isfinite(value) or value<=0):raise SystemExit('Budgets must be finite positive USD amounts')
     if args.offset<0 or not 1<=args.limit<=10000:raise SystemExit('--offset must be nonnegative and --limit must be between 1 and 10000')
@@ -3068,12 +4316,20 @@ def main(argv=None):
               f"{result['status']}: {result['models']} models, rates as of {result['as_of']} ({result.get('basis','models_dev_rates')}). {result['path']}")
         return
     if args.refresh:raise SystemExit('--refresh belongs to the prices command; other commands never reach the network')
+    if args.command in ('fit','suggest'):
+        refusal=fit_filter_error(args)
+        if refusal:raise SystemExit(refusal)
     if args.command=='chart':
         color=not args.no_color and (args.color or (sys.stdout.isatty() and os.environ.get('TERM')!='dumb' and 'NO_COLOR' not in os.environ))
         interactive=args.interactive or (not args.snapshot and not args.json and sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get('TERM')!='dumb')
         live=terminal_ink_live(args,color) if interactive else None
         if live is not None:atom_json(output/'chart.json',live);return
     snap=make_snapshot(args,dashboard=args.command=='dashboard',include_requests=True)
+    if args.command in ('fit','suggest'):
+        result,text=(fit_command if args.command=='fit' else suggest_command)(snap,args)
+        if args.command=='fit':atom_json(output/'fit-report.json',result)
+        print(json.dumps(result,ensure_ascii=False,allow_nan=False) if args.json else text)
+        return
     if args.command=='menubar':
         shared=read_shared_usage(output) if shared_usage_enabled(args) else None
         result=shared['snapshot']['spend_summary'] if shared else menubar_report(snap,args)

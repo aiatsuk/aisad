@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 
-spec = importlib.util.spec_from_file_location('aisad_release_tool', ROOT / 'scripts/release.py')
+spec = importlib.util.spec_from_file_location('asi_release_tool', ROOT / 'scripts/release.py')
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
