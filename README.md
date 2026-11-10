@@ -4,6 +4,8 @@ An independent, on-demand analyzer of local Claude Code and Codex session files.
 
 **Python collector: 3.9+, standard library only.** No API keys, accounts, pip packages, Node.js or Codex plugins required. The optional enhanced terminal UI uses a bundled TypeScript/React/Ink module when Bun is installed; Python-only operation remains available. Collection and reporting happen on your device. Every command that reads your sessions opens no network connections or listening sockets; the single exception is `prices --refresh`, which reads published rates and sends nothing about your usage. It installs no MCP servers, hooks, telemetry exporters, app-server observers or background services. The optional macOS menu bar app refreshes locally while explicitly running. The optional skill checks GitHub for code updates without sending usage data, and supports offline use.
 
+Since 2.0 it also answers a second question, [which Claude model and effort fit the work you did](#model-fit): each Claude Code turn and subagent run is compared with Anthropic's model guide, in the terminal, in the dashboard and through four skills. ASI was called AISAD before 2.0; see [Upgrading from AISAD 1.x](#upgrading-from-aisad-1x).
+
 ## See it work
 
 Weekday view (`asi chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
@@ -19,6 +21,12 @@ Statusline, the optional spend forecast and its saved setting, recorded on the s
 ![asi statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
 
 *These recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
+
+The terminal recordings were made before the rename, so their window title and commands still say `aisad`; the output is the same.
+
+The Model fit tab of the dashboard, on the synthetic demo data (`python3 scripts/make_demo.py`):
+
+![ASI dashboard, Model fit tab: estimated spend per day by model, and spend by task class with the rough savings at the guide's model and effort](docs/model-fit.png)
 
 For the exact token formulas, cache-rate definition, pricing assumptions and comparisons with ccusage and Token Use, see [Usage accounting](docs/ACCOUNTING.md).
 
