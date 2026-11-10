@@ -143,6 +143,22 @@ class PriceRefreshTests(unittest.TestCase):
         self.assertEqual(catalog['basis'], 'current_rates')
         self.assertEqual(catalog['as_of'], app.PRICE_DATE)
 
+    def test_a_cache_older_than_a_built_in_model_still_prices_it(self):
+        self.refresh()
+        cached = self.catalog()
+        del cached['models']['claude-fable-5-2']
+        cached['models']['claude-opus-5-5'] = dict(cached['models']['claude-opus-5-5'], input=4.5)
+        (self.output / app.PRICE_CACHE).write_text(json.dumps(cached))
+        catalog = app.load_prices(None, self.output)
+        self.assertEqual(catalog['basis'], 'models_dev_rates')
+        self.assertEqual(catalog['models']['claude-fable-5-2']['input'], 8)
+        # The refreshed rate still wins wherever the cache has one.
+        self.assertEqual(catalog['models']['claude-opus-5-5']['input'], 4.5)
+        # An explicit catalog is taken as written: nothing is filled in.
+        custom = Path(self.temp.name) / 'custom.json'
+        custom.write_text(json.dumps(cached))
+        self.assertNotIn('claude-fable-5-2', app.load_prices(str(custom), self.output)['models'])
+
     def test_an_explicit_catalog_still_wins(self):
         self.refresh()
         custom = Path(self.temp.name) / 'custom.json'

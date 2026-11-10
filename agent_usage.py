@@ -570,7 +570,11 @@ def load_prices(path=None,output=None):
     if path:return validate_prices(json.loads(Path(path).read_text(encoding='utf-8')))
     cache=Path(output)/PRICE_CACHE if output else None
     if cache and cache.is_file():
-        try:return validate_prices(json.loads(cache.read_text(encoding='utf-8')))
+        try:
+            catalog=validate_prices(json.loads(cache.read_text(encoding='utf-8')))
+            # A cache written before a model joined the built-in table still prices that model.
+            for model,rule in default_prices()['models'].items():catalog['models'].setdefault(model,rule)
+            return catalog
         except (OSError,ValueError,TypeError,KeyError,ArithmeticError):pass
     return validate_prices(default_prices())
 
