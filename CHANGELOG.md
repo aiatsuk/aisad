@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-11-10
 
 - Rename AISAD to ASI: the skill is `skills/asi`, the launcher `scripts/asi.py`, the terminal command `asi`, the release archive `asi-skill-vX.Y.Z.zip`, the menu bar app `ASIMenuBar.app` (bundle ID `com.aiatsuk.asi.menubar`), environment variables `ASI_*` and the data directory `~/.local/share/asi`.
 - AISAD 1.x installations cannot update themselves to ASI; they keep working at their version. Run the ASI installer once. It removes an unmodified 1.x `skills/aisad` next to the new skill, keeps one with local changes and says so, and makes a 1.x `aisad` command from `--cli-dir` run `asi`.
