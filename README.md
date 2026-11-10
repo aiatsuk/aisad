@@ -223,9 +223,108 @@ python3 agent_usage.py usage --json --all-time --include-requests
 
 Use `usage --json --include-requests` to inspect request timing, input/output tokens, cache usage, and numeric tool/MCP counts and sizes. These records support questions such as “Which sessions had the largest tool payloads?” or “How did cache usage change this week?” Tool bytes are measured locally and are not converted into billed tokens. Missing tool telemetry is reported explicitly.
 
-`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. ASI does not generate recommendations, flag workflow patterns, or estimate hypothetical savings. The one exception is the optional, off-by-default spend forecast below, which is a statistical projection of known cost.
+`analyze` remains an alias for `usage`, including JSON and filters. It returns statistics only. `usage`, `sessions` and the other reports do not generate recommendations, flag workflow patterns, or estimate hypothetical savings. There are two exceptions: the optional, off-by-default spend forecast below, which is a statistical projection of known cost, and [Model fit](#model-fit), which compares the model and effort that ran in Claude Code with a public guide.
 
 Usage and status-line JSON now use `schema_version: 2`. Usage reports replace `diagnostics` with `telemetry` and `analysis_records` with `request_stats`; `analysis_rules` is removed. Status-line reports omit coaching fields. Token and cost totals, breakdowns, periods and comparisons keep their existing field names. The full `usage.json` snapshot exposes numeric request statistics in `request_stats`.
+
+## Model fit
+
+Which Claude model and effort fit the work you did? ASI compares the model and effort that ran in each Claude Code main-thread turn and subagent run with the guide [Which Claude model should you build with?](https://claude.dev/blog/which-claude-model-should-you-build-with/) (claude.dev, 2026-11-09), and shows where a smaller model or a lower effort would probably have done the job, and where a task may have been too hard for the model used. Codex sessions are not judged.
+
+Like every other report, it reads local files on demand, makes no network or model calls, and changes no settings.
+
+```sh
+asi fit                          # period summary, last 7 days
+asi fit --days 30
+asi fit --session <id or prefix> # one session, turn by turn
+asi suggest                      # what fits the session you are in, and what a switch costs now
+```
+
+`fit` takes the usual period flags (`--days`, `--from`, `--to`, `--all-time`); the provider, model, project and role filters of `usage` do not apply to it. `--json` prints one JSON object; `--include-titles` adds the shortened, redacted prompt to examples. A session prefix must be unique. An unknown session, a session without model calls and an empty period are reported as errors with a non-zero exit. `fit --session` always covers the whole session; the period flags apply to the summary. `suggest` uses `--session`, then `CLAUDE_SESSION_ID`, then the newest session of the current folder.
+
+Example summary (synthetic numbers):
+
+```text
+Model fit, 2026-10-12 to 2026-10-18 (UTC): $412.30 estimated across 18 sessions (96 turns, 140 subagent runs). Main threads $301.10, subagents $111.20.
+By model: claude-opus-5-5 $330.40, claude-sonnet-5-5 $61.90, claude-haiku-5-5 $20.00
+By effort: medium $90.10, high $180.50, xhigh $141.70
+
+class        guide          units      cost  save model  save effort
+everyday     opus/medium       60  $188.20       $0.00       $21.40
+lookup       haiku/medium      95   $70.60      $48.30        $0.00
+scoped       sonnet/medium     41   $64.00      $22.10        $5.60
+
+Findings
+- Work that a smaller model would have covered: $120 spent, about $70 saved at the guide's model (136 units)
+- Subagents that ran on the session's big model with no model passed: 88 runs, $64; about $45 saved on the guide's model
+- Opus at xhigh or max: $141 across 22 units
+
+Could save about $70 by model and $27 by effort of $412.
+```
+
+`fit --session` adds the turns of one session (what was asked, what ran, the guide's pick and a verdict), subagents grouped by type, and the same findings for that session. The text also states that the numbers are estimates.
+
+### The dashboard tab
+
+The dashboard has a fifth tab, "Model fit", with the same period, project and role filters as the other tabs. It shows spend per day by model, spend by task class with the rough savings, the model used per class, spend by effort, findings with their largest examples, and the most expensive sessions. The tab only filters and adds up numbers that Python has already judged; open `asi run -- --open` or `asi dashboard --open` to see it.
+
+### What the guide says
+
+Start at the model and effort in the table; if the result falls short, add a self-check, raise effort one step, and only then go one model up at a lower effort.
+
+| Task class | Model | Effort (start, then up to) |
+| --- | --- | --- |
+| Classification, routing, extraction; search, reading, log digging, summaries, relay steps | Haiku | medium |
+| Chat and quick questions | Sonnet | low, then medium |
+| Investigation, review, drafting | Sonnet | medium |
+| Well-scoped coding; everyday documents, slides, spreadsheets | Sonnet | medium, then high |
+| Everyday engineering, debugging, multi-PR work; computer use; not sure yet | Opus | medium, then high |
+| Major refactor or migration, architecture; leading many subagents or a long unattended run; deep research | Fable | medium, then high |
+
+`asi suggest` prints the full table with a reason for each class, the prices per million tokens, and the guide's effort ratios for Opus.
+
+### How it judges
+
+- **Units.** One typed prompt and everything done until the next prompt is a turn. One subagent run is a unit of its own.
+- **Class.** A heuristic puts each unit in a task class from what happened in it: tools used, files edited, number of calls and a few keywords in the prompt. The guide gives the class its model and effort.
+- **Verdicts.** `over`: a smaller model would have covered it. `under`: the model may have been too hard for it, a quality risk to check. `effort-over` and `effort-under`: the effort was above or below the guide's range. `session`: see below. `fits`: no difference.
+- **Main threads are judged per session.** A main thread keeps one cache, and a model switch re-writes it, so its model is a per-session choice: the strongest model any substantial turn needed. A small turn in a session that also holds hard work gets the verdict `session`. That is not waste.
+- **Subagents are judged per run.** Each has its own context, so each could have had its own model.
+- **Effort is judged per unit.** Changing effort keeps the cache.
+- **Savings** reprice the same requests on the guide's model through the same price rules as the rest of ASI, and apply the guide's effort ratios for Opus (low 0.33, medium 0.70, high 1.0, xhigh and max 2.5). Requests without a price are counted and left out.
+- **Cache events** from the main thread are listed too: model switches, full cache rewrites after an idle gap of more than five minutes (not after a compaction), calls above 200k tokens of context, Haiku calls above 100k, fast-mode calls, and effort changes.
+
+### Limits
+
+- The heuristic sees tools and file counts, not how hard the thinking was. It marks candidates. Look at the examples before you change a default; the guide itself says to measure on your own tasks.
+- Savings are rough upper bounds on API-equivalent estimates, not invoices. A smaller model or a lower effort can need more turns.
+- The guide's table, effort ratios and prices will need updating when Anthropic changes them.
+- Claude Code transcripts only. Cowork traces and Codex sessions are not judged.
+- Fast mode is priced at the fast rate in the totals but repriced at the standard rate in the savings.
+
+### First-message hint and autopilot (opt-in)
+
+Both are plain instructions in Claude Code's `CLAUDE.md`. There are no hooks, and the installer does not switch them on.
+
+```sh
+asi rules on|off|status|show      # first-message hint
+asi autopilot on|off|status|show  # model and effort for each subagent
+```
+
+They keep one block between `<!-- asi:begin -->` and `<!-- asi:end -->` in `~/.claude/CLAUDE.md` (or in `CLAUDE_CONFIG_DIR`). Text outside the markers is never changed; a file that is not valid UTF-8, or whose markers are broken, is left untouched with an error. The switches are saved in `model-rules.json` in the data directory.
+
+- The **hint** asks Claude to open the reply to the first message of a main interactive session with a note of two or three lines: the task class, the guide's model and effort, and whether the current model fits. It is told to stay silent in subagents, headless runs, scripted prompts and fixed-format replies.
+- **Autopilot** asks Claude to choose and pass a model and effort for each subagent and workflow agent it spawns, where nothing is named already. It never switches the main session's model, because a switch re-writes the whole cache.
+- The hint is on by default in the saved state, so the first `asi autopilot on` writes both parts; `asi rules off` removes the hint and keeps autopilot. `status` shows what is switched on and whether the block is on disk. With both off, the block is removed. `rules apply` rewrites the block from the saved state.
+
+### Skills for Claude Code
+
+`asi install --target claude` links four sub-skills next to the `asi` skill. They are links for Claude Code only; a Codex install gets none. They set no `model` or `effort` of their own, because a one-turn model switch would re-write the session's cache.
+
+- `/asi-suggest [task]`: which model, effort and modes fit the work in this conversation, and what switching now would cost.
+- `/asi-analyze [session]`: one session turn by turn (`fit --session`), with the examples checked by the model. Defaults to this session.
+- `/asi-autopilot on|off|status`: switch autopilot (`autopilot`).
+- `/asi-ultraanalyze [7d|30d|all|A..B]`: every session in a period, with examples that the model reads and judges, and the dashboard.
 
 ## Collect and inspect session evidence
 
@@ -242,7 +341,7 @@ Each command gathers existing files when invoked. `collect` returns a database s
 
 `own` counts a session's observations; `tree` includes its confirmed descendants once. Tree totals overlap and must not be added together. Lifecycle and explicitly named `lifetime` fields use all observed history. A completed turn is not proof that a session is currently completed: state stays `unknown`, with `last_seen` and the last recorded lifecycle event. Elapsed time includes idle periods; active time remains unavailable.
 
-The dashboard contains Charts, Sessions, Context and Cache usage. Select a daily bar, model or project to narrow the session list. Open a session and select a point on its input chart to inspect the usage record and source references. The offline HTML contains at most the latest 200 metadata events per session; use the CLI or SQLite for complete history. Recommendations and hypothetical savings remain disabled.
+The dashboard contains Charts, Sessions, Context, Cache usage and Model fit. Select a daily bar, model or project to narrow the session list. Open a session and select a point on its input chart to inspect the usage record and source references. The offline HTML contains at most the latest 200 metadata events per session; use the CLI or SQLite for complete history. Outside the Model fit tab, recommendations and hypothetical savings remain disabled.
 
 ### Local event database
 
@@ -389,6 +488,8 @@ In a new turn, invoke `$asi usage` in Codex or `/asi usage` in Claude Code. Ask 
 - “Show the largest recorded context and tool payloads by session.”
 - “Inspect this session’s recorded events and tool calls.”
 
+`--target claude` also links four sub-skills next to the skill: `/asi-suggest`, `/asi-analyze`, `/asi-autopilot` and `/asi-ultraanalyze` (see [Model fit](#model-fit)). A Codex install gets none. The installer does not write to `CLAUDE.md` and does not switch the first-message hint or autopilot on.
+
 The skill collects JSON and computes answers locally. It uses the text command for a quick summary and opens the dashboard when requested. Its instructions are in [skills/asi/SKILL.md](skills/asi/SKILL.md).
 
 For this unreleased source version, build and install the local bundle without contacting GitHub:
@@ -447,8 +548,9 @@ python3 skills/asi/scripts/asi.py install \
 - Global period, date, provider, model, project, role and pool filters; a searchable, sortable session table with request timelines.
 - Context and tool footprints, cache usage, and a token/cost breakdown for uncached input, cache reads, cache writes and output.
 - Trace coverage, parsing diagnostics and requests with unknown prices.
+- Model fit: spend per day by model, spend by task class with rough savings, the model and effort used per class, findings with examples, and the most expensive sessions (Claude Code only).
 
-Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export.
+Session titles are excluded by default; the dashboard uses session IDs and project names. `--include-titles` adds shortened titles with basic redaction of obvious secrets. This is not comprehensive anonymization. Message bodies, reasoning, tool arguments and tool results are not saved in the export. Model fit follows the same rule: its reports and the dashboard tab carry no prompt text unless you pass `--include-titles`, and then only the shortened, redacted title of a turn or subagent run. Edited file paths are kept only as short hashes.
 
 ## Periods and comparisons
 
@@ -538,6 +640,7 @@ Source SQLite databases are opened read-only. The parser handles incomplete fina
 | `prices-models-dev.meta.json` | ETag, fetch time and payload checksum for that refresh |
 | `status.json` | Saved snapshot timestamp; no polling |
 | `sessions.sqlite` | Transactional event metadata, usage and provenance database |
+| `fit-report.json` | Last `fit` report |
 | `session-report.json` | Last paginated session query |
 
 The dashboard opens as a saved file. No local server or background process is started.

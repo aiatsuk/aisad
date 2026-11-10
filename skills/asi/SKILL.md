@@ -103,20 +103,35 @@ The published source supplies base rates, context tiers and fast-mode rates. It 
 python3 <skill-directory>/scripts/asi.py run -- --open
 ```
 
-This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context and Cache usage; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
+This creates and opens one self-contained HTML snapshot, then exits. It has Charts, Sessions, Context, Cache usage and Model fit; no server or browser polling is needed. If the host cannot open the file, present its local path. The offline preview retains at most the latest 200 metadata events per session; use session JSON or SQLite for complete history. Opening the HTML does not gather new data; rerun the command when requested.
 
 `statusline` prints one compact line and exits: today, calendar-week-to-date spend versus the same weekdays last week, month-to-date spend versus matched days in the previous month, then a six-cell budget bar and percentage. Shorter previous months explicitly label the matched-day subtotals. The monthly budget defaults to $2,000; `--monthly-budget USD` overrides it. Monthly spend includes every discovered Claude/Codex session and agent pool, independent of filters and selected dates. JSON retains matched-day monthly comparison metadata. Coral changes to amber at 65%, orange at 80% and red at 100%, against a dark gray background. `--color` forces colors in piped output; `--no-color` disables them. Text keeps monetary amounts and budget percentages uncluttered; only comparison deltas use a positive sign. JSON retains incomplete-pricing metadata. It has no watch or stdin mode. Do not build monitors around it or configure external status hooks.
 
 ## Model fit for Claude Code
 
+Model fit compares the model and effort that ran in each Claude Code main-thread turn and subagent run with Anthropic's guide "Which Claude model should you build with?" (claude.dev, 2026-11-09). It reads Claude Code transcripts only, stays offline, and changes no settings.
+
+```sh
+python3 <skill-directory>/scripts/asi.py fit --days 30                  # period summary (default 7 days)
+python3 <skill-directory>/scripts/asi.py fit --days 30 --json
+python3 <skill-directory>/scripts/asi.py fit --session SESSION_ID_OR_PREFIX --include-titles
+python3 <skill-directory>/scripts/asi.py suggest --session SESSION_ID_OR_PREFIX
+```
+
+- `fit` takes `--days`, `--from`, `--to`, `--all-time`, `--json`, `--include-titles`. The provider, model, project and role filters do not apply to it. `fit --session` always covers the whole session. An unknown or ambiguous session, a session without model calls and an empty period exit non-zero with one line.
+- `fit --json` has `period`, `totals` (cost, units, savings), `by_model`, `by_effort`, `days`, `classes` (per task class: cost, savings, cost by model tier), `insights` (the findings: `id`, `title`, `metric`, `detail`, `examples`), `sessions` (the most expensive) and `guide`. `fit --session --json` adds `units`, one record per turn or subagent run with `class`, `verdict`, `used_tier`, `effort`, `rec_tier`, `rec_effort`, `cost`, `save_model` and `save_effort`. Example records carry `what` (the prompt or agent description, only with `--include-titles`), `used`, `rec`, `class`, `signals`, `calls`, `cost` and the savings.
+- Verdicts: `over` (a smaller model would have covered it), `under` (possibly too hard for the model; a quality risk), `effort-over`, `effort-under`, `fits`, and `session`. `session` is not waste: a main thread keeps one cache, so its model is chosen per session and a small turn in a session that also holds hard work gets `session`. Main threads are judged per session, subagents per run, effort per unit.
+- The class is a heuristic over tools, files and call counts. Check the examples against what you know before reporting a finding. Savings are rough upper bounds on API-equivalent estimates; say so with any figure.
+- `suggest` prints the current model and effort, the context size, the one-time cost of switching now, the heuristic class of recent turns, `settings.json` defaults and the guide table. It picks `--session`, else `CLAUDE_SESSION_ID`, else the newest session of the current folder.
+
 Four sub-skills ship inside this skill; `install --target claude` links each next to it in the Claude Code skills directory (a Codex install gets none):
 
 - `/asi-suggest`: which model, effort and modes fit the task in this conversation, and the cost of switching now (`suggest`).
 - `/asi-analyze`: one session turn by turn, what ran and what would have fit (`fit --session`).
-- `/asi-ultraanalyze`: every session over a period, with examples and the dashboard's Model fit tab (`fit`, `dashboard`).
+- `/asi-ultraanalyze`: every session over a period, with examples and the dashboard's Model fit tab (`fit --json`, `dashboard`).
 - `/asi-autopilot`: model and effort chosen for each subagent and workflow agent (`autopilot`).
 
-`rules on|off|status|show` and `autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in the `CLAUDE.md` of `CLAUDE_CONFIG_DIR` or `~/.claude`: `rules` holds a short first-message model hint, `autopilot` the per-subagent rules. They change nothing outside the markers and install no hooks. Savings in these reports are upper bounds on API-equivalent estimates.
+`rules on|off|status|show|apply` and `autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in the `CLAUDE.md` of `CLAUDE_CONFIG_DIR` or `~/.claude`: `rules` holds a short first-message model hint, `autopilot` the per-subagent rules. They change nothing outside the markers and install no hooks; installing ASI does not switch them on. The hint is on by default in the saved state, so the first `autopilot on` writes both parts; `rules off` removes only the hint, and `autopilot off` leaves the hint in place. Never change the main session's model or effort yourself; suggest it. Savings in these reports are upper bounds on API-equivalent estimates.
 
 ## Updates and local data
 

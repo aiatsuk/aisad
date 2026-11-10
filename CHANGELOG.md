@@ -6,6 +6,13 @@
 - AISAD 1.x installations cannot update themselves to ASI; they keep working at their version. Run the ASI installer once. It removes an unmodified 1.x `skills/aisad` next to the new skill, keeps one with local changes and says so, and makes a 1.x `aisad` command from `--cli-dir` run `asi`.
 - The first `asi` command moves `~/.local/share/aisad` to `~/.local/share/asi`; if the move fails it keeps using the old directory and says so. The menu bar app uses the new directory if it exists, else the old one, and never moves data.
 - `AISAD_*` environment variables still apply when the `ASI_*` variable is unset. Shared live updates and the saved dashboard theme written by 1.x are still read. `asi menubar` also opens a 1.x `AISAD.app`.
+- Add model fit for Claude Code. `asi fit` compares the model and effort that ran in each main-thread turn and subagent run with Anthropic's guide "Which Claude model should you build with?" and prints a period summary with findings and rough savings; `asi fit --session <id>` shows one session turn by turn (`--json` and `--include-titles` work on both); `asi suggest` shows what fits the session you are in and what a model switch would cost now. Savings are rough upper bounds on API-equivalent estimates. Codex sessions are not judged.
+- The dashboard gets a fifth tab, "Model fit": spend per day by model, spend by task class with rough savings, the model used per class, effort, findings with examples, and the most expensive sessions.
+- Four Claude Code sub-skills ship inside the skill and are linked next to it by `install --target claude`: `/asi-suggest`, `/asi-analyze`, `/asi-autopilot` and `/asi-ultraanalyze`. A Codex install gets none.
+- New opt-in commands `asi rules on|off|status|show` and `asi autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in `~/.claude/CLAUDE.md`: a first-message model hint, and rules for choosing a model and effort for each subagent. They touch nothing outside the markers and install no hooks. Installing does not switch them on. Autopilot never changes the main session's model.
+- Add [ADR 0005](docs/agent/adr/0005-model-fit.md): model fit is allowed as a second exception to the no-recommendations rule of ADR 0002.
+- The Claude Code transcript parser is more tolerant: a record with an unexpected shape now costs that one record, counted in `quality.invalid_records`, instead of the whole file.
+- The first ASI run after this update reparses every Claude Code transcript once (the parser version changed). On a large history this can take a few minutes; later runs use the cache again.
 
 ## 1.5.2 — 2026-11-10
 

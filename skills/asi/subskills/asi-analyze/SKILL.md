@@ -17,11 +17,11 @@ Show where each model was used in a session and where another would have been th
    python3 "${CLAUDE_SKILL_DIR}/../../scripts/asi.py" fit --session "${CLAUDE_SESSION_ID}" --include-titles
    ```
 
-   Run only the line that applies. Add `--json` when you need every field. If the placeholders reached you unfilled, use this skill's base directory in place of `${CLAUDE_SKILL_DIR}` and leave out `--session` and the session id; the command then summarizes the recent period instead of one session, so say that in your report.
+   Run only the line that applies. The session may be given as a unique prefix. The command prints the totals, a table of the main-thread turns (what was asked, model and effort that ran, calls, cost, heuristic class, the guide's pick, verdict, possible saving), the subagents grouped by type with how many had a model passed, and the findings, with cache events (model switches, rewrites after idle gaps, calls above 200k of context) when there were any. Add `--json` when you need every field: `units` holds one record per turn or subagent run, `insights` the findings with their examples. If the placeholders reached you unfilled, use this skill's base directory in place of `${CLAUDE_SKILL_DIR}` and leave out `--session` and the session id; the command then summarizes the recent period instead of one session, so say that in your report.
 
 2. Read the output critically. Each main-thread turn and each subagent run carries the model and effort that ran, a heuristic class, the guide's model for that class, a verdict and a rough saving. The heuristic only counts tools, files and calls:
    - For the current session you know what each turn was really about. Correct a wrong class and say that you did.
-   - Verdict `session` means a smaller model would have done that turn alone, but another turn in the same session needed the bigger one. That is not waste: a main thread keeps one cache, so its model is a per-session choice.
+   - Verdict `session` means a smaller model would have done that turn alone, but another turn in the same session needed the bigger one. It is not waste and not a finding: a main thread keeps one cache, so its model is a per-session choice. Never add up `session` turns as savings.
    - Verdict `under` is a quality risk. Check whether that work needed rework before calling it a problem.
 
 3. Report in plain words:
