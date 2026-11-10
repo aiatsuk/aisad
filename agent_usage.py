@@ -32,7 +32,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '1.5.1'
+VERSION = '1.5.2'
 PARSER_VERSION = 9
 PRICE_DATE = '2026-10-22'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
