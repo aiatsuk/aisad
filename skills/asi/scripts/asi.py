@@ -344,11 +344,15 @@ def data_directory(value=None):
 def default_data_directory(home=None):
     """~/.local/share/asi; a 1.x ~/.local/share/aisad moves there once.
 
-    A failed move keeps the old directory in use, so reports, budget and update
-    state stay where they are until the move can succeed."""
+    The old path stays behind as a link to the new one, so a status line script or a
+    1.x app that still reads it keeps working. A failed move keeps the old directory
+    in use, so reports, budget and update state stay where they are until the move
+    can succeed."""
     share = (home or Path.home()) / '.local/share'
     new, old = share / 'asi', share / LEGACY_NAME
     if not new.exists() and not new.is_symlink() and old.is_dir():
+        if old.is_symlink():
+            return old.resolve()  # Someone pointed the old path elsewhere on purpose.
         try:
             old.rename(new)
             print('Moved local data from ' + str(old) + ' to ' + str(new), file=sys.stderr)
@@ -357,6 +361,11 @@ def default_data_directory(home=None):
                 # Another launcher may have moved it first; otherwise keep the old place.
                 print('Keeping local data in ' + str(old) + '; could not move it to ' + str(new) + ': ' + str(error), file=sys.stderr)
                 return old.resolve()
+        else:
+            try:
+                old.symlink_to(new.name, target_is_directory=True)
+            except OSError:
+                pass  # The link is a convenience; the data is already in the new place.
     return new.resolve()
 
 

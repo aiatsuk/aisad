@@ -503,13 +503,28 @@ class SettingsAndDataDirectoryTests(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()) as errors:
             self.assertEqual(skill.data_directory(), self.new.resolve())
             self.assertIn('Moved local data from ' + str(self.old), errors.getvalue())
-            self.assertFalse(self.old.exists())
+            # The old path stays as a link, so a status line script that reads it keeps working.
+            self.assertTrue(self.old.is_symlink())
+            self.assertEqual((self.old / 'output/budget.json').read_text(), '{"monthly_budget_usd": 3210}')
             self.assertEqual((self.new / 'output/budget.json').read_text(), '{"monthly_budget_usd": 3210}')
-            # Later runs find the new directory and stay quiet, even if the old one reappears.
-            self.old.mkdir()
+            # Later runs find the new directory and stay quiet.
+            self.assertEqual(skill.data_directory(), self.new.resolve())
+            # Even if the link is replaced by a fresh 1.x directory, nothing moves again.
+            self.old.unlink(); self.old.mkdir()
             self.assertEqual(skill.data_directory(), self.new.resolve())
         self.assertEqual(errors.getvalue().count('Moved'), 1)
         self.assertTrue(self.old.is_dir())
+
+    def test_1x_path_that_is_already_a_link_is_used_where_it_points(self):
+        elsewhere = self.home / 'elsewhere'
+        elsewhere.mkdir(parents=True)
+        self.old.parent.mkdir(parents=True)
+        self.old.symlink_to(elsewhere, target_is_directory=True)
+        with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
+             contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(skill.data_directory(), elsewhere.resolve())
+        self.assertEqual(errors.getvalue(), '')
+        self.assertTrue(self.old.is_symlink()); self.assertFalse(self.new.exists())
 
     def test_new_directory_without_an_old_one_is_used_as_is(self):
         with patch.object(skill.Path, 'home', return_value=self.home), clean_environment(), \
@@ -548,7 +563,7 @@ class SettingsAndDataDirectoryTests(unittest.TestCase):
                              capture_output=True, text=True, env=environment)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn('Moved local data', run.stderr)
-        self.assertTrue((self.new / 'output').is_dir()); self.assertFalse(self.old.exists())
+        self.assertTrue((self.new / 'output').is_dir()); self.assertTrue(self.old.is_symlink())
 
 
 class LegacyInstallTests(unittest.TestCase):
