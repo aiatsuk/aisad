@@ -41,7 +41,7 @@ struct MenuBarView: View {
             } else {
                 Text("Usage is not available yet.").foregroundStyle(.secondary)
             }
-            ProviderTilesView(store: store.limits, now: now)
+            ProviderTilesView(store: store.limits, usageHours: store.report?.usageHours, now: now)
             AllProvidersRow(store: store.limits)
             if let report = store.report, !Calendar.current.isDateInToday(report.generated) {
                 Label("Spend snapshot is from a previous day", systemImage: "clock.badge.exclamationmark")

@@ -8,21 +8,19 @@ Since 2.0 it also answers a second question, [which Claude model and effort fit 
 
 ## See it work
 
-Weekday view (`asi chart --view weeks`): known USD per weekday and calendar week with weekly totals, five spend-intensity colors and script-generated insights. `H`/`L` browse calendar months and the cells sweep in with the new month; `W` switches to the daily graph. Recorded from the maintainer's real local Claude and Codex history on version 1.4.3.
+Weekday view (`asi chart --view weeks`): daily costs by calendar week, weekly totals, and spend insights. `H`/`L` browse months; `W` switches to the daily graph.
 
-![asi weekday view: browsing months with weekly totals, spend intensity and insights](docs/terminal-weeks.gif)
+![ASI weekday view: synthetic monthly costs, weekly totals and insights](docs/terminal-weeks.gif)
 
-Daily graph (`asi chart`), same history: `H`/`L` browse calendar months and the daily lines morph into the next month, `W` switches to the weekday table.
+Daily graph (`asi chart`), showing the same synthetic history:
 
-![Interactive asi chart: browsing months with morphing lines, then the weekday table](docs/terminal-chart.gif)
+![ASI daily chart: synthetic daily costs by provider](docs/terminal-chart.gif)
 
-Statusline, the optional spend forecast and its saved setting, recorded on the same real history:
+Version and compact statusline:
 
-![asi statusline, budget --forecast on and the frozen forecast with a suggested budget](docs/terminal-cli.gif)
+![ASI version and statusline using synthetic usage](docs/terminal-cli.gif)
 
-*These recordings show real aggregate daily and monthly cost totals for one person, rendered from the actual terminal output. They contain no prompts, project names, session titles or file contents; the settings path is shown at its default location. The numbers are API-equivalent estimates, not invoices, and are specific to that history.*
-
-The terminal recordings were made before the rename, so their window title and commands still say `aisad`; the output is the same.
+*These previews use synthetic data rendered by ASI 2.1.0's terminal formatters. The chart previews cycle between static monthly snapshots; the interactive terminal also animates navigation. Amounts are API-equivalent estimates, not invoices.*
 
 The Model fit tab of the dashboard, on the synthetic demo data (`python3 scripts/make_demo.py`):
 
@@ -135,10 +133,15 @@ Click a provider to open its pace popover:
 
 - **Weekly left** with its reset time, and the pace against an even spend of the window:
   *behind pace* means less remains than an even spend would leave.
-- **Runs out** projects the average rate so far to exhaustion; a window that would outlast its
-  reset says so instead. Early in a window the projection is necessarily rough.
+- **The outlook** says where the window is heading: **May run out Tue**, or **About 40% left at
+  reset**. A weekly window with at least two busy past weeks of local spend history follows your
+  usual rhythm: spend so far plus a typical week's remainder, scaled by how this week compares and
+  converted to percent at this window's own rate. Anything else, such as a 5-hour window, projects
+  the recent pace, where older usage counts less, so a quiet stretch lowers the forecast. Nothing
+  is shown below 2% used, in the first twentieth of a window, or for a stale reading. It is an
+  estimate in words: a range is not shown because it has not yet proved reliable on real history.
 - A chart of the remaining allowance across the window, one column per day: the readings ASI
-  already fetched, the dotted even-pace line and the projection. Hover it to read an earlier point.
+  already fetched, the dotted even-pace line and the forecast. Hover it to read an earlier point.
 - Every other window (session, model-specific weekly) with a bar, the percentage left and its
   reset, shown relatively within a day (for example, **resets in 2h 18m**).
 
@@ -148,7 +151,9 @@ stale or expired readings are gray, and the menu bar label keeps its own warning
 (orange below 20%, red at 10% or below).
 
 The chart draws on `quota-history.json` in the output directory: the percentage and time of each
-reading the app already fetched, at most 4,000 of them, dropped a day after their window resets.
+reading the app already fetched, at most 2,500 per window. Finished windows thin to one reading
+an hour and are dropped after eight weeks. The forecast also uses `usage_hours` from the local
+report: hourly API-equivalent spend per provider for the last nine weeks.
 It holds no credentials, prompts or session content and causes no extra provider requests;
 deleting it only empties the chart until new readings arrive.
 
@@ -349,7 +354,7 @@ Each command gathers existing files when invoked. `collect` returns a database s
 
 `own` counts a session's observations; `tree` includes its confirmed descendants once. Tree totals overlap and must not be added together. Lifecycle and explicitly named `lifetime` fields use all observed history. A completed turn is not proof that a session is currently completed: state stays `unknown`, with `last_seen` and the last recorded lifecycle event. Elapsed time includes idle periods; active time remains unavailable.
 
-The dashboard contains Charts, Sessions, Context, Cache usage and Model fit. Select a daily bar, model or project to narrow the session list. Open a session and select a point on its input chart to inspect the usage record and source references. The offline HTML contains at most the latest 200 metadata events per session; use the CLI or SQLite for complete history. Outside the Model fit tab, recommendations and hypothetical savings remain disabled.
+The dashboard contains Charts, Sessions, Context, Cache usage and Model fit. Select a daily bar, model or project to narrow the session list. Open a session and select a point on its input chart to inspect the usage record and source references. The offline HTML contains at most the latest 200 metadata events per session; use the CLI or SQLite for complete history. These event previews share a budget of 64 MB, newest sessions first, so a long history still opens; the detail of an older session then says its events are not in the file and names the command that shows them (`asi session --session ID --all-time --json`). Set `ASI_PREVIEW_BUDGET_MB` to another positive number of megabytes to change the budget. Costs, requests, session statistics and Model fit always cover the whole history. A large history is saved in the HTML in compressed parts that the page reads one after another before it opens. Outside the Model fit tab, recommendations and hypothetical savings remain disabled.
 
 ### Local event database
 
@@ -463,7 +468,7 @@ The weekday table has seven rows, Sunday through Saturday, and a column per Sund
 
 Run the command in the terminal to see the actual colored chart; an ASCII reconstruction in an assistant message is not a faithful preview. `--ascii` is an explicit compatibility fallback. Only recorded daily observations are plotted. Gaps remain gaps, wholly unpriced days show `?`, and overlapping series keep the visible provider's color. Incomplete pricing/coverage remains explicit in the footer and JSON. Claude/Codex costs are API-equivalent estimates; Grok, when available, uses its provider-reported completed-turn cost and is labelled `reported`. The shared budget continues to cover Claude/Codex; Grok reported costs stay separate. Other providers appear when supported local observations exist. `chart --json` also saves `output/chart.json` with exact daily values and coverage.
 
-`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `AISAD_MONTHLY_BUDGET` explicitly overrides it.
+`budget` reads the saved monthly limit without collecting sessions or reaching the network. `budget --set USD` atomically saves a finite positive amount, and `--reset` restores $2,000. The setting lives in `output/budget.json` under the selected data directory, outside the replaceable skill. Codex and Claude helpers share it by default. Statusline and the terminal chart use the saved limit; `--monthly-budget USD` overrides it for a single run. The existing local Claude statusline also honors the saved setting, unless `ASI_MONTHLY_BUDGET` explicitly overrides it.
 
 To add the `asi` terminal command when installing a local bundle, use `--cli-dir` pointing to a directory already on your PATH:
 

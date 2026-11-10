@@ -14,6 +14,7 @@ import calendar
 import datetime as dt
 from decimal import Decimal
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -32,7 +33,7 @@ import webbrowser
 from statistics import NormalDist
 from urllib.parse import unquote
 
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 PARSER_VERSION = 10
 PRICE_DATE = '2026-10-22'
 # USD / million tokens: uncached, read, 5m write, output. Claude 1h writes = 2x input.
@@ -2022,6 +2023,92 @@ def read_shared_usage(output, after=None):
             return value
     return None
 
+# A browser cannot hold one string much longer than about 536 million characters
+# (V8), so a large snapshot travels as gzip parts of bounded JSON instead of one text.
+SNAPSHOT_PART_CHARS = 32_000_000
+SNAPSHOT_PACK_CHARS = 1_000_000  # Above this, a snapshot that fits one part is embedded compressed.
+PREVIEW_BUDGET_MB = 64  # Compact JSON the dashboard spends on per-session event previews.
+
+def positive_setting(name,default,kind=float):
+    """A positive finite ASI_<name> (or AISAD_<name>) value; zero or anything malformed is the default."""
+    try:
+        value=kind(setting(name,default))
+        return value if math.isfinite(value) and value>0 else default
+    except (TypeError,ValueError,OverflowError):return default
+
+def snapshot_part_chars(value=None):
+    # ASI_SNAPSHOT_PART_CHARS is an internal test override that forces many parts on small data.
+    if value is None:value=positive_setting('SNAPSHOT_PART_CHARS',SNAPSHOT_PART_CHARS,int)
+    return value if value>0 else SNAPSHOT_PART_CHARS
+
+def snapshot_parts(snapshot,limit):
+    """Yield (manifest entry, JSON text) pairs that rebuild `snapshot` in order.
+
+    Whole top-level keys share a "keys" part while they fit. A list or object too
+    large for one part is split into "items" (array ranges) or "entries" (key
+    ranges) parts, which the page appends in order. Texts are ASCII JSON, so a
+    length is also bytes and browser string units; each text stays within
+    `limit` unless a single array item or object entry is larger on its own.
+    """
+    dumps=lambda value:json.dumps(value,separators=(',',':'))
+    def ranges(pieces):
+        chunk,size=[],2
+        for piece in pieces:
+            if chunk and size+1+len(piece)>limit:
+                yield chunk;chunk,size=[],2
+            size+=len(piece)+bool(chunk);chunk.append(piece)
+        if chunk:yield chunk
+    whole,size=[],2
+    for key,value in snapshot.items():
+        array=isinstance(value,list)
+        pieces=([dumps(item) for item in value] if array else
+                [dumps({name:item})[1:-1] for name,item in value.items()]) if isinstance(value,(list,dict)) and value else None
+        text=None if pieces else dumps(value)
+        entry=len(dumps(key))+1+(1+sum(map(len,pieces))+len(pieces) if pieces else len(text))
+        if pieces and 2+entry>limit:
+            for chunk in ranges(pieces):
+                yield (dict(kind='items' if array else 'entries',key=key,count=len(chunk)),
+                       ('[' if array else '{')+','.join(chunk)+(']' if array else '}'))
+            continue
+        if whole and size+1+entry>limit:
+            yield dict(kind='keys',count=len(whole)),'{'+','.join(whole)+'}'
+            whole,size=[],2
+        if pieces:text=('[' if array else '{')+','.join(pieces)+(']' if array else '}')
+        size+=entry+bool(whole);whole.append(dumps(key)+':'+text)
+    if whole:yield dict(kind='keys',count=len(whole)),'{'+','.join(whole)+'}'
+
+def pack_snapshot(snapshot,part_chars=None):
+    """The parts container for a snapshot larger than one part; None when one part holds it."""
+    parts=snapshot_parts(snapshot,snapshot_part_chars(part_chars))
+    first=next(parts,None);second=next(parts,None)
+    if second is None:return None
+    manifest,data=[],[]
+    for entry,text in itertools.chain((first,second),parts):
+        manifest.append(entry)
+        data.append(base64.b64encode(gzip.compress(text.encode('ascii'),compresslevel=6,mtime=0)).decode('ascii'))
+    return dict(encoding='gzip-base64-parts',format=1,parts=manifest,data=data)
+
+def preview_budget_bytes():
+    """ASI_PREVIEW_BUDGET_MB, in bytes of compact JSON; zero or malformed means the default."""
+    budget=int(min(positive_setting('PREVIEW_BUDGET_MB',PREVIEW_BUDGET_MB),1e9)*1_000_000)
+    return budget if budget>0 else PREVIEW_BUDGET_MB*1_000_000
+
+def bound_event_previews(previews,budget):
+    """Keep event previews newest session first while they fit `budget` bytes of compact JSON.
+
+    Sessions past the budget keep a null entry, so the page can say how to read
+    their events instead of showing an empty list. Usage numbers are untouched.
+    """
+    latest=lambda items:max((e['ts'] for e in items if e.get('ts') is not None),default=-math.inf)
+    kept,used,full={},2,False
+    for sid,items in sorted(previews.items(),key=lambda pair:(latest(pair[1]),pair[0]),reverse=True):
+        size=0 if full else len(json.dumps({sid:items},separators=(',',':')))-2+bool(kept)
+        full=full or used+size>budget
+        kept[sid]=None if full else items
+        if not full:used+=size
+    without=sum(items is None for items in kept.values())
+    return kept,dict(budget_bytes=budget,sessions_with_previews=len(kept)-without,sessions_without_previews=without)
+
 def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
     """One committed local read model; no scans, listeners or provider requests."""
     if not shared_usage_enabled(args):return None
@@ -2041,12 +2128,13 @@ def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
             revision=f'{time.time_ns():020d}'
             fields=('version','generated','as_of_date','timezone','price_as_of','price_sources','price_basis',
                     'history_coverage','summary','quality','scan','rows','request_stats','budgets','grok_records',
-                    'unknown_models','titles','measurement_basis','session_details','event_previews','evidence_generated',
+                    'unknown_models','titles','measurement_basis','session_details','event_previews','event_preview_limit',
+                    'evidence_generated',
                     # Open dashboards replace their whole dataset with this one on a live update.
                     'model_fit')
             data={key:snapshot[key] for key in fields if key in snapshot}
             if not data.get('evidence_generated') and previous:
-                for key in ('session_details','event_previews','evidence_generated'):
+                for key in ('session_details','event_previews','event_preview_limit','evidence_generated'):
                     if key in previous['snapshot']:data[key]=previous['snapshot'][key]
             data.update(sync_revision=revision,collection_revision=collection_revision,live_updates=True)
             canonical=argparse.Namespace(**vars(args));canonical.monthly_budget=None
@@ -2055,7 +2143,8 @@ def publish_shared_usage(snapshot,args,revision=None,budget_only=False):
             value=dict(schema_version=1,revision=revision,snapshot=data)
             # The public sidecar is the same normalized data already embedded in
             # the dashboard. Never publish source paths, transcripts or payloads.
-            packed=dict(encoding='gzip-base64',data=base64.b64encode(
+            # A large history goes in bounded parts; a page or a 1.x writer may still use one blob.
+            packed=pack_snapshot(data) or dict(encoding='gzip-base64',data=base64.b64encode(
                 gzip.compress(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode(),mtime=0)).decode())
             atom_write(output/'usage-live-data.js',
                 ('globalThis.asiLiveData?.('+json.dumps(revision)+','+json.dumps(packed)+');').encode())
@@ -2181,7 +2270,9 @@ def make_snapshot(args, dashboard=True, include_requests=False):
     if dashboard:
         previews=collections.defaultdict(lambda:collections.deque(maxlen=200))
         for event in events:previews[event['session']].append(event)
-        snapshot['event_previews']={sid:list(items) for sid,items in previews.items()}
+        # Previews are the largest part of a long history; the newest sessions keep theirs.
+        snapshot['event_previews'],snapshot['event_preview_limit']=bound_event_previews(
+            {sid:list(items) for sid,items in previews.items()},preview_budget_bytes())
         public={k:v for k,v in snapshot.items() if k!='sources'}
         body=render_html(public)
         atom_write(output/'dashboard.html',body.encode())
@@ -3263,6 +3354,18 @@ def menubar_curves(records,today,now,timezone):
                           current=week(monday),previous=week(monday-dt.timedelta(days=7))))
 
 
+def menubar_usage_hours(records,now):
+    """Hourly spend per provider, nine weeks back, for the quota forecast; aggregates only."""
+    latest=now.timestamp();first=int(latest//3600)-9*168
+    totals=collections.defaultdict(lambda:collections.defaultdict(float))
+    for row in records:
+        ts=row.get('ts')
+        if isinstance(ts,(int,float)) and row.get('cost') is not None and first*3600<=ts<=latest:
+            totals[str(row.get('provider','')).lower()][int(ts//3600)]+=row['cost']
+    return {provider:dict(hours=sorted(hours),costs=[round(hours[hour],4) for hour in sorted(hours)])
+            for provider,hours in totals.items() if provider}
+
+
 def menubar_report(snapshot,args):
     """Aggregate-only native companion report, independent of display filters."""
     today=dt.date.fromisoformat(snapshot['as_of_date'])
@@ -3290,6 +3393,7 @@ def menubar_report(snapshot,args):
                 sync_revision=snapshot.get('sync_revision'),
                 as_of_date=today.isoformat(),periods=periods,monthly_history=menubar_history(snapshot),
                 period_curves=menubar_curves(records,today,now,timezone),
+                usage_hours=menubar_usage_hours(records,now),
                 scope='All discovered Claude/Codex sessions and agent pools; calendar week starts Monday.',
                 note='Estimated API-equivalent cost, not subscription usage or invoices.')
 
@@ -3513,16 +3617,51 @@ td.fit-what small{display:block;margin-top:2px;font-size:11px}
 <div id="fit-tip" class="fit-tip" aria-hidden="true" hidden></div>
 <script id="snapshot" type="application/json">__DATA__</script><script>
 'use strict';
-async function loadSnapshot(node){
-    const data=JSON.parse(node.textContent);
-    if(data.encoding!=='gzip-base64')return data;
+async function loadSnapshot(node,progress){
+    return decodeSnapshot(JSON.parse(node.textContent),progress);
+}
+async function gunzipJson(text){
     if(typeof DecompressionStream==='undefined')throw new Error('This browser cannot decompress the saved report');
-    const bytes=Uint8Array.from(atob(data.data),c=>c.charCodeAt(0));
-    const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-    return new Response(stream).json();
+    const binary=atob(text),bytes=new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+    return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).json();
+}
+const ownKey=(object,key)=>Object.prototype.hasOwnProperty.call(object,key);
+function addFields(target,source){
+    // Own data properties, as JSON.parse makes them, whatever the key is named.
+    for(const key of Object.keys(source))Object.defineProperty(target,key,{value:source[key],enumerable:true,writable:true,configurable:true});
+}
+// A long history arrives as gzip parts of bounded JSON: one text of all of it
+// can be longer than the longest string a browser holds. The parts are decoded
+// one after another and the page renders only once every part is in place.
+async function decodeSnapshot(data,progress){
+    if(data?.encoding==='gzip-base64')return gunzipJson(data.data);
+    if(data?.encoding!=='gzip-base64-parts')return data;
+    const parts=data.parts,blobs=data.data;
+    if(data.format!==1||!Array.isArray(parts)||!Array.isArray(blobs)||!parts.length||parts.length!==blobs.length)
+        throw new Error('The saved report has an unknown or incomplete layout');
+    const result={},built=new Map();  // key -> 'items' or 'entries', for containers made here
+    for(let index=0;index<parts.length;index++){
+        progress?.(index+1,parts.length);
+        // Yield to the event loop between parts so the tab stays responsive.
+        if(index)await new Promise(resolve=>setTimeout(resolve,0));
+        const part=parts[index]||{},value=await gunzipJson(blobs[index]);blobs[index]=null;
+        const object=value!==null&&typeof value==='object'&&!Array.isArray(value),named=typeof part.key==='string';
+        if(part.kind==='keys'&&object&&Object.keys(value).length===part.count)addFields(result,value);
+        else if(part.kind==='items'&&named&&Array.isArray(value)&&value.length===part.count&&(built.get(part.key)??(ownKey(result,part.key)?'':'items'))==='items'){
+            if(!built.has(part.key)){addFields(result,{[part.key]:[]});built.set(part.key,'items')}
+            const target=result[part.key];for(const item of value)target.push(item);
+        }else if(part.kind==='entries'&&named&&object&&Object.keys(value).length===part.count&&(built.get(part.key)??(ownKey(result,part.key)?'':'entries'))==='entries'){
+            if(!built.has(part.key)){addFields(result,{[part.key]:{}});built.set(part.key,'entries')}
+            addFields(result[part.key],value);
+        }else throw new Error(`Part ${index+1} of ${parts.length} of the saved report does not match its manifest`);
+    }
+    return result;
 }
 (async()=>{
-let D=await loadSnapshot(document.getElementById('snapshot'));const $=id=>document.getElementById(id);
+let D=await loadSnapshot(document.getElementById('snapshot'),(part,total)=>{
+    const note=document.getElementById('startup-note');if(note)note.textContent=`Loading interactive charts: part ${part} of ${total}…`;
+});const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const compact=n=>new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n||0);const integer=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);const pct=n=>n==null?'—':(n*100).toFixed(1)+'%';
 // Calendar dates use UTC arithmetic to avoid DST and browser-timezone shifts.
@@ -4081,6 +4220,14 @@ function renderSessionEvidence(id,rs){
         const links=[...(meta.parent_session?[['Parent',meta.parent_session]]:[]),...meta.children.map(child=>['Child',child])];
         $('session-lifecycle').innerHTML=`<p>Observed span: ${meta.elapsed_seconds==null?'unavailable':integer(meta.elapsed_seconds)+' seconds'}, including idle time. Active time is unavailable. Last lifecycle event: ${esc(meta.last_recorded_lifecycle||'not recorded')}. ${meta.context_since_compaction==='unavailable'?(meta.compactions?'No fresh input observation after the latest compaction.':'No recorded input observation.'):''}</p>`+links.map(([label,sid])=>`<span>${label}: <button data-session="${esc(sid)}">${esc(sessionLabel(sid))}</button></span>`).join(' ');
     }else $('session-lifecycle').textContent='No lifecycle evidence in this snapshot.';
+    if(D.event_previews?.[id]===null){
+        // Previews past the file's size budget are left out; the local database still has them.
+        const command=document.createElement('code');command.textContent=`asi session --session ${id} --all-time --json`;
+        $('events-note').textContent='Events for this session are not saved in this dashboard file, which keeps them only for the newest sessions to stay within its size limit; to see them, run ';
+        $('events-note').append(command,'.');
+        $('events-table').innerHTML='';
+        return;
+    }
     const preview=D.event_previews?.[id]||[],events=preview.filter(e=>e.date&&range&&e.date>=range.from&&e.date<=range.to&&(!$('model').value||!e.model||e.model===$('model').value));
     $('events-note').textContent=(D.evidence_generated?'Evidence collected '+D.evidence_generated+'. ':'')+`${integer(events.length)} events shown for these dates from the latest ${integer(preview.length)} retained in this session’s offline preview. Full history and pagination: session --session ${id} --json. The database contains ${integer(meta?.event_count||preview.length)} lifetime events. Missing timestamps cannot be placed in this date range.`;
     $('events-table').innerHTML='<thead><tr><th>Observed time</th><th>Event</th><th>Recorded details</th><th>Evidence</th></tr></thead><tbody>'+(events.map(e=>`<tr><td>${esc(observedTime(e.ts))}</td><td>${esc(e.kind.replaceAll('_',' '))}</td><td>${esc(e.tool||e.role||e.service_tier||e.model||'')}${e.result_bytes!=null?' · '+bytes(e.result_bytes):e.kind==='tool_result'?' · size unavailable':''}${e.error===true?' · error recorded':''}</td><td><details><summary>Source ${integer(e.evidence[0]?.line||0)}</summary>${sourceReferences(e.evidence)}</details></td></tr>`).join('')||"<tr><td colspan=\"4\" class=\"empty\">No recorded events in this date range or preview.</td></tr>")+'</tbody>';
@@ -4157,7 +4304,7 @@ function startLiveUpdates(){
     };
     globalThis.asiLiveData=globalThis.aisadLiveData=async(revision,packed)=>{
         try{
-            const next=await loadSnapshot({textContent:JSON.stringify(packed)});
+            const next=await decodeSnapshot(packed);
             if(!stopped&&revision===requested&&next.sync_revision===revision)applyLiveSnapshot(next);
         }catch{/* Keep the last complete snapshot on corrupt or interrupted writes. */}
     };
@@ -4212,13 +4359,17 @@ def saved_summary(snapshot):
     basis={'current_rates':'Current rates for all dates','models_dev_rates':'models.dev rates for all dates'}.get(snapshot.get('price_basis'),'Custom rates')
     return intro+'<div class="cards">'+''.join(cards)+'</div><p class="money-note">Claude + Codex · '+basis+' · Known API estimates, not subscription charges. Unpriced requests excluded from cost. Updated '+html.escape(snapshot.get('generated',today))+'</p>'
 
-def render_html(snapshot):
-    payload=json.dumps(snapshot,ensure_ascii=False,separators=(',',':'))
+def render_html(snapshot,part_chars=None):
     # Large histories otherwise put hundreds of MB in one HTML text node.
-    # Embedded compression preserves every field and needs no fetch or server.
-    if len(payload)>1_000_000:
-        packed=base64.b64encode(gzip.compress(payload.encode('utf-8'),compresslevel=6,mtime=0)).decode('ascii')
-        payload=json.dumps(dict(encoding='gzip-base64',data=packed),separators=(',',':'))
+    # Embedded compression preserves every field and needs no fetch or server;
+    # past one part, the page unpacks bounded parts one after another.
+    packed=pack_snapshot(snapshot,part_chars)
+    if packed is not None:payload=json.dumps(packed,separators=(',',':'))
+    else:
+        payload=json.dumps(snapshot,ensure_ascii=False,separators=(',',':'))
+        if len(payload)>SNAPSHOT_PACK_CHARS:
+            packed=base64.b64encode(gzip.compress(payload.encode('utf-8'),compresslevel=6,mtime=0)).decode('ascii')
+            payload=json.dumps(dict(encoding='gzip-base64',data=packed),separators=(',',':'))
     payload=payload.replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
     return HTML.replace('__SAVED_SUMMARY__',saved_summary(snapshot)).replace('__DATA__',payload)
 

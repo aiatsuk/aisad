@@ -10,8 +10,6 @@ public struct QuotaPace: Sendable, Equatable {
     public let remainingPercent: Double
     /// Remaining percent an even spend would leave at `at`.
     public let evenRemainingPercent: Double
-    /// Linear projection of the average rate so far; nil when it lasts until reset.
-    public let runsOut: Date?
     public let hasUsage: Bool
 
     public init?(window: QuotaWindow, at date: Date) {
@@ -26,12 +24,6 @@ public struct QuotaPace: Sendable, Equatable {
         evenRemainingPercent = 100 * (1 - elapsed / duration)
         let used = 100 - window.remainingPercent
         hasUsage = used > 0.05
-        if hasUsage, elapsed > 0 {
-            let exhausted = start.addingTimeInterval(elapsed * 100 / used)
-            runsOut = exhausted < end ? max(exhausted, date) : nil
-        } else {
-            runsOut = nil
-        }
     }
 
     /// Positive when more allowance remains than an even spend would leave.
