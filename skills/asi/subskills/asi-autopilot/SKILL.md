@@ -16,7 +16,7 @@ The argument is `$ARGUMENTS`. No argument means `status`.
 python3 "${CLAUDE_SKILL_DIR}/../../scripts/asi.py" autopilot on
 ```
 
-This saves the rules in the ASI block of `CLAUDE.md` (in `CLAUDE_CONFIG_DIR`, by default `~/.claude`), so new sessions start with autopilot on, and prints the rules. Follow the printed rules in this session from now on. The same block also carries the first-message hint, which is on by default in ASI's saved state; if the user has not run `asi rules off`, this call switches the hint on too, so say so. Then tell the user in two or three lines what will now happen and that `/asi-autopilot off` removes the autopilot rules (the hint stays until `asi rules off`).
+This saves the rules in the ASI block of `CLAUDE.md` (in `CLAUDE_CONFIG_DIR`, by default `~/.claude`), so new sessions start with autopilot on, and prints the rules. Follow the printed rules in this session from now on. Then tell the user in two or three lines what will now happen and that `/asi-autopilot off` undoes it.
 
 ## off
 
@@ -24,7 +24,7 @@ This saves the rules in the ASI block of `CLAUDE.md` (in `CLAUDE_CONFIG_DIR`, by
 python3 "${CLAUDE_SKILL_DIR}/../../scripts/asi.py" autopilot off
 ```
 
-Removes the autopilot rules for new sessions; the first-message hint, if it is on, stays. In this session, stop choosing models and effort for subagents on ASI's behalf from now on.
+Removes the autopilot rules for new sessions. The first-message hint is a separate switch (`rules on|off`) and is not touched. In this session, stop choosing models and effort for subagents on ASI's behalf from now on.
 
 ## status
 

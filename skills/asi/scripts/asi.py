@@ -449,7 +449,7 @@ RULES_END = '<!-- asi:end -->'
 # The AIR prototype kept the same rules between these markers; the first write takes them over.
 AIR_BEGIN = '<!-- air:begin -->'
 AIR_END = '<!-- air:end -->'
-DEFAULT_RULES = {'hint': True, 'autopilot': False}
+DEFAULT_RULES = {'hint': False, 'autopilot': False}  # both are opt-in and independent
 
 HINT = """\
 # ASI: model and effort

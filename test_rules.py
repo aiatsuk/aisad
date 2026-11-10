@@ -177,7 +177,7 @@ class RulesTest(Tmp):
         md = self.dir / 'CLAUDE.md'
         md.write_text(skill.RULES_BEGIN + '\nhalf a block\n')
         self.assertEqual(self.asi('autopilot', 'on').returncode, 1)
-        self.assertEqual(skill.read_json(self.data / 'model-rules.json'), {'hint': True, 'autopilot': False})
+        self.assertEqual(skill.read_json(self.data / 'model-rules.json'), {'hint': False, 'autopilot': False})
 
     def test_cli_autopilot_round_trip(self):
         md = self.dir / 'CLAUDE.md'
@@ -185,6 +185,8 @@ class RulesTest(Tmp):
         r = self.asi('autopilot', 'on')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('ASI autopilot: on', md.read_text())
+        self.assertNotIn('ASI: model and effort', md.read_text())       # autopilot alone does not switch the hint on
+        self.assertEqual(self.asi('rules', 'on').returncode, 0)
         self.assertIn('Rules to follow in this session', r.stdout)
         self.assertIn(skill.AUTOPILOT, r.stdout)
         self.assertIn('autopilot: on', self.asi('autopilot', 'status').stdout)
@@ -292,9 +294,9 @@ class LauncherCommandTest(Tmp):
         self.assertFalse((self.dir / 'CLAUDE.md').exists())
         self.assertFalse(self.data.exists())
         self.assertEqual(self.asi('autopilot', 'show').stdout, skill.AUTOPILOT + '\n')
-        self.assertEqual(self.asi('rules', 'show').stdout, skill.rules_block(HINT) + '\n')
+        self.assertEqual(self.asi('rules', 'show').stdout, '(nothing switched on)\n')
         status = self.asi('rules', 'status').stdout.splitlines()
-        self.assertEqual(status, ['first-message hint: on; autopilot: off',
+        self.assertEqual(status, ['first-message hint: off; autopilot: off',
                                   'block in ' + str(self.dir / 'CLAUDE.md') + ': hint absent, autopilot absent'])
         self.assertEqual(self.asi('autopilot').stdout.strip(),
                          'autopilot: off (rules block in ' + str(self.dir / 'CLAUDE.md') + ': absent)')
@@ -333,8 +335,8 @@ class LauncherCommandTest(Tmp):
             self.assertEqual(skill.main(['rules', 'status', '--data-dir', str(self.data)]), 0)
             self.assertEqual(skill.main(['autopilot', 'off', '--data-dir', str(self.data)]), 0)
         self.assertIn('Autopilot is on for new sessions', output.getvalue())
-        self.assertIn('first-message hint: on; autopilot: on', output.getvalue())
-        self.assertIn('ASI: model and effort', (self.dir / 'CLAUDE.md').read_text())
+        self.assertIn('first-message hint: off; autopilot: on', output.getvalue())
+        self.assertFalse((self.dir / 'CLAUDE.md').read_text().strip())   # autopilot off again: nothing left
 
     def test_data_directory_inside_the_skill_is_refused(self):
         r = self.asi('rules', 'on', '--data-dir', str(LAUNCHER.parent))

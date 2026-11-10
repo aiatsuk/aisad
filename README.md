@@ -315,7 +315,7 @@ They keep one block between `<!-- asi:begin -->` and `<!-- asi:end -->` in `~/.c
 
 - The **hint** asks Claude to open the reply to the first message of a main interactive session with a note of two or three lines: the task class, the guide's model and effort, and whether the current model fits. It is told to stay silent in subagents, headless runs, scripted prompts and fixed-format replies.
 - **Autopilot** asks Claude to choose and pass a model and effort for each subagent and workflow agent it spawns, where nothing is named already. It never switches the main session's model, because a switch re-writes the whole cache.
-- The hint is on by default in the saved state, so the first `asi autopilot on` writes both parts; `asi rules off` removes the hint and keeps autopilot. `status` shows what is switched on and whether the block is on disk. With both off, the block is removed. `rules apply` rewrites the block from the saved state.
+- The two switches are independent and both start off: `asi rules on` writes only the hint, `asi autopilot on` only the autopilot rules. `status` shows what is switched on and whether the block is on disk. With both off, the block is removed. `rules apply` rewrites the block from the saved state.
 
 ### Skills for Claude Code
 

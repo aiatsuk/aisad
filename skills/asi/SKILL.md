@@ -131,7 +131,7 @@ Four sub-skills ship inside this skill; `install --target claude` links each nex
 - `/asi-ultraanalyze`: every session over a period, with examples and the dashboard's Model fit tab (`fit --json`, `dashboard`).
 - `/asi-autopilot`: model and effort chosen for each subagent and workflow agent (`autopilot`).
 
-`rules on|off|status|show|apply` and `autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in the `CLAUDE.md` of `CLAUDE_CONFIG_DIR` or `~/.claude`: `rules` holds a short first-message model hint, `autopilot` the per-subagent rules. They change nothing outside the markers and install no hooks; installing ASI does not switch them on. The hint is on by default in the saved state, so the first `autopilot on` writes both parts; `rules off` removes only the hint, and `autopilot off` leaves the hint in place. Never change the main session's model or effort yourself; suggest it. Savings in these reports are upper bounds on API-equivalent estimates.
+`rules on|off|status|show|apply` and `autopilot on|off|status|show` keep one marked block (`<!-- asi:begin -->` to `<!-- asi:end -->`) in the `CLAUDE.md` of `CLAUDE_CONFIG_DIR` or `~/.claude`: `rules` holds a short first-message model hint, `autopilot` the per-subagent rules. They change nothing outside the markers and install no hooks; installing ASI does not switch them on. The two switches are independent and both start off. Never change the main session's model or effort yourself; suggest it. Savings in these reports are upper bounds on API-equivalent estimates.
 
 ## Updates and local data
 
